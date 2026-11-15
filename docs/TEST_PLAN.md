@@ -2,20 +2,21 @@
 
 ## Bootstrap
 
-- Unit: zero-height/width surface is not drawable; positive surface is drawable.
-  Initial test failed on unimplemented behavior, then passed after implementation.
+- Unit: 6 tests covering zero-size refusal, extent negotiation, image-count bounds
+  and overlay-compatible format choice. RED before implementation/fix, then GREEN.
 - GPU capability probe: dynamic loader, instance, real device enumeration and clean
   teardown. --require-validation must fail clearly if layers unavailable.
 - Windows/MSVC: fmt, clippy, test, build in CI. CI has not run until pushed.
 - Dependency audit/license checks are distinct from compile success.
 
-## Next GPU increment
+## Native clear-frame slice — completed
 
 Native window with supplied icon, real swapchain clear/present, resize → minimized
 no submission → restore → present, close/teardown. Log frame/resize counters and
 actual layers/device/driver. Validation required for certified GPU smoke. Add
-device-lost handling by injectable result classification; never provoke driver
-failure on the user's machine. Check high DPI/input focus before UI selection.
+device-lost fault classification remains unverified; never provoke actual driver
+failure on the user's machine. Cross-monitor DPI and final UI input ownership are
+still open. Actual baseline results: NATIVE_FOUNDATION_REPORT_2026-11-15.md.
 
 ## Product gate
 

@@ -46,7 +46,7 @@ remain open. ash remains experimental until window/frame/validation evidence.
 
 ## Present implementation boundary
 
-Only an isolated ash capability probe and a surface-size test exist. No domain
-data, tools, desktop UI or first presented frame is implied by this review. The
-next native slice is window + Vulkan clear + resize/minimize/close + icon. Tool
-installation verification will wait for the owner's explicit «Готово» message.
+Initial boundary was an isolated ash probe. After the owner sent «Готово», the
+native window/clear/lifecycle/icon slice was implemented and verified with MSVC
+and validation layers. See ADR-0012 and NATIVE_FOUNDATION_REPORT_2026-11-15.md.
+No domain data, asset tools or final product UI is implied by that experiment.

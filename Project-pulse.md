@@ -1,5 +1,18 @@
 # Project pulse
 
+## 2026-11-15 — MSVC readiness and native Vulkan foundation verified
+
+- Owner sent «Готово». Verified installed Rust/MSVC 1.100.0, Build Tools 2026 on E:, Windows SDK 10.0.26100.9457 and LunarG Vulkan SDK 1.4.363.1. Validation-enabled probe now passes; driver Vulkan API remains 1.4.357 on RTX 5060 Ti.
+- Added ad-desktop for native winit event loop/window/icon/OS integration. Renderer accepts retained raw-handle targets and imports no winit/UI types. No asset-domain operations or Legacy code introduced. Boundaries/rationale in ADR-0012.
+- Implemented logical device, shared graphics/present queue, swapchain, render pass and visible clear-attachment test mark. One in-flight frame; submit and maintenance1 presentation fences both retire resources before resize/destruction. Zero/minimized sizes submit nothing. The current experiment explicitly requires maintenance1; general GPU fallback is open.
+- Owner icon embedded in EXE and assigned to window. ProductName/FileDescription/OriginalFilename version resources checked; native screenshot showed the icon. Executable: Main/target/release/AssetDoctorRTPT.exe, engineering version 0.1.0, no installer or public release.
+- Initial sRGB native run failed with 14 validation errors after restore. Process-scoped isolation confirmed RTSS's implicit layer, not NV_present, caused augmented STORAGE usage. Default preference changed to advertised B8G8R8A8_UNORM; no errors suppressed and no system overlay settings changed. Native debug/release then passed with ordinary implicit layers. Unit regression failed on old format preference and passed after the fix.
+- Final local MSVC checks: formatting, all-target clippy with denied warnings, 6 tests, release workspace build PASS. cargo-deny 0.20.2 successfully installed and advisories/bans/licenses/sources PASS. Only exact upstream miniz_oxide 0.8.9 duplicate exception is documented; no broad gate relaxation. GNU-only libloading 0.8.8 constraint removed; current lock resolves 0.8.9.
+- Final release tools/smoke.ps1 PASS: 15 presents, resize, 500ms minimized interval with no extra presents, restore, real WM_CLOSE/CloseRequested, clean teardown, validation_enabled=true and validation_errors=0. Interactive inspection/maximize/Alt+F4 also passed with zero validation errors; that inspection preceded final telemetry-only close/minimize assertion tightening. The final release smoke includes those tightened assertions.
+- Local artifacts: native-preview.png, exe-icon.png, release-smoke.stderr.log, debug native logs and preserved RED/isolation logs in Main/artifacts (Git-ignored). Durable report: docs/NATIVE_FOUNDATION_REPORT_2026-11-15.md. CI artifact definition now includes both EXEs; remote CI has not run and no push was performed.
+- Still unverified: unavailable loader, unsupported GPU/maintenance feature, device-lost injection, cross-monitor DPI, whole-process RAM/VRAM peaks. No mesh import/display, full product UI, PBR, diagnostics, repair, rig/animation, RT or PT claimed.
+- Next: close relevant UI/settings/format audit gaps and settle document/import contracts before the independent GLB → document → mesh raster slice. Legacy source/executable and supplied Arc-XRay reports remain untouched.
+
 ## 2026-11-15 — Initial source inventory and independent GPU capability probe
 
 - Source root: E:\MyCreations\Asset Doctor RT-PT 2.0\Main. Parent is the working area.

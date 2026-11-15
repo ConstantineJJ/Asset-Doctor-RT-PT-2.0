@@ -17,8 +17,10 @@ flowchart TD
   Commands --> History[Undo/Redo transactions]
 ```
 
-The diagram is a logical target, not existing crates. Present workspace has only
-ad-render-vulkan: a replaceable device experiment that owns no asset/document data.
+The diagram is a logical target, not all existing crates. Present workspace has
+ad-render-vulkan (GPU lifetime/presentation) and ad-desktop (window/events/OS icon).
+Renderer accepts raw-handle targets retained by Arc; it does not import winit.
+Neither crate owns asset/document data.
 Add a crate only when its independent boundary is implemented and justified.
 
 The owner's advisory v0.1 proposal was reviewed in

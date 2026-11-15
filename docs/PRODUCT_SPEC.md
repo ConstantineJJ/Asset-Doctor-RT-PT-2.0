@@ -41,7 +41,10 @@ animation autoplay, distinct floors and independent environment toggle.
 
 ## Current implementation
 
-One independent Rust GPU experiment and its surface-size contract test. No asset
-import, repair, rig, export, full desktop UI, PBR, RT or PT is implemented yet.
+Two independently scoped crates: ash renderer experiment and native desktop
+window/event integration. A release EXE presents a clear frame and passes
+validation-enabled resize/minimize/restore/close smoke. Six presentation-policy
+tests pass. No asset import, repair, rig, export, full product UI, PBR, RT or PT
+is implemented yet.
 Application name includes 2.0; engineering package starts at 0.1.0 to avoid
 confusing this new prototype with Legacy 2.0.14 or a released product.

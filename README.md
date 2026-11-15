@@ -2,7 +2,7 @@
 
 **Asset Doctor RT-PT 2.0** is a native Windows application in development for diagnosing, repairing, editing, and preparing 3D assets. The project is being built **from scratch** in Rust, with a Vulkan-based GPU renderer designed to run on local hardware.
 
-> **Status:** Bootstrap. An independent Rust workspace and Vulkan capability probe now exist. The product features below remain planned. No native viewport/first presented frame, importer, repair tools, RT or PT is claimed yet.
+> **Status:** Native foundation verified on Windows/RTX 5060 Ti. A standalone EXE opens a native window and presents a Vulkan clear frame, with resize/minimize/restore/close and the supplied icon. Asset viewing/import, editing, PBR, RT and PT remain planned.
 
 ## Planned Features
 
@@ -42,9 +42,12 @@ architecture and implementation are not carried into this product.
 - [Parity matrix](docs/FEATURE_PARITY_MATRIX.csv) and [open audit gaps](reference/LEGACY_GAP_REGISTER.md).
 - [Project pulse](Project-pulse.md), [tasks](tasks/todo.md), [dependencies](DEPENDENCIES.md), [test plan](docs/TEST_PLAN.md).
 
-The supplied icon is preserved in `assets/app.png`; Windows ICO variants are
-prepared in `assets/app.ico`. Actual window/executable resource integration is
-part of the next native slice.
+The supplied icon is preserved in `assets/app.png`; `assets/app.ico` is embedded
+in the EXE and `assets/window-icon.png` is applied to the window.
+
+Current runnable prototype: `target/release/AssetDoctorRTPT.exe` after release
+build. It shows a red clear-attachment test marker, not a loaded asset or final
+interface. See [native verification report](docs/NATIVE_FOUNDATION_REPORT_2026-11-15.md).
 
 ## Build on Windows
 
@@ -57,20 +60,28 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 cargo build --workspace --locked
+cargo build --workspace --release --locked
+cargo run --locked -p ad-desktop
 cargo run --locked -p ad-render-vulkan -- --probe
 cargo run --locked -p ad-render-vulkan -- --probe --require-validation
 ```
 
-For this machine's isolated portable GNU fallback, use the local wrapper with an
-explicit array so PowerShell preserves Cargo's argument separator:
+The local wrapper uses the installed MSVC toolchain and preserves the caller's
+environment. Its explicit array preserves Cargo's argument separator:
 
 ```powershell
 .\tools\dev.ps1 -Command @('test','--workspace','--locked')
-.\tools\dev.ps1 -Command @('run','--locked','-p','ad-render-vulkan','--','--probe')
+.\tools\dev.ps1 -Command @('run','--locked','-p','ad-desktop','--','--require-validation')
+.\tools\smoke.ps1
 ```
 
-The probe prints actual GPU/API/heap/queue/extension availability. It does not
+The separate probe prints actual GPU/API/heap/queue/extension availability. It does not
 enable RT or create a swapchain. Without validation layers the ordinary probe
 reports `validation_enabled=false`; `--require-validation` fails explicitly.
-Compilation is not GPU/native UI acceptance. CI is prepared but has not been run
-remotely; nothing is pushed by bootstrap work. Product licensing remains undecided.
+The native experiment requires swapchain-maintenance presentation fences; broader
+device fallback is not implemented. It uses one in-flight clear frame and an
+overlay-compatible UNORM target; the PBR color pipeline remains future work.
+tools/smoke.ps1 requires validation, checks resize/minimize/restore/native close
+and returns failure if any validation error occurs. It does not change overlay
+settings. Compilation alone is not native acceptance. CI is prepared but has not
+run remotely; nothing is pushed. Product licensing remains undecided.

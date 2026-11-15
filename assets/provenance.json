@@ -7,5 +7,6 @@
   ],
   "mode": "RGBA",
   "conversion": "ICO size variants; original PNG unchanged",
-  "status": "Prepared for native window and executable resource integration"
+  "status": "Original PNG retained; ICO embedded in executable; 64px PNG applied to native window",
+  "window_png_sha256": "bd8faa00f3333e8fd720221f7befcff5e7a347e74d2997a97176a97c0961edd4"
 }
