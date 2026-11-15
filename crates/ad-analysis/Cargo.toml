@@ -1,0 +1,12 @@
+[package]
+name = "ad-analysis"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+ad-document = { path = "../ad-document", version = "=0.1.0" }
+robust = "=1.2.0"
+
+[lints]
+workspace = true

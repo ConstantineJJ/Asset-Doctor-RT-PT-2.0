@@ -1,5 +1,12 @@
 # Project pulse
 
+## 2026-11-15 — Independent source geometry analysis core
+
+- ADR-0022/read-only slice09 audit define first5rules over each source primitive once, including inactive data: zero area, same-index oriented duplicate triangles, unused vertices, missing/zero normals. No source edits, welded topology/edges/components/UV/material/profile/repair claims. Report tagged document/revision/algorithm; capped16lowest source-index samples per finding.
+- New ad-analysis depends on ad-document + pinned robust1.2.0(MIT OR Apache-2.0, no transitives). Source review reproduced plain f64 area cancellation; switched to adaptive orient2d in3projections, regression covers that case and f32subnormal/max scales. Source winding/IDs retained; reversed faces distinct. Domain exposes immutable source primitives/revision only.
+- Triangle4million total/scratch64MiB per primitive/findings4096 defaults, checked prospective/fallible allocation, cancel loops and around bounded in-place sort. Sort itself is not interruptible; this is analysis storage admission, not process peak. Resource refusal produces no partial completed report.
+-5core tests RED→GREEN; current workspace72tests, clippy/release/dependency checks PASS including pending integration. Source review found numerical issue fixed; UI review/final native observations recorded separately with integration. No Legacy/source-model/Arc-XRay changes or push.
+
 ## 2026-11-15 — Core material emission
 
 - ADR-0021/read-only slice08 audit accepted before implementation. Preserved emissiveFactor linearRGB[0,1]/default0 and independent emissiveTexture UV; SRGB image sharing with base, strict admission even factor0/defaultview. Bad emission-only PNG regression RED→GREEN. Optional KHR_materials_emissive_strength explicitly noted unsupported; required extensions refused. Source bytes unchanged.

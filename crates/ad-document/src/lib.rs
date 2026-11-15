@@ -367,6 +367,14 @@ impl AssetDocument {
     pub fn id(&self) -> DocumentId {
         self.parts.id
     }
+    /// Immutable imported documents start at revision zero. Editing is not implemented.
+    pub fn revision(&self) -> u64 {
+        0
+    }
+    /// Source primitives, once per decoded primitive, including inactive scene data.
+    pub fn primitives(&self) -> &[MeshPrimitive] {
+        &self.parts.meshes
+    }
     pub fn name(&self) -> &str {
         &self.parts.name
     }
