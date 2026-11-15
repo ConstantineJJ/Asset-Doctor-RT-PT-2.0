@@ -1,5 +1,11 @@
 # Project pulse
 
+## 2026-11-15 — Frame/material binding redesign
+
+- ADR-0020 accepted before emission. Replaced4channel sets/128byte push with frameUBO96bytes(set0) and deduplicated whole-material descriptors(set1),64byte per-draw push. Frame allocation survives recreation, overwrite happens after single in-flight submission/presentation retirement. Source/document and88byte geometry unchanged.
+- Material tuple cap4096 checked before image/pool allocation; repeated factors/instances reuse one set. Source image/encoding/sampler ownership retained. Coherent overwrite requires exact nonzero size; tests cover short/overlong writes, host/GLSL offsets and tuple cap/sharing. Cap refusal regression RED→GREEN. No new package/feature requirement; within baseline uniform/sampler/image/set limits.
+-60workspace tests(13desktop/13document/22formats/12renderer), fmt/clippy warnings denied/release build PASS. Source-only review found no blocker. Native AO/normal/defaultcolor/empty lifecycle and malformed replacement passed0validationerrors; requested sync setting on import runs as before. Output equivalence is source/qualitative scope, no pixel oracle. New log gpu_material_binding_sets records actual tuple count. No push; emission remains next.
+
 ## 2026-11-15 — Source occlusion in inspection fill
 
 - Continued autonomously after normal completion. Read-only AO behavior audit/ADR-0019 accepted. Import now preserves occlusionTexture/independent UV/finite strength[0,1] default1 and strictly admits its resources even in default mode. Source geometry/bytes unchanged. Shared ORM pixels/linear upload remain deduplicated; geometry admission88bytes/vertex+indices.

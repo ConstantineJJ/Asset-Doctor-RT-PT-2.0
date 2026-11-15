@@ -53,6 +53,8 @@ per-increment owner acceptance is not a gate. Keep source/audit/verification lim
 - [x] H1: Preserve AO texture/strength/UV and linear MR sharing; malformed ignored AO regression RED→GREEN;88byte vertex admission.
 - [x] H2: Fourth-set linear R sampling affects fill only; independent toggle/reset,58tests, source reviews and Windows/dependency checks.
 - [x] H3: Native AO on/off/default, normal/MASK/empty/heavy regression; replacement+lifecycle0errors; interactive fill/direct comparison and strength0 unchanged.
-- [ ] Next raster increment: emission contracts plus camera/material binding redesign before adding resources beyond4sets/128byte push.
+- [x] I0: ADR-0020 frame/material binding redesign; baseline portability and lifetime contracts.
+- [x] I1:96byte frame UBO updated only after fence retirement; material tuple dedup/cap4096;64byte push.60tests and native channel/lifecycle regressions0errors.
+- [ ] Next raster increment: source emission contracts and SRGB map/factor rendering in the new binding layout.
 - [ ] Later: environment/shadows/full PBR, diagnostics, Heal, manual rig/animation, unified Compare, verified export and installer.
 - [ ] Later: RT → PT → Mixamo rights check/autorig/retargeting.

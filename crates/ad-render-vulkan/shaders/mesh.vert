@@ -15,7 +15,8 @@ layout(location=4) out vec2 mr_uv;
 layout(location=5) out vec2 normal_uv;
 layout(location=6) out vec4 world_tangent;
 layout(location=7) out vec2 ao_uv;
-layout(push_constant) uniform Push { mat4 view_projection; vec4 base_color; vec4 eye_exposure; vec4 material; vec4 lighting; } pc;
+layout(set=0,binding=0,std140) uniform Frame { mat4 view_projection; vec4 eye_exposure; vec4 lighting; } frame;
+layout(push_constant) uniform Push { vec4 base_color; vec4 material; vec4 view; vec4 emissive; } pc;
 void main() {
     world_position=position;
     uv=tex_coord;
@@ -25,5 +26,5 @@ void main() {
     normal_uv=normal_coord;
     world_tangent=tangent;
     ao_uv=occlusion_coord;
-    gl_Position=pc.view_projection*vec4(position,1.0);
+    gl_Position=frame.view_projection*vec4(position,1.0);
 }

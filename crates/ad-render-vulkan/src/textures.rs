@@ -10,24 +10,31 @@ use ad_document::{
 use ash::vk;
 use std::{collections::HashMap, sync::Arc};
 
+pub(crate) const MATERIAL_CHANNELS: usize = 4;
+const MAX_MATERIAL_SETS: usize = 4096;
+
 pub(crate) struct TextureLayout {
     pub handle: vk::DescriptorSetLayout,
     gpu: Arc<Gpu>,
 }
 impl TextureLayout {
     pub fn new(gpu: Arc<Gpu>) -> GpuResult<Self> {
-        let bindings = [
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_count(1)
-                .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_count(1)
-                .descriptor_type(vk::DescriptorType::SAMPLER)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-        ];
+        let bindings: Vec<_> = (0..MATERIAL_CHANNELS as u32)
+            .flat_map(|channel| {
+                [
+                    vk::DescriptorSetLayoutBinding::default()
+                        .binding(channel * 2)
+                        .descriptor_count(1)
+                        .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                        .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+                    vk::DescriptorSetLayoutBinding::default()
+                        .binding(channel * 2 + 1)
+                        .descriptor_count(1)
+                        .descriptor_type(vk::DescriptorType::SAMPLER)
+                        .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+                ]
+            })
+            .collect();
         // SAFETY: Bindings live through creation; owner retains the device.
         let handle = unsafe {
             gpu.device.create_descriptor_set_layout(
@@ -438,11 +445,12 @@ impl Drop for Sampler {
 /// CPU-side plan shares source identity while keeping transfer roles independent.
 struct TexturePlan {
     textures: Vec<(Arc<Texture>, TextureEncoding)>,
-    draw_slots: Vec<[usize; 4]>,
+    draw_slots: Vec<usize>,
+    materials: Vec<[usize; MATERIAL_CHANNELS]>,
     stats: TextureStats,
 }
 impl TexturePlan {
-    fn new(draws: &[DrawRange]) -> GpuResult<Self> {
+    fn new(draws: &[DrawRange], max_materials: usize) -> GpuResult<Self> {
         let mut admission = TextureAdmission::default();
         let white = Arc::new(Texture {
             image: Arc::new(TextureImage {
@@ -458,6 +466,8 @@ impl TexturePlan {
         ];
         let mut lookup = HashMap::new();
         let mut draw_slots = Vec::with_capacity(draws.len());
+        let mut materials = Vec::new();
+        let mut material_lookup = HashMap::new();
         for draw in draws {
             let mut slots = [0, 1, 1, 1];
             for (slot, (texture, encoding)) in slots.iter_mut().zip([
@@ -476,11 +486,23 @@ impl TexturePlan {
                         });
                 }
             }
-            draw_slots.push(slots);
+            let material = if let Some(index) = material_lookup.get(&slots) {
+                *index
+            } else {
+                if materials.len() >= max_materials {
+                    return Err("Scene exceeds material texture-combination budget".into());
+                }
+                let index = materials.len();
+                materials.push(slots);
+                material_lookup.insert(slots, index);
+                index
+            };
+            draw_slots.push(material);
         }
         Ok(Self {
             textures,
             draw_slots,
+            materials,
             stats: admission.stats,
         })
     }
@@ -488,7 +510,7 @@ impl TexturePlan {
 
 pub(crate) struct TextureBindings {
     pub sets: Vec<vk::DescriptorSet>,
-    pub draw_slots: Vec<[usize; 4]>,
+    pub draw_slots: Vec<usize>,
     pool: vk::DescriptorPool,
     layout: TextureLayout,
     images: Vec<GpuImage>,
@@ -500,8 +522,9 @@ impl TextureBindings {
         let TexturePlan {
             textures,
             draw_slots,
+            materials,
             stats,
-        } = TexturePlan::new(draws)?;
+        } = TexturePlan::new(draws, MAX_MATERIAL_SETS)?;
         let mut result = Self {
             sets: vec![],
             draw_slots,
@@ -529,57 +552,70 @@ impl TextureBindings {
             };
             image_slots.push(slot);
         }
-        // SAFETY: Resource counts admitted above; layouts and image/sampler owners
-        // live through the scene. Partial pool allocation is cleaned by Self.
+        for (index, (texture, _)) in textures.iter().enumerate() {
+            result.samplers.push(Sampler::new(
+                result.gpu.clone(),
+                texture.sampler,
+                result.images[image_slots[index]].mips,
+            )?);
+        }
+        // SAFETY: Material tuples were capped before GPU allocation. All image,
+        // sampler and create-info arrays stay live through synchronous updates.
         unsafe {
+            let count = (materials.len() * MATERIAL_CHANNELS) as u32;
             let sizes = [
                 vk::DescriptorPoolSize {
                     ty: vk::DescriptorType::SAMPLED_IMAGE,
-                    descriptor_count: textures.len() as u32,
+                    descriptor_count: count,
                 },
                 vk::DescriptorPoolSize {
                     ty: vk::DescriptorType::SAMPLER,
-                    descriptor_count: textures.len() as u32,
+                    descriptor_count: count,
                 },
             ];
             result.pool = result.gpu.device.create_descriptor_pool(
                 &vk::DescriptorPoolCreateInfo::default()
-                    .max_sets(textures.len() as u32)
+                    .max_sets(materials.len() as u32)
                     .pool_sizes(&sizes),
                 None,
             )?;
-            let layouts = vec![result.layout.handle; textures.len()];
+            let layouts = vec![result.layout.handle; materials.len()];
             result.sets = result.gpu.device.allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
                     .descriptor_pool(result.pool)
                     .set_layouts(&layouts),
             )?;
-            for (index, (texture, _)) in textures.iter().enumerate() {
-                let image = &result.images[image_slots[index]];
-                let sampler = Sampler::new(result.gpu.clone(), texture.sampler, image.mips)?;
-                let info = [vk::DescriptorImageInfo {
-                    sampler: sampler.handle,
-                    image_view: image.view,
-                    image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                }];
-                result.gpu.device.update_descriptor_sets(
-                    &[
-                        vk::WriteDescriptorSet::default()
-                            .dst_set(result.sets[index])
-                            .dst_binding(0)
-                            .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-                            .image_info(&info),
-                        vk::WriteDescriptorSet::default()
-                            .dst_set(result.sets[index])
-                            .dst_binding(1)
-                            .descriptor_type(vk::DescriptorType::SAMPLER)
-                            .image_info(&info),
-                    ],
-                    &[],
-                );
-                result.samplers.push(sampler);
+            for (index, slots) in materials.iter().enumerate() {
+                let infos: Vec<_> = slots
+                    .iter()
+                    .map(|&slot| vk::DescriptorImageInfo {
+                        sampler: result.samplers[slot].handle,
+                        image_view: result.images[image_slots[slot]].view,
+                        image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    })
+                    .collect();
+                let writes: Vec<_> = infos
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(channel, info)| {
+                        [
+                            vk::WriteDescriptorSet::default()
+                                .dst_set(result.sets[index])
+                                .dst_binding(channel as u32 * 2)
+                                .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                                .image_info(std::slice::from_ref(info)),
+                            vk::WriteDescriptorSet::default()
+                                .dst_set(result.sets[index])
+                                .dst_binding(channel as u32 * 2 + 1)
+                                .descriptor_type(vk::DescriptorType::SAMPLER)
+                                .image_info(std::slice::from_ref(info)),
+                        ]
+                    })
+                    .collect();
+                result.gpu.device.update_descriptor_sets(&writes, &[]);
             }
         }
+        eprintln!("gpu_material_binding_sets={}", result.sets.len());
         eprintln!(
             "gpu_material_images={} material_textures={} mip_bytes={} decoded_images={} srgb_images={} linear_images={}",
             result.images.len() - 2,
@@ -635,17 +671,21 @@ mod tests {
             occlusion_strength: 1.,
             alpha_cutoff: None,
         };
-        let plan = TexturePlan::new(&[
-            draw(Some(texture.clone()), Some(texture.clone())),
-            draw(Some(texture.clone()), None),
-            draw(None, Some(texture)),
-        ])
+        let plan = TexturePlan::new(
+            &[
+                draw(Some(texture.clone()), Some(texture.clone())),
+                draw(Some(texture.clone()), None),
+                draw(None, Some(texture)),
+            ],
+            4096,
+        )
         .unwrap();
         let mut normal_draw = draw(None, Some(plan.textures[3].0.clone()));
         normal_draw.normal_texture = normal_draw.metallic_roughness_texture.clone();
         normal_draw.occlusion_texture = normal_draw.metallic_roughness_texture.clone();
-        let shared = TexturePlan::new(&[normal_draw]).unwrap();
-        assert_eq!(shared.draw_slots, [[0, 2, 2, 2]]);
+        let shared = TexturePlan::new(&[normal_draw], 4096).unwrap();
+        assert_eq!(shared.draw_slots, [0]);
+        assert_eq!(shared.materials, [[0, 2, 2, 2]]);
         assert_eq!(
             (
                 shared.textures.len(),
@@ -654,8 +694,29 @@ mod tests {
             ),
             (3, 1, 20)
         );
-        assert_eq!(plan.draw_slots, [[2, 3, 1, 1], [2, 1, 1, 1], [0, 3, 1, 1]]);
+        assert_eq!(plan.draw_slots, [0, 1, 2]);
+        assert_eq!(plan.materials, [[2, 3, 1, 1], [2, 1, 1, 1], [0, 3, 1, 1]]);
         assert_eq!(plan.textures.len(), 4);
+        let repeated = TexturePlan::new(
+            &[
+                draw(Some(plan.textures[2].0.clone()), None),
+                draw(Some(plan.textures[2].0.clone()), None),
+            ],
+            1,
+        )
+        .unwrap();
+        assert_eq!(repeated.draw_slots, [0, 0]);
+        assert_eq!(repeated.materials.len(), 1);
+        assert!(
+            TexturePlan::new(
+                &[
+                    draw(Some(plan.textures[2].0.clone()), None),
+                    draw(None, Some(plan.textures[3].0.clone()))
+                ],
+                1
+            )
+            .is_err()
+        );
         assert_eq!(plan.textures[2].1, TextureEncoding::Srgb);
         assert_eq!(plan.textures[3].1, TextureEncoding::Linear);
         assert!(Arc::ptr_eq(

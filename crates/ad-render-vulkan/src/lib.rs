@@ -1,6 +1,7 @@
 //! Isolated GPU experiment. No asset/document ownership or product editing.
 
 pub mod context;
+mod frame;
 mod gpu;
 pub mod lighting;
 mod pipeline;

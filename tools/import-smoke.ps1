@@ -48,6 +48,8 @@ $pass=$log -split "`n" | Where-Object { $_ -match '^SMOKE_PASS .*validation_enab
 if (!$pass -or $log -notmatch 'asset_smoke imported=true mesh_frames=\d+ rejected_replacement_preserved=true') {
     throw 'Missing import/rejected-replacement/native lifecycle evidence.'
 }
+$expectedBindings=if($Scene -eq 'color'){2}else{1}
+if($log -notmatch "gpu_material_binding_sets=$expectedBindings\b"){throw 'Missing material descriptor tuple-sharing evidence.'}
 if ($Scene -eq 'color' -and $log -notmatch 'gpu_material_images=1 material_textures=2 mip_bytes=20 decoded_images=1 srgb_images=1 linear_images=0') {
     throw 'Missing deduplicated color image upload evidence.'
 }

@@ -1,3 +1,4 @@
+use crate::frame::{FrameBinding, FrameData};
 use crate::lighting::{ShadingMode, ViewLighting};
 use crate::ui::{Overlay, UiFrame, ViewportRect};
 use crate::{
@@ -30,6 +31,7 @@ pub struct Renderer {
     presentation_pending: bool,
     scene: Option<GpuScene>,
     overlay: Option<Overlay>,
+    frame: Option<FrameBinding>,
     view_projection: [[f32; 4]; 4],
     sample_textures: bool,
     sample_mr_maps: bool,
@@ -70,6 +72,7 @@ impl Renderer {
             eye: [0., 0., 4.],
             lighting: ViewLighting::default(),
             overlay: None,
+            frame: None,
             view_projection: [
                 [1., 0., 0., 0.],
                 [0., 1., 0., 0.],
@@ -107,6 +110,7 @@ impl Renderer {
             )?;
             result.presented = device.create_fence(&vk::FenceCreateInfo::default(), None)?;
         }
+        result.frame = Some(FrameBinding::new(result.gpu.clone())?);
         result.recreate(size)?;
         Ok(result)
     }
@@ -226,6 +230,7 @@ impl Renderer {
                 self.presentation_pending = false;
             }
             if let Some(frame) = ui.as_deref_mut() {
+                // No frame-data writes happen from the UI or camera setters.
                 if self.overlay.is_none() {
                     self.overlay = Some(Overlay::new(
                         self.gpu.clone(),
@@ -239,6 +244,19 @@ impl Renderer {
                     .expect("UI painter initialized")
                     .update(frame, self.pool)?;
             }
+            self.frame
+                .as_ref()
+                .expect("Frame binding initialized")
+                .update(&FrameData {
+                    view_projection: self.view_projection,
+                    eye_exposure: [
+                        self.eye[0],
+                        self.eye[1],
+                        self.eye[2],
+                        self.lighting.exposure_ev,
+                    ],
+                    lighting: [self.lighting.key, self.lighting.fill, 0., 0.],
+                })?;
             let (image, suboptimal) = match chain.loader.acquire_next_image(
                 chain.handle,
                 u64::MAX,
@@ -355,23 +373,14 @@ impl Renderer {
                 );
                 for draw in &scene.draws {
                     let push = Push {
-                        view_projection: self.view_projection,
                         base_color: draw.base_color,
-                        eye_exposure: [
-                            self.eye[0],
-                            self.eye[1],
-                            self.eye[2],
-                            self.lighting.exposure_ev,
-                        ],
                         material: [
                             draw.metallic_roughness[0],
                             draw.metallic_roughness[1],
                             draw.alpha_cutoff.unwrap_or(-1.),
                             draw.normal_scale,
                         ],
-                        lighting: [
-                            self.lighting.key,
-                            self.lighting.fill,
+                        view: [
                             self.lighting.flags(
                                 self.sample_textures,
                                 self.sample_mr_maps,
@@ -380,7 +389,10 @@ impl Renderer {
                                 chain.encode_srgb,
                             ),
                             draw.occlusion_strength,
+                            0.,
+                            0.,
                         ],
+                        emissive: [0.; 4],
                     };
                     device.cmd_bind_descriptor_sets(
                         self.command,
@@ -388,10 +400,8 @@ impl Renderer {
                         pipeline.layout,
                         0,
                         &[
-                            scene.textures.sets[draw.texture_slots[0]],
-                            scene.textures.sets[draw.texture_slots[1]],
-                            scene.textures.sets[draw.texture_slots[2]],
-                            scene.textures.sets[draw.texture_slots[3]],
+                            self.frame.as_ref().expect("Frame binding initialized").set,
+                            scene.textures.sets[draw.texture_slot],
                         ],
                         &[],
                     );
@@ -547,6 +557,7 @@ impl Drop for Renderer {
         self.overlay = None;
         self.swapchain = None;
         self.scene = None;
+        self.frame = None;
         // SAFETY: All queued work and presentation payloads were retired above;
         // on device loss Vulkan allows destruction. Partial-init handles may be null.
         unsafe {

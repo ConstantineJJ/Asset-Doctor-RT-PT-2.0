@@ -24,6 +24,13 @@ pub(crate) struct Buffer {
     pub handle: vk::Buffer,
     memory: vk::DeviceMemory,
     gpu: Arc<Gpu>,
+    size: usize,
+}
+fn validate_write(size: usize, length: usize) -> GpuResult<()> {
+    if length == 0 || size != length {
+        return Err("GPU buffer overwrite must match its nonzero allocation size".into());
+    }
+    Ok(())
 }
 impl Buffer {
     pub fn upload(gpu: Arc<Gpu>, bytes: &[u8], usage: vk::BufferUsageFlags) -> GpuResult<Self> {
@@ -34,6 +41,7 @@ impl Buffer {
             handle: vk::Buffer::null(),
             memory: vk::DeviceMemory::null(),
             gpu,
+            size: bytes.len(),
         };
         // SAFETY: Self owns each allocation before the next fallible operation.
         // Mapped coherent memory has at least bytes.len initialized input bytes.
@@ -64,18 +72,30 @@ impl Buffer {
                 .gpu
                 .device
                 .bind_buffer_memory(buffer.handle, buffer.memory, 0)?;
-            let target = buffer.gpu.device.map_memory(
-                buffer.memory,
-                0,
-                bytes.len() as u64,
-                vk::MemoryMapFlags::empty(),
-            )?;
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), target.cast::<u8>(), bytes.len());
-            buffer.gpu.device.unmap_memory(buffer.memory);
+            buffer.overwrite(bytes)?;
         }
         Ok(buffer)
     }
+    /// # Safety
+    /// Caller must retire every GPU access before overwriting this coherent buffer.
+    pub unsafe fn overwrite(&self, bytes: &[u8]) -> GpuResult<()> {
+        validate_write(self.size, bytes.len())?;
+        // SAFETY: Allocation is HOST_VISIBLE|COHERENT, bounds checked above;
+        // caller guarantees no device access while mapped/copied.
+        unsafe {
+            let target = self.gpu.device.map_memory(
+                self.memory,
+                0,
+                self.size as u64,
+                vk::MemoryMapFlags::empty(),
+            )?;
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), target.cast::<u8>(), bytes.len());
+            self.gpu.device.unmap_memory(self.memory);
+        }
+        Ok(())
+    }
 }
+
 impl Drop for Buffer {
     fn drop(&mut self) {
         // SAFETY: Renderer retires submissions before releasing scene buffers;
@@ -176,6 +196,18 @@ impl Drop for DepthTarget {
             self.gpu.device.destroy_image_view(self.view, None);
             self.gpu.device.destroy_image(self.image, None);
             self.gpu.device.free_memory(self.memory, None);
+        }
+    }
+}
+
+#[cfg(test)]
+mod buffer_tests {
+    use super::*;
+    #[test]
+    fn coherent_overwrite_refuses_partial_empty_or_overlong_input_before_mapping() {
+        assert!(validate_write(96, 96).is_ok());
+        for size in [0, 95, 97] {
+            assert!(validate_write(96, size).is_err());
         }
     }
 }

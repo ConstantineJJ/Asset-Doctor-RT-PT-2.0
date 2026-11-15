@@ -7,16 +7,17 @@ layout(location=4) in vec2 mr_uv;
 layout(location=5) in vec2 normal_uv;
 layout(location=6) in vec4 world_tangent;
 layout(location=7) in vec2 ao_uv;
-layout(set=0,binding=0) uniform texture2D base_color_image;
-layout(set=0,binding=1) uniform sampler base_color_sampler;
-layout(set=1,binding=0) uniform texture2D metallic_roughness_image;
-layout(set=1,binding=1) uniform sampler metallic_roughness_sampler;
-layout(set=2,binding=0) uniform texture2D normal_image;
-layout(set=2,binding=1) uniform sampler normal_sampler;
-layout(set=3,binding=0) uniform texture2D occlusion_image;
-layout(set=3,binding=1) uniform sampler occlusion_sampler;
+layout(set=1,binding=0) uniform texture2D base_color_image;
+layout(set=1,binding=1) uniform sampler base_color_sampler;
+layout(set=1,binding=2) uniform texture2D metallic_roughness_image;
+layout(set=1,binding=3) uniform sampler metallic_roughness_sampler;
+layout(set=1,binding=4) uniform texture2D normal_image;
+layout(set=1,binding=5) uniform sampler normal_sampler;
+layout(set=1,binding=6) uniform texture2D occlusion_image;
+layout(set=1,binding=7) uniform sampler occlusion_sampler;
 layout(location=0) out vec4 color;
-layout(push_constant) uniform Push { mat4 view_projection; vec4 base_color; vec4 eye_exposure; vec4 material; vec4 lighting; } pc;
+layout(set=0,binding=0,std140) uniform Frame { mat4 view_projection; vec4 eye_exposure; vec4 lighting; } frame;
+layout(push_constant) uniform Push { vec4 base_color; vec4 material; vec4 view; vec4 emissive; } pc;
 const float PI=3.14159265359;
 // Scale first so tiny/large derivative normals do not underflow/overflow in dot.
 vec3 unit_or(vec3 v,vec3 fallback) {
@@ -79,8 +80,8 @@ vec3 direct_pbr(vec3 base,vec3 n,vec2 mr,vec3 v,float occlusion) {
     vec3 diffuse=(vec3(1.0)-fresnel)*(1.0-metal)*base/PI;
     vec3 specular=fresnel*distribution*visibility;
     // Inspection fill is an explicit approximation; no environment is sampled.
-    vec3 radiance=(diffuse+specular)*nl*pc.lighting.x+((1.0-metal)*base+f0)*pc.lighting.y*occlusion;
-    vec3 exposed=max(radiance*exp2(pc.eye_exposure.w),vec3(0.0));
+    vec3 radiance=(diffuse+specular)*nl*frame.lighting.x+((1.0-metal)*base+f0)*frame.lighting.y*occlusion;
+    vec3 exposed=max(radiance*exp2(frame.eye_exposure.w),vec3(0.0));
     return exposed/(vec3(1.0)+exposed);
 }
 void main() {
@@ -93,7 +94,7 @@ void main() {
     n/=max(length(n),0.00000001);
     float light=0.25+0.75*abs(dot(n,normalize(vec3(0.4,0.8,0.3))));
     vec4 base=pc.base_color*tint;
-    uint flags=uint(pc.lighting.z);
+    uint flags=uint(pc.view.x);
     if ((flags&2u)!=0u) {base*=texture(sampler2D(base_color_image,base_color_sampler),uv);}
     vec3 linear=max(base.rgb*light,vec3(0.0));
     if ((flags&1u)!=0u) {
@@ -102,7 +103,7 @@ void main() {
             // glTF data texture is linear: B=metal, G=roughness; ignore R/A.
             mr*=texture(sampler2D(metallic_roughness_image,metallic_roughness_sampler),mr_uv).bg;
         }
-        vec3 v=unit_or(pc.eye_exposure.xyz-world_position,vec3(0.0,0.0,1.0));
+        vec3 v=unit_or(frame.eye_exposure.xyz-world_position,vec3(0.0,0.0,1.0));
         vec3 surface=unit_or(world_normal,vec3(0.0));
         if (dot(surface,surface)<0.5) {
             // No authored normal: use a view-facing geometric frame for this
@@ -118,7 +119,7 @@ void main() {
         }
         float occlusion=1.0;
         if ((flags&32u)!=0u) {
-            occlusion=mix(1.0,texture(sampler2D(occlusion_image,occlusion_sampler),ao_uv).r,pc.lighting.w);
+            occlusion=mix(1.0,texture(sampler2D(occlusion_image,occlusion_sampler),ao_uv).r,pc.view.y);
         }
         linear=direct_pbr(base.rgb,surface*side,mr,v,occlusion);
     }

@@ -1,3 +1,4 @@
+use crate::frame::FrameLayout;
 use crate::textures::TextureLayout;
 use crate::{context::GpuResult, gpu::Gpu};
 use ash::vk;
@@ -5,16 +6,16 @@ use std::{io::Cursor, sync::Arc};
 
 #[repr(C)]
 pub(crate) struct Push {
-    pub view_projection: [[f32; 4]; 4],
     pub base_color: [f32; 4],
-    pub eye_exposure: [f32; 4],
     pub material: [f32; 4],
-    pub lighting: [f32; 4],
+    pub view: [f32; 4],
+    pub emissive: [f32; 4],
 }
 pub(crate) struct MeshPipeline {
     pub handle: vk::Pipeline,
     pub layout: vk::PipelineLayout,
     texture_layout: TextureLayout,
+    frame_layout: FrameLayout,
     gpu: Arc<Gpu>,
 }
 struct Shader {
@@ -54,6 +55,7 @@ impl MeshPipeline {
             handle: vk::Pipeline::null(),
             layout: vk::PipelineLayout::null(),
             texture_layout: TextureLayout::new(gpu.clone())?,
+            frame_layout: FrameLayout::new(gpu.clone())?,
             gpu,
         };
         // SAFETY: All create-info arrays and shader modules live through the
@@ -67,12 +69,7 @@ impl MeshPipeline {
             pipeline.layout = pipeline.gpu.device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
                     .push_constant_ranges(&ranges)
-                    .set_layouts(&[
-                        pipeline.texture_layout.handle,
-                        pipeline.texture_layout.handle,
-                        pipeline.texture_layout.handle,
-                        pipeline.texture_layout.handle,
-                    ]),
+                    .set_layouts(&[pipeline.frame_layout.handle, pipeline.texture_layout.handle]),
                 None,
             )?;
             let stages = [
@@ -246,10 +243,10 @@ mod tests {
     use super::Push;
     #[test]
     fn push_layout_matches_glsl_and_guaranteed_vulkan_budget() {
-        assert_eq!(std::mem::size_of::<Push>(), 128);
-        assert_eq!(std::mem::offset_of!(Push, base_color), 64);
-        assert_eq!(std::mem::offset_of!(Push, eye_exposure), 80);
-        assert_eq!(std::mem::offset_of!(Push, material), 96);
-        assert_eq!(std::mem::offset_of!(Push, lighting), 112);
+        assert_eq!(std::mem::size_of::<Push>(), 64);
+        assert_eq!(std::mem::offset_of!(Push, base_color), 0);
+        assert_eq!(std::mem::offset_of!(Push, material), 16);
+        assert_eq!(std::mem::offset_of!(Push, view), 32);
+        assert_eq!(std::mem::offset_of!(Push, emissive), 48);
     }
 }

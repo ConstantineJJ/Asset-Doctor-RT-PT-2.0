@@ -25,8 +25,8 @@ fn main() {
         let options = naga::back::spv::Options {
             flags: naga::back::spv::WriterFlags::LABEL_VARYINGS,
             fake_missing_bindings: false,
-            binding_map: (0..4)
-                .flat_map(|group| (0..2).map(move |binding| (group, binding)))
+            binding_map: std::iter::once((0, 0))
+                .chain((0..8).map(|binding| (1, binding)))
                 .map(|(group, binding)| {
                     (
                         naga::ResourceBinding { group, binding },

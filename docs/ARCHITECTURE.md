@@ -63,6 +63,12 @@ reuses linear image ownership and applies only to inspection fill. Four compatib
 descriptor sets consume Vulkan's guaranteed minimum; emission must first redesign
 camera/material binding rather than adding a fifth set or exceeding128-byte push.
 
+ADR-0020 supersedes the per-channel binding layout: one96-byte frame uniform set
+and one deduplicated whole-material texture set, with64-byte per-draw push. Frame
+buffer writes only follow single-frame fence retirement. Up to4096unique texture
+tuples are admitted before image/pool allocation; source factors can share tuples.
+This leaves baseline Vulkan capacity for emission without descriptor indexing.
+
 The owner's advisory v0.1 proposal was reviewed in
 ARCHITECTURE_PROPOSAL_REVIEW.md. Session history and revision-keyed findings are
 application/derived state, not fields that every saved asset must embed. Compare
