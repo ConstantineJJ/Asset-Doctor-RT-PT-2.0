@@ -1,0 +1,11 @@
+[package]
+name = "ad-document"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+glam = { version = "=0.34.3", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true
