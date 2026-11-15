@@ -10,12 +10,16 @@ pub(crate) struct GpuDraw {
     pub base_color: [f32; 4],
     pub metallic_roughness: [f32; 2],
     pub alpha_cutoff: Option<f32>,
-    pub texture_slots: [usize; 2],
+    pub texture_slots: [usize; 3],
+    pub normal_scale: f32,
+    pub has_normal_map: bool,
 }
 
 pub(crate) struct GpuScene {
     pub vertices: Buffer,
     pub normals: Buffer,
+    pub tangents: Buffer,
+    pub normal_uvs: Buffer,
     pub indices: Buffer,
     pub uvs: Buffer,
     pub metallic_roughness_uvs: Buffer,
@@ -25,6 +29,7 @@ pub(crate) struct GpuScene {
     pub document_id: DocumentId,
     pub revision: u64,
     pub has_mr_maps: bool,
+    pub has_normal_maps: bool,
 }
 impl GpuScene {
     pub fn new(gpu: Arc<Gpu>, snapshot: &GeometrySnapshot) -> GpuResult<Self> {
@@ -41,6 +46,12 @@ impl GpuScene {
                 .any(|v| !v.is_finite())
             || snapshot.colors.len() != snapshot.positions.len()
             || snapshot.normals.len() != snapshot.positions.len()
+            || snapshot.tangents.len() != snapshot.positions.len()
+            || snapshot.normal_uvs.len() != snapshot.positions.len()
+            || snapshot.normal_uvs.iter().flatten().any(|v| !v.is_finite())
+            || snapshot.tangents.iter().any(|t| {
+                t.iter().any(|v| !v.is_finite()) || (t[3] != 0. && t[3] != -1. && t[3] != 1.)
+            })
             || snapshot.normals.iter().flatten().any(|v| !v.is_finite())
             || snapshot.uvs.iter().flatten().any(|v| !v.is_finite())
             || snapshot
@@ -61,6 +72,7 @@ impl GpuScene {
                 .any(|value| !value.is_finite())
             || snapshot.draws.iter().any(|draw| {
                 draw.index_count == 0
+                    || !draw.normal_scale.is_finite()
                     || draw
                         .metallic_roughness
                         .iter()
@@ -83,7 +95,7 @@ impl GpuScene {
         }
         // SAFETY: Arrays contain only initialized f32/u32 values, with no padding.
         // Slices borrow the immutable snapshot through the synchronous copy.
-        let (vertices, indices, uvs, colors, normals, metallic_roughness_uvs) = unsafe {
+        let (vertices, indices, uvs, colors, normals, metallic_roughness_uvs, tangents, normal_uvs) = unsafe {
             (
                 std::slice::from_raw_parts(
                     snapshot.positions.as_ptr().cast::<u8>(),
@@ -109,6 +121,14 @@ impl GpuScene {
                     snapshot.metallic_roughness_uvs.as_ptr().cast::<u8>(),
                     snapshot.metallic_roughness_uvs.len() * 8,
                 ),
+                std::slice::from_raw_parts(
+                    snapshot.tangents.as_ptr().cast::<u8>(),
+                    snapshot.tangents.len() * 16,
+                ),
+                std::slice::from_raw_parts(
+                    snapshot.normal_uvs.as_ptr().cast::<u8>(),
+                    snapshot.normal_uvs.len() * 8,
+                ),
             )
         };
         let vertices = Buffer::upload(gpu.clone(), vertices, vk::BufferUsageFlags::VERTEX_BUFFER)?;
@@ -116,6 +136,9 @@ impl GpuScene {
         let uvs = Buffer::upload(gpu.clone(), uvs, vk::BufferUsageFlags::VERTEX_BUFFER)?;
         let colors = Buffer::upload(gpu.clone(), colors, vk::BufferUsageFlags::VERTEX_BUFFER)?;
         let normals = Buffer::upload(gpu.clone(), normals, vk::BufferUsageFlags::VERTEX_BUFFER)?;
+        let tangents = Buffer::upload(gpu.clone(), tangents, vk::BufferUsageFlags::VERTEX_BUFFER)?;
+        let normal_uvs =
+            Buffer::upload(gpu.clone(), normal_uvs, vk::BufferUsageFlags::VERTEX_BUFFER)?;
         let metallic_roughness_uvs = Buffer::upload(
             gpu.clone(),
             metallic_roughness_uvs,
@@ -133,11 +156,15 @@ impl GpuScene {
                 metallic_roughness: d.metallic_roughness,
                 alpha_cutoff: d.alpha_cutoff,
                 texture_slots: textures.draw_slots[i],
+                normal_scale: d.normal_scale,
+                has_normal_map: d.normal_texture.is_some(),
             })
             .collect();
         Ok(Self {
             vertices,
             normals,
+            tangents,
+            normal_uvs,
             indices,
             uvs,
             metallic_roughness_uvs,
@@ -150,6 +177,7 @@ impl GpuScene {
                 .draws
                 .iter()
                 .any(|d| d.metallic_roughness_texture.is_some()),
+            has_normal_maps: snapshot.draws.iter().any(|d| d.normal_texture.is_some()),
         })
     }
 }

@@ -20,6 +20,7 @@ pub struct ViewerUi {
     pub show_summary: bool,
     pub textures: bool,
     pub mr_maps: bool,
+    pub normal_maps: bool,
     pub lighting: ViewLighting,
     help: bool,
     pub tree: SceneTree,
@@ -32,6 +33,8 @@ pub struct ViewerUi {
     reset_lighting_rect: egui::Rect,
     #[cfg(test)]
     mr_maps_rect: egui::Rect,
+    #[cfg(test)]
+    normal_maps_rect: egui::Rect,
 }
 impl Default for ViewerUi {
     fn default() -> Self {
@@ -50,6 +53,7 @@ impl Default for ViewerUi {
             show_summary: true,
             textures: true,
             mr_maps: true,
+            normal_maps: true,
             lighting: ViewLighting::default(),
             help: false,
             tree: SceneTree::default(),
@@ -62,6 +66,8 @@ impl Default for ViewerUi {
             reset_lighting_rect: egui::Rect::NOTHING,
             #[cfg(test)]
             mr_maps_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            normal_maps_rect: egui::Rect::NOTHING,
         }
     }
 }
@@ -214,6 +220,9 @@ impl ViewerUi {
                             let _maps=ui.checkbox(&mut self.mr_maps,"Карты металла/шероховатости").on_hover_text("Включить карты параметров материала. Не зависит от переключателя базовых текстур; исходник не изменяется.");
                             #[cfg(test)]
                             {self.mr_maps_rect=_maps.rect;}
+                            let _normal=ui.checkbox(&mut self.normal_maps,"Карты нормалей").on_hover_text("Детали поверхности из линейной RGB-карты. Источник и геометрия не изменяются.");
+                            #[cfg(test)]
+                            {self.normal_maps_rect=_normal.rect;}
                             ui.add(egui::Slider::new(&mut self.lighting.exposure_ev,-6.0..=6.0).text("Экспозиция · EV"));
                             ui.add(egui::Slider::new(&mut self.lighting.key,0.0..=8.0).text("Основной свет"));
                             ui.add(egui::Slider::new(&mut self.lighting.fill,0.0..=1.0).text("Заполнение"));
@@ -235,6 +244,9 @@ impl ViewerUi {
                             ui.label(format!("Треугольники: {}",asset.snapshot.indices.len()/3));
                             ui.label(format!("Примитивы с повторами: {}",asset.snapshot.draws.len()));
                             ui.label(format!("Нормаль грани: {} вершин",asset.snapshot.fallback_normal_vertices)).on_hover_text("Авторская нормаль отсутствует, нулевая или преобразование вырождено. Источник не исправляется.");
+                            if asset.snapshot.fallback_tangent_vertices>0 {
+                                ui.label(format!("UV-основа нормалей: {} вершин",asset.snapshot.fallback_tangent_vertices)).on_hover_text("Нет пригодных авторских касательных. Используется основа по производным геометрии/UV; на сложных швах возможно отличие от MikkTSpace.");
+                            }
                             ui.weak("С учётом экземпляров в сцене");
                             let b=asset.snapshot.bounds;
                             ui.add_space(12.);ui.strong("Габариты · метры");
@@ -272,7 +284,7 @@ impl ViewerUi {
                 ui.label("F — вписать модель; Esc — отменить загрузку; H — справка.");
                 ui.separator();ui.label("Выбор узла показывает сведения. Подсветка, редактирование и сохранение появятся позднее.");
                 ui.label("В Сводке: базовый вид или PBR с авторскими нормалями, металлом и шероховатостью. Экспозиция и свет меняют только просмотр.");
-                ui.label("Базовые текстуры и карты металла/шероховатости: встроенные PNG/JPEG до 8 бит/канал, с независимыми переключателями. Карты нормалей, окклюзии и свечения, HDR-окружение и тени пока не отображаются. Обе стороны граней видимы.");
+                ui.label("Цвет, металл/шероховатость и нормали: встроенные PNG/JPEG до 8 бит/канал, с независимыми переключателями. Нормали используют авторские касательные либо приближённую UV-основу; MikkTSpace пока не реализован. Окклюзия, свечение, HDR-окружение и тени пока не отображаются. Обе стороны граней видимы.");
                 ui.collapsing("Лицензии встроенных шрифтов",|ui| {
                     egui::ScrollArea::vertical().max_height(280.).show(ui,|ui| {
                         ui.label(include_str!("../../../assets/font-licenses.txt"));
@@ -347,6 +359,7 @@ mod tests {
             },
             textures: false,
             mr_maps: false,
+            normal_maps: false,
             ..Default::default()
         };
         let source = std::sync::Arc::<[u8]>::from(
@@ -397,6 +410,7 @@ mod tests {
         );
         assert!(!ui.textures);
         assert!(!ui.mr_maps);
+        assert!(!ui.normal_maps);
         assert!(std::sync::Arc::ptr_eq(asset.document.source(), &source));
         assert_eq!(asset.snapshot.fallback_normal_vertices, 6);
     }
@@ -427,6 +441,34 @@ mod tests {
             out.drop_without_applying_deltas();
         }
         assert!(!ui.mr_maps && ui.textures);
+    }
+    #[test]
+    fn normal_switch_leaves_mr_and_color_sampling_independent() {
+        let mut ui = ViewerUi {
+            lighting: ViewLighting {
+                mode: ShadingMode::DirectPbr,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (out, _, _) = ui.layout(raw(1200., 1000.), None, false);
+        out.drop_without_applying_deltas();
+        let position = ui.normal_maps_rect.center();
+        for pressed in [true, false] {
+            let mut input = raw(1200., 1000.);
+            input.events = vec![
+                egui::Event::PointerMoved(position),
+                egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::default(),
+                },
+            ];
+            let (out, _, _) = ui.layout(input, None, false);
+            out.drop_without_applying_deltas();
+        }
+        assert!(!ui.normal_maps && ui.mr_maps && ui.textures);
     }
     #[test]
     fn open_button_emits_one_action_on_release() {

@@ -4,24 +4,60 @@ layout(location=1) in vec2 uv;
 layout(location=2) in vec4 tint;
 layout(location=3) in vec3 world_normal;
 layout(location=4) in vec2 mr_uv;
+layout(location=5) in vec2 normal_uv;
+layout(location=6) in vec4 world_tangent;
 layout(set=0,binding=0) uniform texture2D base_color_image;
 layout(set=0,binding=1) uniform sampler base_color_sampler;
 layout(set=1,binding=0) uniform texture2D metallic_roughness_image;
 layout(set=1,binding=1) uniform sampler metallic_roughness_sampler;
+layout(set=2,binding=0) uniform texture2D normal_image;
+layout(set=2,binding=1) uniform sampler normal_sampler;
 layout(location=0) out vec4 color;
 layout(push_constant) uniform Push { mat4 view_projection; vec4 base_color; vec4 eye_exposure; vec4 material; vec4 lighting; } pc;
 const float PI=3.14159265359;
 // Scale first so tiny/large derivative normals do not underflow/overflow in dot.
 vec3 unit_or(vec3 v,vec3 fallback) {
+    if (any(isnan(v)) || any(isinf(v))) {return fallback;}
     float scale=max(max(abs(v.x),abs(v.y)),abs(v.z));
     if (scale<1e-30) {return fallback;}
     vec3 scaled=v/scale;
     return scaled*inversesqrt(dot(scaled,scaled));
 }
-vec3 direct_pbr(vec3 base,vec3 face,vec2 mr) {
-    vec3 v=unit_or(pc.eye_exposure.xyz-world_position,vec3(0.0,0.0,1.0));
-    vec3 n=unit_or(world_normal,unit_or(face,vec3(0.0,1.0,0.0)));
-    if (dot(n,v)<0.0) {n=-n;}
+vec3 perturbed_normal(vec3 n,vec3 texel,vec3 px,vec3 py,vec2 ux,vec2 uy) {
+    vec3 t=vec3(0.0);
+    vec3 b=vec3(0.0);
+    if (abs(world_tangent.w)>0.5) {
+        vec3 authored=unit_or(world_tangent.xyz,vec3(0.0));
+        vec3 projected=authored-n*dot(n,authored);
+        if (dot(projected,projected)>1e-12) {t=unit_or(projected,vec3(0.0));}
+        b=cross(n,t)*sign(world_tangent.w);
+    }
+    if (dot(t,t)<0.5) {
+        // Preview fallback, not MikkTSpace. Normalize derivative scales first.
+        float us=max(max(abs(ux.x),abs(ux.y)),max(abs(uy.x),abs(uy.y)));
+        float ps=max(max(max(abs(px.x),abs(px.y)),abs(px.z)),max(max(abs(py.x),abs(py.y)),abs(py.z)));
+        if (isnan(us) || isinf(us) || isnan(ps) || isinf(ps) || us<1e-30 || ps<1e-30) {return n;}
+        vec2 dx=ux/us;
+        vec2 dy=uy/us;
+        float det=dx.x*dy.y-dx.y*dy.x;
+        if (abs(det)<1e-8) {return n;}
+        vec3 a=px/ps;
+        vec3 c=py/ps;
+        vec3 raw_t=unit_or((a*dy.y-c*dx.y)*sign(det),vec3(0.0));
+        vec3 raw_b=unit_or((c*dx.x-a*dy.x)*sign(det),vec3(0.0));
+        vec3 projected=raw_t-n*dot(n,raw_t);
+        if (dot(projected,projected)<1e-12) {return n;}
+        t=unit_or(projected,vec3(0.0));
+        float orientation=dot(cross(n,t),raw_b);
+        if (dot(t,t)<0.5 || abs(orientation)<1e-6) {return n;}
+        b=cross(n,t)*sign(orientation);
+    }
+    vec3 ts=texel*2.0-1.0;
+    ts.xy*=pc.material.w;
+    ts=unit_or(ts,vec3(0.0,0.0,1.0));
+    return unit_or(t*ts.x+b*ts.y+n*ts.z,n);
+}
+vec3 direct_pbr(vec3 base,vec3 n,vec2 mr,vec3 v) {
     vec3 l=normalize(vec3(0.4,0.8,0.3));
     vec3 h=unit_or(v+l,n);
     float nv=max(dot(n,v),0.00001);
@@ -45,14 +81,17 @@ vec3 direct_pbr(vec3 base,vec3 face,vec2 mr) {
     return exposed/(vec3(1.0)+exposed);
 }
 void main() {
-    vec3 face=cross(dFdx(world_position),dFdy(world_position));
+    vec3 px=dFdx(world_position);
+    vec3 py=dFdy(world_position);
+    vec2 normal_dx=dFdx(normal_uv);
+    vec2 normal_dy=dFdy(normal_uv);
+    vec3 face=cross(px,py);
     vec3 n=face;
     n/=max(length(n),0.00000001);
     float light=0.25+0.75*abs(dot(n,normalize(vec3(0.4,0.8,0.3))));
     vec4 base=pc.base_color*tint;
     uint flags=uint(pc.lighting.z);
     if ((flags&2u)!=0u) {base*=texture(sampler2D(base_color_image,base_color_sampler),uv);}
-    if (pc.material.z>=0.0 && base.a<pc.material.z) {discard;}
     vec3 linear=max(base.rgb*light,vec3(0.0));
     if ((flags&1u)!=0u) {
         vec2 mr=pc.material.xy;
@@ -60,8 +99,23 @@ void main() {
             // glTF data texture is linear: B=metal, G=roughness; ignore R/A.
             mr*=texture(sampler2D(metallic_roughness_image,metallic_roughness_sampler),mr_uv).bg;
         }
-        linear=direct_pbr(base.rgb,face,mr);
+        vec3 v=unit_or(pc.eye_exposure.xyz-world_position,vec3(0.0,0.0,1.0));
+        vec3 surface=unit_or(world_normal,vec3(0.0));
+        if (dot(surface,surface)<0.5) {
+            // No authored normal: use a view-facing geometric frame for this
+            // two-sided preview rather than flipping its UV axes after mapping.
+            surface=unit_or(face,vec3(0.0,1.0,0.0));
+            if (dot(surface,v)<0.0) {surface=-surface;}
+        }
+        float side=dot(surface,v)<0.0?-1.0:1.0;
+        if ((flags&16u)!=0u) {
+            // Sample before per-fragment frame fallback and alpha discard.
+            vec3 texel=texture(sampler2D(normal_image,normal_sampler),normal_uv).rgb;
+            surface=perturbed_normal(surface,texel,px,py,normal_dx,normal_dy);
+        }
+        linear=direct_pbr(base.rgb,surface*side,mr,v);
     }
+    if (pc.material.z>=0.0 && base.a<pc.material.z) {discard;}
     vec3 display=linear;
     if ((flags&4u)!=0u) {
         display=mix(12.92*linear,1.055*pow(linear,vec3(1.0/2.4))-0.055,greaterThan(linear,vec3(0.0031308)));

@@ -51,6 +51,13 @@ GPU owns separate format uploads and two compatible descriptor sets per draw.
 Session MR sampling is independent of color sampling. Geometry admission56bytes
 per vertex includes both UV streams; prospective mip budgets include both formats.
 
+ADR-0018 adds source tangent/normal-map data, a third UV stream and derived world
+tangents. Domain geometry stays plain arrays. Linear MR/normal images share the
+same upload when source identity agrees; a third compatible descriptor set binds
+the normal role. Seven GPU streams total80bytes/vertex. Authored frame derivation
+is CPU-side; a bounded non-Mikk derivative fallback is isolated in the shader.
+The source scale uses the spare material push slot, retaining the128-byte budget.
+
 The owner's advisory v0.1 proposal was reviewed in
 ARCHITECTURE_PROPOSAL_REVIEW.md. Session history and revision-keyed findings are
 application/derived state, not fields that every saved asset must embed. Compare

@@ -33,12 +33,14 @@ pub struct Renderer {
     view_projection: [[f32; 4]; 4],
     sample_textures: bool,
     sample_mr_maps: bool,
+    sample_normal_maps: bool,
     eye: [f32; 3],
     lighting: ViewLighting,
     pub frames: u64,
     pub mesh_frames: u64,
     pub pbr_frames: u64,
     pub mr_frames: u64,
+    pub normal_frames: u64,
     pub recreations: u64,
 }
 
@@ -61,6 +63,7 @@ impl Renderer {
             scene: None,
             sample_textures: true,
             sample_mr_maps: true,
+            sample_normal_maps: true,
             eye: [0., 0., 4.],
             lighting: ViewLighting::default(),
             overlay: None,
@@ -74,6 +77,7 @@ impl Renderer {
             mesh_frames: 0,
             pbr_frames: 0,
             mr_frames: 0,
+            normal_frames: 0,
             recreations: 0,
         };
         // SAFETY: Live device, valid queue family. Self owns every successful
@@ -150,6 +154,9 @@ impl Renderer {
     }
     pub fn set_mr_maps_enabled(&mut self, enabled: bool) {
         self.sample_mr_maps = enabled;
+    }
+    pub fn set_normal_maps_enabled(&mut self, enabled: bool) {
+        self.sample_normal_maps = enabled;
     }
 
     fn wait_idle(&mut self) -> GpuResult<()> {
@@ -327,8 +334,10 @@ impl Renderer {
                         scene.colors.handle,
                         scene.normals.handle,
                         scene.metallic_roughness_uvs.handle,
+                        scene.normal_uvs.handle,
+                        scene.tangents.handle,
                     ],
-                    &[0, 0, 0, 0, 0],
+                    &[0, 0, 0, 0, 0, 0, 0],
                 );
                 device.cmd_bind_index_buffer(
                     self.command,
@@ -350,7 +359,7 @@ impl Renderer {
                             draw.metallic_roughness[0],
                             draw.metallic_roughness[1],
                             draw.alpha_cutoff.unwrap_or(-1.),
-                            0.,
+                            draw.normal_scale,
                         ],
                         lighting: [
                             self.lighting.key,
@@ -358,6 +367,7 @@ impl Renderer {
                             self.lighting.flags(
                                 self.sample_textures,
                                 self.sample_mr_maps,
+                                self.sample_normal_maps && draw.has_normal_map,
                                 chain.encode_srgb,
                             ),
                             0.,
@@ -371,6 +381,7 @@ impl Renderer {
                         &[
                             scene.textures.sets[draw.texture_slots[0]],
                             scene.textures.sets[draw.texture_slots[1]],
+                            scene.textures.sets[draw.texture_slots[2]],
                         ],
                         &[],
                     );
@@ -479,6 +490,14 @@ impl Renderer {
                         self.mesh_frames += 1;
                         if self.lighting.mode == ShadingMode::DirectPbr {
                             self.pbr_frames += 1;
+                            if self.sample_normal_maps
+                                && self
+                                    .scene
+                                    .as_ref()
+                                    .is_some_and(|scene| scene.has_normal_maps)
+                            {
+                                self.normal_frames += 1;
+                            }
                             if self.sample_mr_maps
                                 && self.scene.as_ref().is_some_and(|scene| scene.has_mr_maps)
                             {

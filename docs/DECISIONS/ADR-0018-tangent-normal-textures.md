@@ -24,7 +24,9 @@ full baked-map/seam equivalence stays open and the UI exposes the limitation.
 
 Both sides remain visible under the existing preview policy: choose frame-facing
 orientation from base normal vs view and reverse the complete perturbed result for
-the back side. No culling/material-side parity is claimed. Surface/UV derivatives
+the authored back side. Without authored normals, orient the geometric normal to
+the view before constructing the derivative frame. No culling/material-side parity
+is claimed. Surface/UV derivatives
 must be evaluated before texture-alpha discard or other fragment divergence.
 
 A third compatible descriptor set binds the normal texture, sharing the existing

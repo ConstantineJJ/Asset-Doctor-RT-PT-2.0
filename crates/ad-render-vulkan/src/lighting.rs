@@ -31,12 +31,19 @@ impl ViewLighting {
             && self.fill.is_finite()
             && (0.0..=1.0).contains(&self.fill)
     }
-    pub(crate) fn flags(self, textures: bool, mr_maps: bool, encode_srgb: bool) -> f32 {
+    pub(crate) fn flags(
+        self,
+        textures: bool,
+        mr_maps: bool,
+        normal_maps: bool,
+        encode_srgb: bool,
+    ) -> f32 {
         // GLSL reads these exact small integers from the float push slot.
         (u32::from(self.mode == ShadingMode::DirectPbr)
             | (u32::from(textures) << 1)
             | (u32::from(encode_srgb) << 2)
-            | (u32::from(mr_maps && self.mode == ShadingMode::DirectPbr) << 3)) as f32
+            | (u32::from(mr_maps && self.mode == ShadingMode::DirectPbr) << 3)
+            | (u32::from(normal_maps && self.mode == ShadingMode::DirectPbr) << 4)) as f32
     }
 }
 #[cfg(test)]
@@ -46,10 +53,11 @@ mod tests {
     fn settings_refuse_nonfinite_and_out_of_range_values_and_pack_independent_flags() {
         let mut view = ViewLighting::default();
         assert!(view.valid());
-        assert_eq!(view.flags(true, true, true), 6.);
+        assert_eq!(view.flags(true, true, true, true), 6.);
         view.mode = ShadingMode::DirectPbr;
-        assert_eq!(view.flags(false, false, true), 5.);
-        assert_eq!(view.flags(false, true, true), 13.);
+        assert_eq!(view.flags(false, false, false, true), 5.);
+        assert_eq!(view.flags(false, true, false, true), 13.);
+        assert_eq!(view.flags(false, true, true, true), 29.);
         for v in [f32::NAN, f32::INFINITY, -6.1, 6.1] {
             view.exposure_ev = v;
             assert!(!view.valid());

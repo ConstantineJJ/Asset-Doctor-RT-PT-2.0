@@ -1,5 +1,8 @@
 # Tasks
 
+Owner authorizes autonomous development and runtime/visual/input verification;
+per-increment owner acceptance is not a gate. Keep source/audit/verification limits explicit.
+
 - [x] A1a: Initial source inventory: 66 functions/scenarios, all 10 REQ IDs, exact evidence and source hashes. Verify: tools/audit_legacy.py. Full semantic UI/native audit remains open below.
 - [ ] A1b: Map all 197 UI declaration sites; classify 110 state candidates; complete parameter/error/native workflow acceptance. See reference/LEGACY_GAP_REGISTER.md.
 - [x] A2a: Independent workspace, icon assets, dependency register, Windows CI definition; portable GNU fmt/clippy/test/executable build passed.
@@ -34,12 +37,18 @@
 - [x] E1: Preserve authored normals/material factors, derive world normals, validate malformed data/factors and geometry budgets.39 tests at CPU increment.
 - [x] E2: Optional Vulkan direct PBR, actual eye, session-only exposure/key/fill/reset; base-color mode remains default.43 tests, fmt/clippy/release/dependency checks PASS.
 - [x] E3: Native factors/PBR-textured/base-color/static/Birch0 replacement+lifecycle smoke;15 mesh presents each,0 validation errors, no capture or computer input.
-- [ ] E4: Owner visual review of PBR response; calibrated BRDF/pixel comparison, GPU fault injection and memory/performance remain unverified.
+- [ ] E4: Calibrated BRDF/pixel comparison, GPU fault injection and memory/performance remain unverified; no owner gate.
 - [x] F0: Relevant MR behavior audit and ADR-0017 transfer/channel/UV/admission contracts.
 - [x] F1: Preserve embedded MR images and independent UVs; shared CPU source with sampled-variant budgets. Review predecode-count issue reproduced/fixed;47tests at data increment.
 - [x] F2: Vulkan linear MR B/G sampling, separate image formats/descriptors/UVs, independent MR switch; factor-only/base-color fallback retained.
 - [x] F3:49tests, fmt/clippy/release/dependency checks; native MR maps on/off/default, prior regressions and RedCat/heavy Vanguard replacement+lifecycle;0errors, original hashes unchanged.
-- [ ] F4: Owner visual acceptance of new MR response, pixel/channel/LOD calibration, peak memory and fault injection remain open.
-- [ ] Next raster increment: bounded tangent/normal-map audit/contracts, source transfer/handedness and UV selection before implementation.
+- [ ] F4: Further pixel/channel/LOD calibration, peak memory and fault injection remain open; no owner gate.
+- [x] G0: Relevant normal-map/tangent audit and ADR-0018 bounded contracts, explicit non-Mikk fallback.
+- [x] G1: Source normal texture/UV/scale/tangent and world transform parity, immutable source and80byte admission;53tests at data stage.
+- [x] G2: Vulkan normal sampling, independent switch, third descriptor/image sharing, authored/derivative frames and finite/degenerate handling.
+- [x] G3:54tests, fmt/clippy/release/dependency checks; native normal on/off/default and prior regressions; RedCat/Mini-bus/Vanguard normal+replacement+lifecycle;0errors, original hashes unchanged.
+- [x] G4: Autonomous native visual fixture/RedCat on-off comparison, zero-scale unchanged, orbit/maximize/close, picker open+cancel;0errors.
+- [ ] G5: Mikk/baked seam equivalence, quantitative pixel/LOD tests, peaks/fault injection. Picker filename-focus automation is unresolved; no manual acceptance dependency.
+- [ ] Next raster increment: bounded occlusion/emission contracts and relevant audit before extending material channels.
 - [ ] Later: environment/shadows/full PBR, diagnostics, Heal, manual rig/animation, unified Compare, verified export and installer.
 - [ ] Later: RT → PT → Mixamo rights check/autorig/retargeting.

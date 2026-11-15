@@ -103,6 +103,7 @@ impl App {
             let mesh_frames = renderer.mesh_frames;
             let pbr_frames = renderer.pbr_frames;
             let mr_frames = renderer.mr_frames;
+            let normal_frames = renderer.normal_frames;
             drop(renderer); // Retire ALL Vulkan objects while native window is alive.
             let errors = context.validation_errors();
             eprintln!(
@@ -124,6 +125,15 @@ impl App {
                         .iter()
                         .any(|d| d.metallic_roughness_texture.is_some())
                 });
+            let normal_required = pbr_required
+                && self.ui.normal_maps
+                && self.current.as_ref().is_some_and(|asset| {
+                    asset
+                        .snapshot
+                        .draws
+                        .iter()
+                        .any(|d| d.normal_texture.is_some())
+                });
             if self.smoke.is_some()
                 && self.error.is_none()
                 && self.smoke_import
@@ -131,7 +141,8 @@ impl App {
                     || !self.failed_replacement_preserved
                     || mesh_frames < 15
                     || (pbr_required && pbr_frames < 15)
-                    || (mr_required && mr_frames < 15))
+                    || (mr_required && mr_frames < 15)
+                    || (normal_required && normal_frames < 15))
             {
                 self.error = Some("Import/rejected-replacement smoke did not complete".into());
             }
@@ -152,7 +163,7 @@ impl App {
                         self.failed_replacement_preserved
                     );
                     eprintln!(
-                        "lighting_smoke mode={:?} pbr_frames={pbr_frames} mr_frames={mr_frames}",
+                        "lighting_smoke mode={:?} pbr_frames={pbr_frames} mr_frames={mr_frames} normal_frames={normal_frames}",
                         self.ui.lighting.mode
                     );
                     eprintln!(
@@ -329,6 +340,7 @@ impl App {
         )?;
         renderer.set_textures_enabled(self.ui.textures);
         renderer.set_mr_maps_enabled(self.ui.mr_maps);
+        renderer.set_normal_maps_enabled(self.ui.normal_maps);
         renderer.set_lighting(self.ui.lighting)?;
         let result = renderer.draw_ui(&mut frame)?;
         if result == FrameResult::Recreate {
@@ -607,6 +619,7 @@ fn run() -> GpuResult<()> {
             "--require-validation" => validation = true,
             "--pbr" => ui.lighting.mode = ad_render_vulkan::lighting::ShadingMode::DirectPbr,
             "--no-mr-maps" => ui.mr_maps = false,
+            "--no-normal-maps" => ui.normal_maps = false,
             "--smoke" => {
                 smoke = true;
                 validation = true;
@@ -629,7 +642,7 @@ fn run() -> GpuResult<()> {
             }
             "--help" => {
                 println!(
-                    "AssetDoctorRTPT [--require-validation] [--pbr] [--no-mr-maps] [--open model.glb] [--smoke] [--smoke-import model.glb --smoke-bad bad.glb]"
+                    "AssetDoctorRTPT [--require-validation] [--pbr] [--no-mr-maps] [--no-normal-maps] [--open model.glb] [--smoke] [--smoke-import model.glb --smoke-bad bad.glb]"
                 );
                 return Ok(());
             }

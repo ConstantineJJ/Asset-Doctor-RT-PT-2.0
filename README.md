@@ -2,7 +2,7 @@
 
 **Asset Doctor RT-PT 2.0** is a native Windows application in development for diagnosing, repairing, editing, and preparing 3D assets. The project is being built **from scratch** in Rust, with a Vulkan-based GPU renderer designed to run on local hardware.
 
-> **Status:** Native Vulkan GLB viewer with Open/Fit, scene tree, summary, embedded PNG/JPEG base-color textures and optional direct PBR preview with authored normals, material factors and metallic/roughness maps. Editing, normal/other material maps, rig/animation, RT and PT remain planned. This is an engineering prototype.
+> **Status:** Native Vulkan GLB viewer with Open/Fit, scene tree, summary and optional direct PBR with color/MR/normal maps and authored normals/tangents. Editing, occlusion/emission/environment, rig/animation, RT and PT remain planned. This is an engineering prototype.
 
 ## Planned Features
 
@@ -63,7 +63,9 @@ use [Twin_Cubes.glb](tests/fixtures/Twin_Cubes.glb).
   toggles image sampling. Choose **PBR · направленный свет** in Summary for authored
   normals, metallic/roughness factors × maps, exposure and light intensity.
   **Карты металла/шероховатости** toggles data-map sampling independently of base
-  color. This preview has approximate fill, no environment/shadows or normal maps.
+  color. **Карты нормалей** independently toggles surface detail. Authored tangents
+  take priority; missing/unusable frames use a derivative UV approximation, not
+  MikkTSpace. This preview has approximate fill, no environment/shadows.
   Default **Базовый вид** retains the previously accepted face-light appearance.
   External resources, referenced data-URI images, compressed geometry/images,
   texture-transform extensions, sparse accessors, alpha BLEND, skins, animations
@@ -81,6 +83,10 @@ The [MR texture report](docs/MR_TEXTURE_REPORT_2026-11-15.md) records independen
 linear data sampling, shared-source image admission and native model checks.
 Referenced MR resources now use the same strict admission as base-color maps,
 including in the default view. Malformed/unsupported MR images retain the old model.
+The [normal texture report](docs/NORMAL_TEXTURE_REPORT_2026-11-15.md) adds authored
+tangent transforms, independent normal UVs, scale and sharing. Normal resources
+use the same strict admission in all modes. Runtime and qualitative window checks
+are separate from calibrated Mikk/pixel equivalence.
 
 ## Build on Windows
 
@@ -112,6 +118,8 @@ environment. Its explicit array preserves Cargo's argument separator:
 .\tools\import-smoke.ps1 -Scene pbr -Pbr -SynchronizationValidation
 .\tools\import-smoke.ps1 -Scene mr -Pbr -SynchronizationValidation
 .\tools\import-smoke.ps1 -Scene mr -Pbr -NoMrMaps -SynchronizationValidation
+.\tools\import-smoke.ps1 -Scene normal -Pbr -SynchronizationValidation
+.\tools\import-smoke.ps1 -Scene normal -Pbr -NoNormalMaps -SynchronizationValidation
 ```
 
 The separate probe prints actual GPU/API/heap/queue/extension availability. It does not

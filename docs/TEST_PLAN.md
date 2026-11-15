@@ -83,3 +83,21 @@ and0 validation errors. Real RedCatCar and heavy Violet_Vanguard2 also passed in
 PBR with MR enabled and originalSHA256 unchanged. See MR_TEXTURE_REPORT for exact
 counts and requested synchronization-validation setting. Frame counters and clean
 validation do not prove pixel accuracy or physical-input/visual acceptance.
+
+## Tangent-space normal maps — bounded integration completed
+
+ADR-0018 adds source TANGENT/normal scale/UV checks, mirrored world tangent parity,
+orthogonalization, independent normal sampling flags and third descriptor sharing.
+Workspace54tests. Normal_Checker uses authored/missing/singular-frame conventions,
+mirrored/nonuniform scale, UV2 and zero/negative normal scale. Bad_Normal_Image
+checks normal-only decoder failure. Native maps-on/off/default, prior MR/MASK/
+factor/plain regressions, RedCat/Mini-bus/Vanguard import+failure+lifecycle all
+passed with0validation errors. Original model hashes unchanged.
+
+Owner explicitly authorized autonomous development and computer-based verification.
+Native window checks confirmed normal-toggle response on spheres and RedCat, unchanged
+zero-scale case, orbit, maximize and native close, with0validation errors. Ctrl+O
+opened the OS picker; Escape cancellation retained the model. Automated filename
+focus failed despite AX/screenshot targeting, so picker file commit remains unverified
+by automation. It is not a demonstrated importer/picker application defect. No owner
+acceptance gate remains. Mikk/quantitative pixel/LOD/fault-injection checks stay open.

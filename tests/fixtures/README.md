@@ -35,3 +35,10 @@ Three materials show unit factors,0.5 factors and MR-only with white base fallba
 Decoded pixels16bytes; prospective sampled mip storage40bytes across two formats.
 Bad_MR_Image.glb references malformed PNG only from MR materials. Regenerate with
 `python tools/make_mr_fixtures.py` after the sphere generator. No external content.
+
+Normal_Checker.glb extends the authored spheres: normal UV2 mirrors U independently
+of MR UV1; the same linear image serves MR and normal uses. Cases: authored tangent,
+mirrored/nonuniform instance without tangents, degenerate UV with scale0, and absent
+NORMAL with ignored authored tangent/negative normal scale. Alpha alternates0/255.
+One decoded image/linear mip chain20bytes. Bad_Normal_Image references a bad PNG
+only through normal maps. Regenerate with `python tools/make_normal_fixtures.py`.

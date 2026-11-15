@@ -21,7 +21,7 @@
 | egui-ash-renderer | 0.13.0 exact, default allocator | MIT | Maintained ash 0.38 painter for egui 0.36. Updates font textures/buffers after frame waits and records into supplied command buffer. Replace inside Vulkan UI overlay |
 | epaint_default_fonts | 0.36.2 | (MIT OR Apache-2.0) AND OFL-1.1 AND Ubuntu-font-1.0 | Unchanged bundled Ubuntu/Hack/Noto/emoji fonts for Cyrillic UI. Font copyright and full upstream notices preserved in assets/font-licenses.txt and embedded in Help |
 | epaint/emath/ecolor; glifo/harfrust/skrifa/read-fonts; vello_cpu/common | 0.36.2; 0.2.0/0.12.0/0.44.0/0.41.0; 0.1.0 | MIT OR Apache-2.0 (full resolved inventory in Cargo.lock) | UI tessellation/text shaping/rasterization dependencies, no second GPU backend. Actual per-library runtime footprint unprofiled |
-| image | 0.25.10 exact, PNG/JPEG only, defaults disabled | MIT OR Apache-2.0 | In-memory, limit-aware embedded base-color and metallic/roughness decoder behind ad-formats; no file/network helper or other codecs invoked. Replace inside formats/color.rs |
+| image | 0.25.10 exact, PNG/JPEG only, defaults disabled | MIT OR Apache-2.0 | In-memory, limit-aware embedded color/MR/normal decoder behind ad-formats; no file/network helper or other codecs invoked. Replace inside formats/color.rs |
 | zune-jpeg / zune-core | 0.5.15 / 0.5.3, transitive | MIT OR Apache-2.0 OR Zlib | JPEG codec used through image; not a second file importer |
 | moxcms / pxfm / byteorder-lite | 0.8.1 / 0.1.30 / 0.1.0, transitive | BSD-3-Clause OR Apache-2.0 / BSD-3-Clause OR Apache-2.0 / Unlicense OR MIT | image's support graph; original image bytes remain preserved, no explicit ICC conversion requested |
 
