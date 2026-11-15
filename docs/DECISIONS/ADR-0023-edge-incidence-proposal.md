@@ -41,3 +41,33 @@ phase budget boundaries and stale/cancel before publication. Use typed edge samp
 triangle sample index as an edge index or silently change G001..G005 semantics.
 
 No implementation or runtime acceptance is claimed by this proposal.
+
+## Source review conclusions for implementation planning
+
+- Include geometrically zero-area triangles when their three source indices are
+  distinct. Exclude repeated-index triangles entirely from edge incidence and
+  record their excluded count. Dropping only self edges would let collapsed
+  triangles create misleading degree observations.
+- Count distinct eligible source triangle ordinals for canonical(min,max) edges
+  within one source primitive. Cyclic/reversed duplicate faces remain distinct
+  incidents. This degree test is sufficient for edge incidence, not manifoldness.
+- Boundary means unique degree1edges; high incidence means unique degree>2edges.
+  Keep lowest16lexicographic source vertex pairs, with typed edge evidence rather
+  than triangle ordinals. Coincident positions do not merge indices or primitives.
+- Complete existing cheap rules across the whole document before starting edge
+  phases. Edge allocation/scratch refusal must preserve those findings. Whole-job
+  cancellation still discards publication. Findings-cap refusal also requires
+  explicit incomplete coverage, without evicting completed cheap findings.
+- Per-rule coverage must report Completed only for its full eligible scope;
+  ResourceLimited/Skipped includes reason, aggregate examined/omitted/excluded
+  counts and bounded primitive samples. No unbounded per-primitive coverage list.
+- Heavy case exact estimate:1559826triangles×3×12=56153736bytes(53.55MiB).
+  Keeping852516referenced bytes raises this to54.37MiB. Release both earlier face
+  sort and referenced buffers where possible; verify actual record size and all
+  prospective arithmetic. Never overlap face-sort storage with edge records.
+
+These decisions narrow the proposal; the report coverage API and tests remain
+to be implemented and reviewed. Suggested first count oracle: one triangle has
+3boundary edges; two triangles sharing one edge have4; a tetrahedron has0; three
+triangles sharing one edge have6boundary edges and1high-incidence edge. Duplicate
+faces can hide boundaries or create high incidence, so report G002 independently.

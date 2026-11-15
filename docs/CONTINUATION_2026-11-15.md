@@ -34,6 +34,10 @@ Next: review ADR-0023 proposal and settle edge-incidence semantics plus per-chec
 coverage before implementation. Add source-authored fixtures/tests, then native
 verification. Avoid an expensive-rule refusal erasing completed cheap checks.
 No repairs until mutation/history/export contracts are accepted and verified.
+Source review recommendations are appended to ADR-0023: exclude repeated-index
+faces, include distinct-index collinear faces, count unique source-triangle
+incidents per primitive, retain bounded typed edge pairs and independent coverage.
+All16fixture hashes/sizes/manifest entries verified at this checkpoint.
 
 Open limits: full topology/UV/material/rig/profile diagnostics, independent rescan,
 editing/revision invalidation, calibrated pixel/Mikk/LOD equivalence, peak memory,
