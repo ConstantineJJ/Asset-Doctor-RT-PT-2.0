@@ -8,6 +8,10 @@ publish.workspace = true
 ash = "=0.38.0"
 ash-window = "=0.13.0"
 raw-window-handle = "=0.6.2"
+ad-document = { path = "../ad-document", version = "=0.1.0" }
+
+[build-dependencies]
+naga = { version = "=30.0.2", default-features = false, features = ["glsl-in", "spv-out"] }
 
 [lints]
 workspace = true

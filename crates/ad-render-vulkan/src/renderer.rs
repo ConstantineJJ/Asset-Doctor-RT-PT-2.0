@@ -4,6 +4,8 @@ use crate::{
     gpu::{Gpu, SurfaceTarget},
     swapchain::Swapchain,
 };
+use crate::{pipeline::Push, scene::GpuScene};
+use ad_document::{DocumentId, GeometrySnapshot};
 use ash::vk;
 use std::sync::Arc;
 
@@ -24,7 +26,10 @@ pub struct Renderer {
     submitted: vk::Fence,
     presented: vk::Fence,
     presentation_pending: bool,
+    scene: Option<GpuScene>,
+    view_projection: [[f32; 4]; 4],
     pub frames: u64,
+    pub mesh_frames: u64,
     pub recreations: u64,
 }
 
@@ -44,7 +49,15 @@ impl Renderer {
             submitted: vk::Fence::null(),
             presented: vk::Fence::null(),
             presentation_pending: false,
+            scene: None,
+            view_projection: [
+                [1., 0., 0., 0.],
+                [0., 1., 0., 0.],
+                [0., 0., 1., 0.],
+                [0., 0., 0., 1.],
+            ],
             frames: 0,
+            mesh_frames: 0,
             recreations: 0,
         };
         // SAFETY: Live device, valid queue family. Self owns every successful
@@ -76,6 +89,32 @@ impl Renderer {
 
     pub fn context(&self) -> Arc<Context> {
         self.gpu.surface.context.clone()
+    }
+
+    pub fn set_scene(&mut self, snapshot: &GeometrySnapshot) -> GpuResult<()> {
+        let candidate = GpuScene::new(self.gpu.clone(), snapshot)?;
+        self.wait_idle()?;
+        self.scene = Some(candidate);
+        eprintln!(
+            "gpu_scene_published document={} revision={} vertices={} triangles={}",
+            snapshot.document_id.0,
+            snapshot.revision,
+            snapshot.positions.len(),
+            snapshot.indices.len() / 3
+        );
+        Ok(())
+    }
+    pub fn scene_tag(&self) -> Option<(DocumentId, u64)> {
+        self.scene
+            .as_ref()
+            .map(|scene| (scene.document_id, scene.revision))
+    }
+    pub fn set_view_projection(&mut self, matrix: [[f32; 4]; 4]) -> GpuResult<()> {
+        if matrix.iter().flatten().any(|v| !v.is_finite()) {
+            return Err("Nonfinite camera matrix refused".into());
+        }
+        self.view_projection = matrix;
+        Ok(())
     }
 
     fn wait_idle(&mut self) -> GpuResult<()> {
@@ -139,11 +178,19 @@ impl Renderer {
                 offset: vk::Offset2D { x: 0, y: 0 },
                 extent: chain.extent,
             };
-            let clear = [vk::ClearValue {
-                color: vk::ClearColorValue {
-                    float32: [0.018, 0.022, 0.03, 1.0],
+            let clear = [
+                vk::ClearValue {
+                    color: vk::ClearColorValue {
+                        float32: [0.018, 0.022, 0.03, 1.0],
+                    },
                 },
-            }];
+                vk::ClearValue {
+                    depth_stencil: vk::ClearDepthStencilValue {
+                        depth: 1.0,
+                        stencil: 0,
+                    },
+                },
+            ];
             device.cmd_begin_render_pass(
                 self.command,
                 &vk::RenderPassBeginInfo::default()
@@ -153,50 +200,109 @@ impl Renderer {
                     .clear_values(&clear),
                 vk::SubpassContents::INLINE,
             );
-            // A visible clear-attachment test marker, not an asset or product UI.
-            let span = chain.extent.width.min(chain.extent.height) / 4;
-            let thickness = (span / 4).max(1);
-            let cx = chain.extent.width / 2;
-            let cy = chain.extent.height / 2;
-            let rects = [
-                vk::ClearRect {
-                    rect: vk::Rect2D {
-                        offset: vk::Offset2D {
-                            x: (cx - span / 2) as i32,
-                            y: (cy - thickness / 2) as i32,
+            if let Some(scene) = self.scene.as_ref() {
+                let pipeline = chain
+                    .pipeline
+                    .as_ref()
+                    .expect("Renderable swapchain owns mesh pipeline");
+                device.cmd_bind_pipeline(
+                    self.command,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    pipeline.handle,
+                );
+                device.cmd_set_viewport(
+                    self.command,
+                    0,
+                    &[vk::Viewport {
+                        x: 0.0,
+                        y: 0.0,
+                        width: chain.extent.width as f32,
+                        height: chain.extent.height as f32,
+                        min_depth: 0.0,
+                        max_depth: 1.0,
+                    }],
+                );
+                device.cmd_set_scissor(self.command, 0, &[area]);
+                device.cmd_bind_vertex_buffers(self.command, 0, &[scene.vertices.handle], &[0]);
+                device.cmd_bind_index_buffer(
+                    self.command,
+                    scene.indices.handle,
+                    0,
+                    vk::IndexType::UINT32,
+                );
+                for draw in &scene.draws {
+                    let push = Push {
+                        view_projection: self.view_projection,
+                        base_color: draw.base_color,
+                        encode_srgb: u32::from(chain.encode_srgb),
+                        padding: [0; 3],
+                    };
+                    let bytes = std::slice::from_raw_parts(
+                        (&push as *const Push).cast::<u8>(),
+                        std::mem::size_of::<Push>(),
+                    );
+                    device.cmd_push_constants(
+                        self.command,
+                        pipeline.layout,
+                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                        0,
+                        bytes,
+                    );
+                    device.cmd_draw_indexed(
+                        self.command,
+                        draw.index_count,
+                        1,
+                        draw.index_start,
+                        0,
+                        0,
+                    );
+                }
+            } else {
+                // Visible clear marker only until a real scene has been imported.
+                let span = chain.extent.width.min(chain.extent.height) / 4;
+                let thickness = (span / 4).max(1);
+                let cx = chain.extent.width / 2;
+                let cy = chain.extent.height / 2;
+                let rects = [
+                    vk::ClearRect {
+                        rect: vk::Rect2D {
+                            offset: vk::Offset2D {
+                                x: (cx - span / 2) as i32,
+                                y: (cy - thickness / 2) as i32,
+                            },
+                            extent: vk::Extent2D {
+                                width: span,
+                                height: thickness,
+                            },
                         },
-                        extent: vk::Extent2D {
-                            width: span,
-                            height: thickness,
-                        },
+                        base_array_layer: 0,
+                        layer_count: 1,
                     },
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
-                vk::ClearRect {
-                    rect: vk::Rect2D {
-                        offset: vk::Offset2D {
-                            x: (cx - thickness / 2) as i32,
-                            y: (cy - span / 2) as i32,
+                    vk::ClearRect {
+                        rect: vk::Rect2D {
+                            offset: vk::Offset2D {
+                                x: (cx - thickness / 2) as i32,
+                                y: (cy - span / 2) as i32,
+                            },
+                            extent: vk::Extent2D {
+                                width: thickness,
+                                height: span,
+                            },
                         },
-                        extent: vk::Extent2D {
-                            width: thickness,
-                            height: span,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    },
+                ];
+                let mark = [vk::ClearAttachment::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .color_attachment(0)
+                    .clear_value(vk::ClearValue {
+                        color: vk::ClearColorValue {
+                            float32: [0.9, 0.015, 0.035, 1.0],
                         },
-                    },
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
-            ];
-            let mark = [vk::ClearAttachment::default()
-                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                .color_attachment(0)
-                .clear_value(vk::ClearValue {
-                    color: vk::ClearColorValue {
-                        float32: [0.9, 0.015, 0.035, 1.0],
-                    },
-                })];
-            device.cmd_clear_attachments(self.command, &mark, &rects);
+                    })];
+                device.cmd_clear_attachments(self.command, &mark, &rects);
+            }
             device.cmd_end_render_pass(self.command);
             device.end_command_buffer(self.command)?;
             let waits = [self.acquired];
@@ -226,6 +332,9 @@ impl Renderer {
                 Ok(changed) => {
                     self.presentation_pending = true;
                     self.frames += 1;
+                    if self.scene.is_some() {
+                        self.mesh_frames += 1;
+                    }
                     if suboptimal || changed {
                         Ok(FrameResult::Recreate)
                     } else {
@@ -248,6 +357,7 @@ impl Drop for Renderer {
             eprintln!("GPU shutdown wait: {error}");
         }
         self.swapchain = None;
+        self.scene = None;
         // SAFETY: All queued work and presentation payloads were retired above;
         // on device loss Vulkan allows destruction. Partial-init handles may be null.
         unsafe {

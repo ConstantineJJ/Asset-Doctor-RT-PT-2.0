@@ -2,8 +2,11 @@
 
 pub mod context;
 mod gpu;
+mod pipeline;
 pub mod presentation;
 pub mod renderer;
+mod resources;
+mod scene;
 mod swapchain;
 pub use gpu::SurfaceTarget;
 

@@ -1,4 +1,5 @@
 use crate::{SurfaceSize, context::GpuResult, gpu::Gpu, presentation};
+use crate::{pipeline::MeshPipeline, resources::DepthTarget};
 use ash::vk;
 use std::sync::Arc;
 
@@ -9,6 +10,9 @@ pub(crate) struct Swapchain {
     pub pass: vk::RenderPass,
     pub framebuffers: Vec<vk::Framebuffer>,
     pub finished: Vec<vk::Semaphore>,
+    pub pipeline: Option<MeshPipeline>,
+    pub encode_srgb: bool,
+    depth: Option<DepthTarget>,
     views: Vec<vk::ImageView>,
     gpu: Arc<Gpu>,
 }
@@ -56,6 +60,12 @@ impl Swapchain {
                 pass: vk::RenderPass::null(),
                 framebuffers: vec![],
                 finished: vec![],
+                pipeline: None,
+                encode_srgb: !matches!(
+                    format.format,
+                    vk::Format::B8G8R8A8_SRGB | vk::Format::R8G8B8A8_SRGB
+                ),
+                depth: None,
                 views: vec![],
                 gpu,
             };
@@ -73,28 +83,57 @@ impl Swapchain {
                 .present_mode(vk::PresentModeKHR::FIFO)
                 .clipped(true);
             result.handle = result.loader.create_swapchain(&create, None)?;
-            let attachment = [vk::AttachmentDescription::default()
-                .format(format.format)
-                .samples(vk::SampleCountFlags::TYPE_1)
-                .load_op(vk::AttachmentLoadOp::CLEAR)
-                .store_op(vk::AttachmentStoreOp::STORE)
-                .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-                .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-                .initial_layout(vk::ImageLayout::UNDEFINED)
-                .final_layout(vk::ImageLayout::PRESENT_SRC_KHR)];
+            result.depth = Some(DepthTarget::new(result.gpu.clone(), extent)?);
+            let attachment = [
+                vk::AttachmentDescription::default()
+                    .format(format.format)
+                    .samples(vk::SampleCountFlags::TYPE_1)
+                    .load_op(vk::AttachmentLoadOp::CLEAR)
+                    .store_op(vk::AttachmentStoreOp::STORE)
+                    .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+                    .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+                    .initial_layout(vk::ImageLayout::UNDEFINED)
+                    .final_layout(vk::ImageLayout::PRESENT_SRC_KHR),
+                vk::AttachmentDescription::default()
+                    .format(vk::Format::D32_SFLOAT)
+                    .samples(vk::SampleCountFlags::TYPE_1)
+                    .load_op(vk::AttachmentLoadOp::CLEAR)
+                    .store_op(vk::AttachmentStoreOp::DONT_CARE)
+                    .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+                    .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+                    .initial_layout(vk::ImageLayout::UNDEFINED)
+                    .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL),
+            ];
             let refs = [vk::AttachmentReference {
                 attachment: 0,
                 layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             }];
+            let depth_ref = vk::AttachmentReference {
+                attachment: 1,
+                layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            };
             let subpass = [vk::SubpassDescription::default()
                 .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-                .color_attachments(&refs)];
+                .color_attachments(&refs)
+                .depth_stencil_attachment(&depth_ref)];
             let dependency = [vk::SubpassDependency::default()
                 .src_subpass(vk::SUBPASS_EXTERNAL)
                 .dst_subpass(0)
-                .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-                .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-                .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)];
+                .src_stage_mask(
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                        | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+                        | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                )
+                .dst_stage_mask(
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                        | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+                        | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                )
+                .src_access_mask(vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE)
+                .dst_access_mask(
+                    vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+                        | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                )];
             result.pass = result.gpu.device.create_render_pass(
                 &vk::RenderPassCreateInfo::default()
                     .attachments(&attachment)
@@ -102,6 +141,7 @@ impl Swapchain {
                     .dependencies(&dependency),
                 None,
             )?;
+            result.pipeline = Some(MeshPipeline::new(result.gpu.clone(), result.pass)?);
             for image in result.loader.get_swapchain_images(result.handle)? {
                 let range = vk::ImageSubresourceRange::default()
                     .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -116,7 +156,14 @@ impl Swapchain {
                     None,
                 )?;
                 result.views.push(view);
-                let views = [view];
+                let views = [
+                    view,
+                    result
+                        .depth
+                        .as_ref()
+                        .expect("Depth target created before framebuffer")
+                        .view,
+                ];
                 let framebuffer = result.gpu.device.create_framebuffer(
                     &vk::FramebufferCreateInfo::default()
                         .render_pass(result.pass)
@@ -155,6 +202,7 @@ impl Drop for Swapchain {
             for framebuffer in self.framebuffers.drain(..) {
                 self.gpu.device.destroy_framebuffer(framebuffer, None);
             }
+            self.pipeline = None;
             self.gpu.device.destroy_render_pass(self.pass, None);
             for view in self.views.drain(..) {
                 self.gpu.device.destroy_image_view(view, None);
@@ -162,6 +210,7 @@ impl Drop for Swapchain {
             for semaphore in self.finished.drain(..) {
                 self.gpu.device.destroy_semaphore(semaphore, None);
             }
+            self.depth = None;
             self.loader.destroy_swapchain(self.handle, None);
         }
     }

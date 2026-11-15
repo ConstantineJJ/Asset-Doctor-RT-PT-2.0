@@ -7,7 +7,7 @@ ignore = []
 
 [licenses]
 confidence-threshold = 0.93
-allow = ["MIT", "Apache-2.0", "ISC"]
+allow = ["MIT", "Apache-2.0", "ISC", "Zlib", "BSD-3-Clause", "Unicode-3.0"]
 
 [licenses.private]
 ignore = true
@@ -16,6 +16,7 @@ ignore = true
 multiple-versions = "deny"
 wildcards = "deny"
 skip = [
+    { crate = "syn@2.0.119", reason = "gltf-derive 1.4.1 and zerocopy-derive 0.8.63 require syn 2; current serde_derive/thiserror-impl require syn 3. Build-time proc macros only. Recheck with next upstream update." },
     { crate = "miniz_oxide@0.8.9", reason = "png 0.18.1 uses miniz 0.8 directly; its flate2 1.1.11 dependency uses 0.9. Both are upstream constraints, not duplicate domain abstractions. Recheck with next png update." },
 ]
 
