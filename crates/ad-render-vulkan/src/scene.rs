@@ -10,7 +10,7 @@ pub(crate) struct GpuDraw {
     pub base_color: [f32; 4],
     pub metallic_roughness: [f32; 2],
     pub alpha_cutoff: Option<f32>,
-    pub texture_slot: usize,
+    pub texture_slots: [usize; 2],
 }
 
 pub(crate) struct GpuScene {
@@ -18,11 +18,13 @@ pub(crate) struct GpuScene {
     pub normals: Buffer,
     pub indices: Buffer,
     pub uvs: Buffer,
+    pub metallic_roughness_uvs: Buffer,
     pub colors: Buffer,
     pub textures: TextureBindings,
     pub draws: Vec<GpuDraw>,
     pub document_id: DocumentId,
     pub revision: u64,
+    pub has_mr_maps: bool,
 }
 impl GpuScene {
     pub fn new(gpu: Arc<Gpu>, snapshot: &GeometrySnapshot) -> GpuResult<Self> {
@@ -31,6 +33,12 @@ impl GpuScene {
             || snapshot.draws.is_empty()
             || snapshot.draws.len() > ImportLimits::default().draws
             || snapshot.uvs.len() != snapshot.positions.len()
+            || snapshot.metallic_roughness_uvs.len() != snapshot.positions.len()
+            || snapshot
+                .metallic_roughness_uvs
+                .iter()
+                .flatten()
+                .any(|v| !v.is_finite())
             || snapshot.colors.len() != snapshot.positions.len()
             || snapshot.normals.len() != snapshot.positions.len()
             || snapshot.normals.iter().flatten().any(|v| !v.is_finite())
@@ -75,7 +83,7 @@ impl GpuScene {
         }
         // SAFETY: Arrays contain only initialized f32/u32 values, with no padding.
         // Slices borrow the immutable snapshot through the synchronous copy.
-        let (vertices, indices, uvs, colors, normals) = unsafe {
+        let (vertices, indices, uvs, colors, normals, metallic_roughness_uvs) = unsafe {
             (
                 std::slice::from_raw_parts(
                     snapshot.positions.as_ptr().cast::<u8>(),
@@ -97,6 +105,10 @@ impl GpuScene {
                     snapshot.normals.as_ptr().cast::<u8>(),
                     snapshot.normals.len() * 12,
                 ),
+                std::slice::from_raw_parts(
+                    snapshot.metallic_roughness_uvs.as_ptr().cast::<u8>(),
+                    snapshot.metallic_roughness_uvs.len() * 8,
+                ),
             )
         };
         let vertices = Buffer::upload(gpu.clone(), vertices, vk::BufferUsageFlags::VERTEX_BUFFER)?;
@@ -104,6 +116,11 @@ impl GpuScene {
         let uvs = Buffer::upload(gpu.clone(), uvs, vk::BufferUsageFlags::VERTEX_BUFFER)?;
         let colors = Buffer::upload(gpu.clone(), colors, vk::BufferUsageFlags::VERTEX_BUFFER)?;
         let normals = Buffer::upload(gpu.clone(), normals, vk::BufferUsageFlags::VERTEX_BUFFER)?;
+        let metallic_roughness_uvs = Buffer::upload(
+            gpu.clone(),
+            metallic_roughness_uvs,
+            vk::BufferUsageFlags::VERTEX_BUFFER,
+        )?;
         let textures = TextureBindings::new(gpu, &snapshot.draws)?;
         let draws = snapshot
             .draws
@@ -115,7 +132,7 @@ impl GpuScene {
                 base_color: d.base_color,
                 metallic_roughness: d.metallic_roughness,
                 alpha_cutoff: d.alpha_cutoff,
-                texture_slot: textures.draw_slots[i],
+                texture_slots: textures.draw_slots[i],
             })
             .collect();
         Ok(Self {
@@ -123,11 +140,16 @@ impl GpuScene {
             normals,
             indices,
             uvs,
+            metallic_roughness_uvs,
             colors,
             textures,
             draws,
             document_id: snapshot.document_id,
             revision: snapshot.revision,
+            has_mr_maps: snapshot
+                .draws
+                .iter()
+                .any(|d| d.metallic_roughness_texture.is_some()),
         })
     }
 }

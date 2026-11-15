@@ -27,3 +27,11 @@ Two triangle markers exercise missing normals and singular-transform fallback.
 It contains no images; the sphere geometry/normals are shared in the source.
 Use the PBR mode in Summary. This is a mathematical inspection fixture, not a
 calibrated or pixel-matched reference render.
+
+MR_Checker.glb reuses project-authored sphere geometry with one numeric2×2 PNG
+shared by a base-color SRGB use and metallic/roughness linear use. UV0 is constant,
+UV1 varies across the sphere. B/G vary independently of R/A, including alpha0.
+Three materials show unit factors,0.5 factors and MR-only with white base fallback.
+Decoded pixels16bytes; prospective sampled mip storage40bytes across two formats.
+Bad_MR_Image.glb references malformed PNG only from MR materials. Regenerate with
+`python tools/make_mr_fixtures.py` after the sphere generator. No external content.

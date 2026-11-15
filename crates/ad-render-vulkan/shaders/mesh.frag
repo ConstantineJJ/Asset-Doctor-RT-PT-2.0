@@ -3,8 +3,11 @@ layout(location=0) in vec3 world_position;
 layout(location=1) in vec2 uv;
 layout(location=2) in vec4 tint;
 layout(location=3) in vec3 world_normal;
+layout(location=4) in vec2 mr_uv;
 layout(set=0,binding=0) uniform texture2D base_color_image;
 layout(set=0,binding=1) uniform sampler base_color_sampler;
+layout(set=1,binding=0) uniform texture2D metallic_roughness_image;
+layout(set=1,binding=1) uniform sampler metallic_roughness_sampler;
 layout(location=0) out vec4 color;
 layout(push_constant) uniform Push { mat4 view_projection; vec4 base_color; vec4 eye_exposure; vec4 material; vec4 lighting; } pc;
 const float PI=3.14159265359;
@@ -15,7 +18,7 @@ vec3 unit_or(vec3 v,vec3 fallback) {
     vec3 scaled=v/scale;
     return scaled*inversesqrt(dot(scaled,scaled));
 }
-vec3 direct_pbr(vec3 base,vec3 face) {
+vec3 direct_pbr(vec3 base,vec3 face,vec2 mr) {
     vec3 v=unit_or(pc.eye_exposure.xyz-world_position,vec3(0.0,0.0,1.0));
     vec3 n=unit_or(world_normal,unit_or(face,vec3(0.0,1.0,0.0)));
     if (dot(n,v)<0.0) {n=-n;}
@@ -25,8 +28,8 @@ vec3 direct_pbr(vec3 base,vec3 face) {
     float nl=max(dot(n,l),0.0);
     float nh=max(dot(n,h),0.0);
     float vh=clamp(dot(v,h),0.0,1.0);
-    float metal=pc.material.x;
-    float rough=max(pc.material.y,0.045);
+    float metal=mr.x;
+    float rough=max(mr.y,0.045);
     float alpha=rough*rough;
     float a2=alpha*alpha;
     vec3 f0=mix(vec3(0.04),base,metal);
@@ -51,7 +54,14 @@ void main() {
     if ((flags&2u)!=0u) {base*=texture(sampler2D(base_color_image,base_color_sampler),uv);}
     if (pc.material.z>=0.0 && base.a<pc.material.z) {discard;}
     vec3 linear=max(base.rgb*light,vec3(0.0));
-    if ((flags&1u)!=0u) {linear=direct_pbr(base.rgb,face);}
+    if ((flags&1u)!=0u) {
+        vec2 mr=pc.material.xy;
+        if ((flags&8u)!=0u) {
+            // glTF data texture is linear: B=metal, G=roughness; ignore R/A.
+            mr*=texture(sampler2D(metallic_roughness_image,metallic_roughness_sampler),mr_uv).bg;
+        }
+        linear=direct_pbr(base.rgb,face,mr);
+    }
     vec3 display=linear;
     if ((flags&4u)!=0u) {
         display=mix(12.92*linear,1.055*pow(linear,vec3(1.0/2.4))-0.055,greaterThan(linear,vec3(0.0031308)));

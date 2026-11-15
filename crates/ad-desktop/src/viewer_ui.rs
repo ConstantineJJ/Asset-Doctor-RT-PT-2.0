@@ -19,6 +19,7 @@ pub struct ViewerUi {
     pub show_tree: bool,
     pub show_summary: bool,
     pub textures: bool,
+    pub mr_maps: bool,
     pub lighting: ViewLighting,
     help: bool,
     pub tree: SceneTree,
@@ -29,6 +30,8 @@ pub struct ViewerUi {
     open_rect: egui::Rect,
     #[cfg(test)]
     reset_lighting_rect: egui::Rect,
+    #[cfg(test)]
+    mr_maps_rect: egui::Rect,
 }
 impl Default for ViewerUi {
     fn default() -> Self {
@@ -46,6 +49,7 @@ impl Default for ViewerUi {
             show_tree: false,
             show_summary: true,
             textures: true,
+            mr_maps: true,
             lighting: ViewLighting::default(),
             help: false,
             tree: SceneTree::default(),
@@ -56,6 +60,8 @@ impl Default for ViewerUi {
             open_rect: egui::Rect::NOTHING,
             #[cfg(test)]
             reset_lighting_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            mr_maps_rect: egui::Rect::NOTHING,
         }
     }
 }
@@ -205,6 +211,9 @@ impl ViewerUi {
                             ui.selectable_value(&mut self.lighting.mode,ShadingMode::DirectPbr,"PBR · направленный свет");
                         });
                         if self.lighting.mode==ShadingMode::DirectPbr {
+                            let _maps=ui.checkbox(&mut self.mr_maps,"Карты металла/шероховатости").on_hover_text("Включить карты параметров материала. Не зависит от переключателя базовых текстур; исходник не изменяется.");
+                            #[cfg(test)]
+                            {self.mr_maps_rect=_maps.rect;}
                             ui.add(egui::Slider::new(&mut self.lighting.exposure_ev,-6.0..=6.0).text("Экспозиция · EV"));
                             ui.add(egui::Slider::new(&mut self.lighting.key,0.0..=8.0).text("Основной свет"));
                             ui.add(egui::Slider::new(&mut self.lighting.fill,0.0..=1.0).text("Заполнение"));
@@ -212,14 +221,14 @@ impl ViewerUi {
                             #[cfg(test)]
                             {self.reset_lighting_rect=reset.rect;}
                             if reset.clicked() {self.lighting=ViewLighting{mode:ShadingMode::DirectPbr,..Default::default()};}
-                            ui.weak("Параметры материалов без PBR-карт. Заполнение приблизительное; без HDR-окружения и теней.");
+                            ui.weak("Металл и шероховатость: параметры × карты. Заполнение приблизительное; без HDR-окружения и теней.");
                         }
                         if let Some(asset)=asset {
                             ui.strong(asset.document.name());
                             ui.label(format!("Исходный файл: {:.2} МиБ",asset.document.source().len() as f64/1048576.));
                             ui.label(format!("Узлов в документе: {}",asset.document.nodes().len()));
                             let textures=asset.document.texture_stats();
-                            ui.label(format!("Базовых изображений: {}",textures.images));
+                            ui.label(format!("Изображений материалов: {}",textures.images));
                             ui.label(format!("RGBA с mip-уровнями: {:.2} МиБ",textures.mip_bytes as f64/1048576.));
                             ui.add_space(12.);ui.strong("Отображаемая геометрия");
                             ui.label(format!("Вершины: {}",asset.snapshot.positions.len()));
@@ -263,7 +272,7 @@ impl ViewerUi {
                 ui.label("F — вписать модель; Esc — отменить загрузку; H — справка.");
                 ui.separator();ui.label("Выбор узла показывает сведения. Подсветка, редактирование и сохранение появятся позднее.");
                 ui.label("В Сводке: базовый вид или PBR с авторскими нормалями, металлом и шероховатостью. Экспозиция и свет меняют только просмотр.");
-                ui.label("Базовые текстуры: встроенные PNG/JPEG до 8 бит/канал. Карты металла/шероховатости, нормалей, окклюзии и свечения, HDR-окружение и тени пока не отображаются. Обе стороны граней видимы.");
+                ui.label("Базовые текстуры и карты металла/шероховатости: встроенные PNG/JPEG до 8 бит/канал, с независимыми переключателями. Карты нормалей, окклюзии и свечения, HDR-окружение и тени пока не отображаются. Обе стороны граней видимы.");
                 ui.collapsing("Лицензии встроенных шрифтов",|ui| {
                     egui::ScrollArea::vertical().max_height(280.).show(ui,|ui| {
                         ui.label(include_str!("../../../assets/font-licenses.txt"));
@@ -337,6 +346,7 @@ mod tests {
                 fill: 0.8,
             },
             textures: false,
+            mr_maps: false,
             ..Default::default()
         };
         let source = std::sync::Arc::<[u8]>::from(
@@ -386,8 +396,37 @@ mod tests {
             }
         );
         assert!(!ui.textures);
+        assert!(!ui.mr_maps);
         assert!(std::sync::Arc::ptr_eq(asset.document.source(), &source));
         assert_eq!(asset.snapshot.fallback_normal_vertices, 6);
+    }
+    #[test]
+    fn mr_switch_is_independent_of_color_texture_sampling() {
+        let mut ui = ViewerUi {
+            lighting: ViewLighting {
+                mode: ShadingMode::DirectPbr,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (out, _, _) = ui.layout(raw(1200., 1000.), None, false);
+        out.drop_without_applying_deltas();
+        let position = ui.mr_maps_rect.center();
+        for pressed in [true, false] {
+            let mut input = raw(1200., 1000.);
+            input.events = vec![
+                egui::Event::PointerMoved(position),
+                egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::default(),
+                },
+            ];
+            let (out, _, _) = ui.layout(input, None, false);
+            out.drop_without_applying_deltas();
+        }
+        assert!(!ui.mr_maps && ui.textures);
     }
     #[test]
     fn open_button_emits_one_action_on_release() {

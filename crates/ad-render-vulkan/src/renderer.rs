@@ -32,11 +32,13 @@ pub struct Renderer {
     overlay: Option<Overlay>,
     view_projection: [[f32; 4]; 4],
     sample_textures: bool,
+    sample_mr_maps: bool,
     eye: [f32; 3],
     lighting: ViewLighting,
     pub frames: u64,
     pub mesh_frames: u64,
     pub pbr_frames: u64,
+    pub mr_frames: u64,
     pub recreations: u64,
 }
 
@@ -58,6 +60,7 @@ impl Renderer {
             presentation_pending: false,
             scene: None,
             sample_textures: true,
+            sample_mr_maps: true,
             eye: [0., 0., 4.],
             lighting: ViewLighting::default(),
             overlay: None,
@@ -70,6 +73,7 @@ impl Renderer {
             frames: 0,
             mesh_frames: 0,
             pbr_frames: 0,
+            mr_frames: 0,
             recreations: 0,
         };
         // SAFETY: Live device, valid queue family. Self owns every successful
@@ -143,6 +147,9 @@ impl Renderer {
     }
     pub fn set_textures_enabled(&mut self, enabled: bool) {
         self.sample_textures = enabled;
+    }
+    pub fn set_mr_maps_enabled(&mut self, enabled: bool) {
+        self.sample_mr_maps = enabled;
     }
 
     fn wait_idle(&mut self) -> GpuResult<()> {
@@ -319,8 +326,9 @@ impl Renderer {
                         scene.uvs.handle,
                         scene.colors.handle,
                         scene.normals.handle,
+                        scene.metallic_roughness_uvs.handle,
                     ],
-                    &[0, 0, 0, 0],
+                    &[0, 0, 0, 0, 0],
                 );
                 device.cmd_bind_index_buffer(
                     self.command,
@@ -347,7 +355,11 @@ impl Renderer {
                         lighting: [
                             self.lighting.key,
                             self.lighting.fill,
-                            self.lighting.flags(self.sample_textures, chain.encode_srgb),
+                            self.lighting.flags(
+                                self.sample_textures,
+                                self.sample_mr_maps,
+                                chain.encode_srgb,
+                            ),
                             0.,
                         ],
                     };
@@ -356,7 +368,10 @@ impl Renderer {
                         vk::PipelineBindPoint::GRAPHICS,
                         pipeline.layout,
                         0,
-                        &[scene.textures.sets[draw.texture_slot]],
+                        &[
+                            scene.textures.sets[draw.texture_slots[0]],
+                            scene.textures.sets[draw.texture_slots[1]],
+                        ],
                         &[],
                     );
                     let bytes = std::slice::from_raw_parts(
@@ -464,6 +479,11 @@ impl Renderer {
                         self.mesh_frames += 1;
                         if self.lighting.mode == ShadingMode::DirectPbr {
                             self.pbr_frames += 1;
+                            if self.sample_mr_maps
+                                && self.scene.as_ref().is_some_and(|scene| scene.has_mr_maps)
+                            {
+                                self.mr_frames += 1;
+                            }
                         }
                     }
                     if suboptimal || changed {

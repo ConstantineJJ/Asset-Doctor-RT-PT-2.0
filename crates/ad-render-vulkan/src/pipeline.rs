@@ -67,7 +67,10 @@ impl MeshPipeline {
             pipeline.layout = pipeline.gpu.device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
                     .push_constant_ranges(&ranges)
-                    .set_layouts(&[pipeline.texture_layout.handle]),
+                    .set_layouts(&[
+                        pipeline.texture_layout.handle,
+                        pipeline.texture_layout.handle,
+                    ]),
                 None,
             )?;
             let stages = [
@@ -101,6 +104,11 @@ impl MeshPipeline {
                     stride: 12,
                     input_rate: vk::VertexInputRate::VERTEX,
                 },
+                vk::VertexInputBindingDescription {
+                    binding: 4,
+                    stride: 8,
+                    input_rate: vk::VertexInputRate::VERTEX,
+                },
             ];
             let attributes = [
                 vk::VertexInputAttributeDescription {
@@ -125,6 +133,12 @@ impl MeshPipeline {
                     location: 3,
                     binding: 3,
                     format: vk::Format::R32G32B32_SFLOAT,
+                    offset: 0,
+                },
+                vk::VertexInputAttributeDescription {
+                    location: 4,
+                    binding: 4,
+                    format: vk::Format::R32G32_SFLOAT,
                     offset: 0,
                 },
             ];

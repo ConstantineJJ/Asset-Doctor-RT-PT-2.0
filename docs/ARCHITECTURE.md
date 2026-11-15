@@ -44,6 +44,13 @@ stay outside the document. Vulkan consumes four plain vertex streams and a128-by
 camera/material/light push block. These settings neither edit materials nor create
 scene lamps; editable lamps and general lighting contracts remain future work.
 
+ADR-0017 adds a second material channel with its own UV stream. Generic Texture
+keeps decoded image and sampler identity independent of use; admission distinguishes
+SRGB/linear sampled variants while retaining one CPU pixel allocation per image.
+GPU owns separate format uploads and two compatible descriptor sets per draw.
+Session MR sampling is independent of color sampling. Geometry admission56bytes
+per vertex includes both UV streams; prospective mip budgets include both formats.
+
 The owner's advisory v0.1 proposal was reviewed in
 ARCHITECTURE_PROPOSAL_REVIEW.md. Session history and revision-keyed findings are
 application/derived state, not fields that every saved asset must embed. Compare

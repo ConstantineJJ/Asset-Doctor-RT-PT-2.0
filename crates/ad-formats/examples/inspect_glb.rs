@@ -19,15 +19,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let scene = doc.snapshot(limits, &cancel)?;
     let stats = doc.texture_stats();
     println!(
-        "nodes={} vertices={} triangles={} images={} textures={} rgba_bytes={} mip_bytes={} fallback_normal_vertices={}",
+        "nodes={} vertices={} triangles={} images={} sampled_images={} textures={} rgba_bytes={} mip_bytes={} fallback_normal_vertices={} mr_primitives={}",
         doc.nodes().len(),
         scene.positions.len(),
         scene.indices.len() / 3,
         stats.images,
+        stats.sampled_images,
         stats.textures,
         stats.rgba_bytes,
         stats.mip_bytes,
-        scene.fallback_normal_vertices
+        scene.fallback_normal_vertices,
+        scene
+            .draws
+            .iter()
+            .filter(|d| d.metallic_roughness_texture.is_some())
+            .count()
     );
     Ok(())
 }

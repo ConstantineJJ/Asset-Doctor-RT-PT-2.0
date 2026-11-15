@@ -65,3 +65,21 @@ Native static/color/Birch0 import/lifecycle checks passed with 0 validation erro
 Color smoke is tools/import-smoke.ps1 -Scene color -SynchronizationValidation.
 Image orientation/visual color/mask appearance, blend/culling/PBR, fault injection
 and peak memory remain separate unverified checks. See BASE_COLOR_REPORT.
+
+## Direct PBR and MR textures — bounded integration completed
+
+ADR-0016 adds inverse-transpose normal derivation, source factors, actual camera eye,
+finite lighting controls and128-byte push layout checks. ADR-0017 adds independent
+MR UVs, linear B/G sampling, source sharing and per-transfer mip/count admission.
+Workspace49tests: desktop11/document10/formats18/renderer10. Resource regressions
+were observed RED→GREEN, including refusing a new image before entering its codec
+when sampled variants are exhausted. Actual UI checkbox/reset tests keep MR and
+base-color sampling independent without changing source.
+
+Native MR fixture runs in PBR with maps on/off and in default mode, plus prior
+color/MASK/factor/static/empty UI regressions. Each completed15mesh presents where
+applicable, failed replacement preservation, resize/minimize/restore/native close
+and0 validation errors. Real RedCatCar and heavy Violet_Vanguard2 also passed in
+PBR with MR enabled and originalSHA256 unchanged. See MR_TEXTURE_REPORT for exact
+counts and requested synchronization-validation setting. Frame counters and clean
+validation do not prove pixel accuracy or physical-input/visual acceptance.

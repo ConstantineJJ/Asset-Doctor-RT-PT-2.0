@@ -1,5 +1,13 @@
 # Project pulse
 
+## 2026-11-15 — Metallic/roughness map rendering
+
+- Vulkan now samples linear UNORM MR maps independently of SRGB base color, multiplies material factors by B/G and ignores R/A. Each channel uses its declared UV stream/sampler; two compatible descriptor sets share source texture identity while format uploads remain separate. White fallbacks retain MR-only and factor-only material behavior.128-byte push layout unchanged. Session-only MR switch is independent of base-texture sampling and survives lighting reset; default view remains unchanged.
+- Final49tests(11desktop/10document/18formats/10renderer), fmt, all-target clippy warnings denied, Windows release workspace build and cargo-deny advisories/bans/licenses/sources PASS. Source-only review found no remaining concrete GPU blocker. New tests cover descriptor identity/fallback plan and actual MR checkbox/reset. No package/version/license-policy change; dependency-purpose entry updated. Release EXE7,694,848bytes.
+- Native final app: MR_Checker PBR maps on/off and default; color/MASK PBR, factors PBR, static default and empty UI.15mesh presents per imported scene; maps-on MR15/mapsoff0/default0; actual oneSRGB+oneUNORM upload for one decoded fixture image,40mipbytes. Every run kept prior scene after malformed replacement and passed resize/minimize/restore/native close with0validation errors (empty UI has no replacement).
+- Read-only real checks: RedCatCar_model_60Ktris_Last31471vertices/46731triangles,2decoded/uploaded images,128MiB RGBA/170.67MiB mips; Violet_Vanguard2852516vertices/1559826triangles,2images/106.67MiB mips. Both PBR+MR15presents, malformed MR replacement retained CPU/GPU scene, full lifecycle0errors, originalSHA256 unchanged. User models/images not vendored. Native logs artifacts/release-import-smoke*mr*.*, redcat-mr-smoke.*, vanguard-mr-smoke.* plus regression logs.
+- Import native runs requested child VK_LAYER_VALIDATE_SYNC=1, effective setting not independently queried; empty UI used ordinary validation. Self-closing windows only, no computer input/capture; windows closed. Counters/validation establish execution/lifetime, not pixel accuracy or performance. Normal/occlusion/emissive maps, HDR/shadows, BLEND/editing remain open. Next: owner MR visual check, then normal-map/tangent contracts. Legacy/report files unchanged; local commits only, no push.
+
 ## 2026-11-15 — MR texture data/admission increment
 
 - Owner continued after a PBR car screenshot showing exposure/key controls. Recorded as owner evidence for that example, not full map/BRDF acceptance. Relevant read-only map behavior audit and ADR-0017 accepted.

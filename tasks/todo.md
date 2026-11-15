@@ -35,6 +35,11 @@
 - [x] E2: Optional Vulkan direct PBR, actual eye, session-only exposure/key/fill/reset; base-color mode remains default.43 tests, fmt/clippy/release/dependency checks PASS.
 - [x] E3: Native factors/PBR-textured/base-color/static/Birch0 replacement+lifecycle smoke;15 mesh presents each,0 validation errors, no capture or computer input.
 - [ ] E4: Owner visual review of PBR response; calibrated BRDF/pixel comparison, GPU fault injection and memory/performance remain unverified.
-- [ ] Next raster increment: metallic/roughness and normal-map contracts/audit before adding material texture channels; keep UI/renderer/domain separate.
+- [x] F0: Relevant MR behavior audit and ADR-0017 transfer/channel/UV/admission contracts.
+- [x] F1: Preserve embedded MR images and independent UVs; shared CPU source with sampled-variant budgets. Review predecode-count issue reproduced/fixed;47tests at data increment.
+- [x] F2: Vulkan linear MR B/G sampling, separate image formats/descriptors/UVs, independent MR switch; factor-only/base-color fallback retained.
+- [x] F3:49tests, fmt/clippy/release/dependency checks; native MR maps on/off/default, prior regressions and RedCat/heavy Vanguard replacement+lifecycle;0errors, original hashes unchanged.
+- [ ] F4: Owner visual acceptance of new MR response, pixel/channel/LOD calibration, peak memory and fault injection remain open.
+- [ ] Next raster increment: bounded tangent/normal-map audit/contracts, source transfer/handedness and UV selection before implementation.
 - [ ] Later: environment/shadows/full PBR, diagnostics, Heal, manual rig/animation, unified Compare, verified export and installer.
 - [ ] Later: RT → PT → Mixamo rights check/autorig/retargeting.

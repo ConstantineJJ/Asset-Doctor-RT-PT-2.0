@@ -4,8 +4,8 @@ use crate::{
     resources::{Buffer, memory_type},
 };
 use ad_document::{
-    DrawRange, Filter, ImportLimits, Mipmap, Texture, TextureAdmission, TextureImage,
-    TextureSampler, Wrap,
+    DrawRange, Filter, ImportLimits, Mipmap, Texture, TextureAdmission, TextureEncoding,
+    TextureImage, TextureSampler, TextureStats, Wrap,
 };
 use ash::vk;
 use std::{collections::HashMap, sync::Arc};
@@ -151,7 +151,7 @@ fn barrier(
     }
 }
 impl GpuImage {
-    fn upload(gpu: Arc<Gpu>, data: &TextureImage) -> GpuResult<Self> {
+    fn upload(gpu: Arc<Gpu>, data: &TextureImage, encoding: TextureEncoding) -> GpuResult<Self> {
         data.validate(ImportLimits::default())?;
         let staging = Buffer::upload(gpu.clone(), &data.rgba, vk::BufferUsageFlags::TRANSFER_SRC)?;
         let mut result = Self {
@@ -165,7 +165,10 @@ impl GpuImage {
         // SAFETY: Validated nonzero dimensions/byte length; every created handle
         // is owned before the next fallible call. Upload guard retires GPU copies.
         unsafe {
-            let format = vk::Format::R8G8B8A8_SRGB;
+            let format = match encoding {
+                TextureEncoding::Srgb => vk::Format::R8G8B8A8_SRGB,
+                TextureEncoding::Linear => vk::Format::R8G8B8A8_UNORM,
+            };
             let props = result
                 .gpu
                 .surface
@@ -177,9 +180,10 @@ impl GpuImage {
                 | vk::FormatFeatureFlags::BLIT_SRC
                 | vk::FormatFeatureFlags::BLIT_DST;
             if !props.optimal_tiling_features.contains(required) {
-                return Err(
-                    "GPU does not support sampled SRGB images with linear mip generation".into(),
-                );
+                return Err(format!(
+                    "GPU does not support {format:?} sampling with linear mip generation"
+                )
+                .into());
             }
             result.image = device.create_image(
                 &vk::ImageCreateInfo::default()
@@ -431,9 +435,58 @@ impl Drop for Sampler {
     }
 }
 
+/// CPU-side plan shares source identity while keeping transfer roles independent.
+struct TexturePlan {
+    textures: Vec<(Arc<Texture>, TextureEncoding)>,
+    draw_slots: Vec<[usize; 2]>,
+    stats: TextureStats,
+}
+impl TexturePlan {
+    fn new(draws: &[DrawRange]) -> GpuResult<Self> {
+        let mut admission = TextureAdmission::default();
+        let white = Arc::new(Texture {
+            image: Arc::new(TextureImage {
+                width: 1,
+                height: 1,
+                rgba: Arc::from([255; 4]),
+            }),
+            sampler: TextureSampler::default(),
+        });
+        let mut textures = vec![
+            (white.clone(), TextureEncoding::Srgb),
+            (white, TextureEncoding::Linear),
+        ];
+        let mut lookup = HashMap::new();
+        let mut draw_slots = Vec::with_capacity(draws.len());
+        for draw in draws {
+            let mut slots = [0, 1];
+            for (slot, (texture, encoding)) in slots.iter_mut().zip([
+                (&draw.color_texture, TextureEncoding::Srgb),
+                (&draw.metallic_roughness_texture, TextureEncoding::Linear),
+            ]) {
+                if let Some(texture) = texture {
+                    admission.admit(texture, encoding, ImportLimits::default())?;
+                    *slot = *lookup
+                        .entry((Arc::as_ptr(texture) as usize, encoding))
+                        .or_insert_with(|| {
+                            textures.push((texture.clone(), encoding));
+                            textures.len() - 1
+                        });
+                }
+            }
+            draw_slots.push(slots);
+        }
+        Ok(Self {
+            textures,
+            draw_slots,
+            stats: admission.stats,
+        })
+    }
+}
+
 pub(crate) struct TextureBindings {
     pub sets: Vec<vk::DescriptorSet>,
-    pub draw_slots: Vec<usize>,
+    pub draw_slots: Vec<[usize; 2]>,
     pool: vk::DescriptorPool,
     layout: TextureLayout,
     images: Vec<GpuImage>,
@@ -442,35 +495,11 @@ pub(crate) struct TextureBindings {
 }
 impl TextureBindings {
     pub fn new(gpu: Arc<Gpu>, draws: &[DrawRange]) -> GpuResult<Self> {
-        let mut admission = TextureAdmission::default();
-        let mut textures = vec![Arc::new(Texture {
-            image: Arc::new(TextureImage {
-                width: 1,
-                height: 1,
-                rgba: Arc::from([255; 4]),
-            }),
-            sampler: TextureSampler::default(),
-        })];
-        let mut lookup = HashMap::new();
-        let mut draw_slots = Vec::with_capacity(draws.len());
-        for draw in draws {
-            let slot = if let Some(texture) = &draw.color_texture {
-                admission.admit(
-                    texture,
-                    ad_document::TextureEncoding::Srgb,
-                    ImportLimits::default(),
-                )?;
-                *lookup
-                    .entry(Arc::as_ptr(texture) as usize)
-                    .or_insert_with(|| {
-                        textures.push(texture.clone());
-                        textures.len() - 1
-                    })
-            } else {
-                0
-            };
-            draw_slots.push(slot);
-        }
+        let TexturePlan {
+            textures,
+            draw_slots,
+            stats,
+        } = TexturePlan::new(draws)?;
         let mut result = Self {
             sets: vec![],
             draw_slots,
@@ -482,15 +511,17 @@ impl TextureBindings {
         };
         let mut images = HashMap::new();
         let mut image_slots = Vec::with_capacity(textures.len());
-        for texture in &textures {
-            let key = Arc::as_ptr(&texture.image) as usize;
+        for (texture, encoding) in &textures {
+            let key = (Arc::as_ptr(&texture.image) as usize, *encoding);
             let slot = if let Some(slot) = images.get(&key) {
                 *slot
             } else {
                 let slot = result.images.len();
-                result
-                    .images
-                    .push(GpuImage::upload(result.gpu.clone(), &texture.image)?);
+                result.images.push(GpuImage::upload(
+                    result.gpu.clone(),
+                    &texture.image,
+                    *encoding,
+                )?);
                 images.insert(key, slot);
                 slot
             };
@@ -521,7 +552,7 @@ impl TextureBindings {
                     .descriptor_pool(result.pool)
                     .set_layouts(&layouts),
             )?;
-            for (index, texture) in textures.iter().enumerate() {
+            for (index, (texture, _)) in textures.iter().enumerate() {
                 let image = &result.images[image_slots[index]];
                 let sampler = Sampler::new(result.gpu.clone(), texture.sampler, image.mips)?;
                 let info = [vk::DescriptorImageInfo {
@@ -548,8 +579,21 @@ impl TextureBindings {
             }
         }
         eprintln!(
-            "gpu_color_images={} color_textures={} mip_bytes={}",
-            admission.stats.images, admission.stats.textures, admission.stats.mip_bytes
+            "gpu_material_images={} material_textures={} mip_bytes={} decoded_images={} srgb_images={} linear_images={}",
+            result.images.len() - 2,
+            stats.textures,
+            stats.mip_bytes,
+            stats.images,
+            images
+                .keys()
+                .filter(|(_, encoding)| *encoding == TextureEncoding::Srgb)
+                .count()
+                - 1,
+            images
+                .keys()
+                .filter(|(_, encoding)| *encoding == TextureEncoding::Linear)
+                .count()
+                - 1
         );
         Ok(result)
     }
@@ -560,5 +604,52 @@ impl Drop for TextureBindings {
         unsafe {
             self.gpu.device.destroy_descriptor_pool(self.pool, None);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn descriptor_plan_shares_sources_but_separates_transfer_roles_and_white_fallbacks() {
+        let texture = Arc::new(Texture {
+            image: Arc::new(TextureImage {
+                width: 2,
+                height: 2,
+                rgba: Arc::from([128; 16]),
+            }),
+            sampler: TextureSampler::default(),
+        });
+        let draw = |color, mr| DrawRange {
+            index_start: 0,
+            index_count: 3,
+            base_color: [1.; 4],
+            metallic_roughness: [1.; 2],
+            color_texture: color,
+            metallic_roughness_texture: mr,
+            alpha_cutoff: None,
+        };
+        let plan = TexturePlan::new(&[
+            draw(Some(texture.clone()), Some(texture.clone())),
+            draw(Some(texture.clone()), None),
+            draw(None, Some(texture)),
+        ])
+        .unwrap();
+        assert_eq!(plan.draw_slots, [[2, 3], [2, 1], [0, 3]]);
+        assert_eq!(plan.textures.len(), 4);
+        assert_eq!(plan.textures[2].1, TextureEncoding::Srgb);
+        assert_eq!(plan.textures[3].1, TextureEncoding::Linear);
+        assert!(Arc::ptr_eq(
+            &plan.textures[2].0.image,
+            &plan.textures[3].0.image
+        ));
+        assert_eq!(
+            (
+                plan.stats.images,
+                plan.stats.sampled_images,
+                plan.stats.mip_bytes
+            ),
+            (1, 2, 40)
+        );
     }
 }

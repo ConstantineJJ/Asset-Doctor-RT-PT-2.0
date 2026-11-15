@@ -26,11 +26,12 @@ fn main() {
             flags: naga::back::spv::WriterFlags::LABEL_VARYINGS,
             fake_missing_bindings: false,
             binding_map: (0..2)
-                .map(|binding| {
+                .flat_map(|group| (0..2).map(move |binding| (group, binding)))
+                .map(|(group, binding)| {
                     (
-                        naga::ResourceBinding { group: 0, binding },
+                        naga::ResourceBinding { group, binding },
                         naga::back::spv::BindingInfo {
-                            descriptor_set: 0,
+                            descriptor_set: group,
                             binding,
                             ..Default::default()
                         },
