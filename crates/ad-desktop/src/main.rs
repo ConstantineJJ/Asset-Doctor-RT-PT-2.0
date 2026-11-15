@@ -305,6 +305,7 @@ impl App {
         let renderer = self.renderer.as_mut().expect("Drawable renderer checked");
         let (width, height) = frame.scene.map_or((1, 1), |r| (r.width, r.height));
         renderer.set_view_projection(self.camera.matrix(width, height))?;
+        renderer.set_textures_enabled(self.ui.textures);
         let result = renderer.draw_ui(&mut frame)?;
         if result == FrameResult::Recreate {
             let size = window.inner_size();

@@ -17,6 +17,7 @@ pub struct ViewerUi {
     input: Option<egui_winit::State>,
     pub show_tree: bool,
     pub show_summary: bool,
+    pub textures: bool,
     help: bool,
     pub tree: SceneTree,
     scene: egui::Rect,
@@ -40,6 +41,7 @@ impl Default for ViewerUi {
             input: None,
             show_tree: false,
             show_summary: true,
+            textures: true,
             help: false,
             tree: SceneTree::default(),
             scene: egui::Rect::NOTHING,
@@ -190,10 +192,14 @@ impl ViewerUi {
                 egui::Panel::right("summary").default_size(260.).min_size(220.).max_size(380.).show(root,|ui| {
                     egui::ScrollArea::vertical().show(ui,|ui| {
                         ui.heading("Сводка");ui.separator();
+                        ui.checkbox(&mut self.textures,"Базовые текстуры").on_hover_text("Включить выборку встроенных PNG/JPEG. Исходные материалы не изменяются.");
                         if let Some(asset)=asset {
                             ui.strong(asset.document.name());
                             ui.label(format!("Исходный файл: {:.2} МиБ",asset.document.source().len() as f64/1048576.));
                             ui.label(format!("Узлов в документе: {}",asset.document.nodes().len()));
+                            let textures=asset.document.texture_stats();
+                            ui.label(format!("Базовых изображений: {}",textures.images));
+                            ui.label(format!("RGBA с mip-уровнями: {:.2} МиБ",textures.mip_bytes as f64/1048576.));
                             ui.add_space(12.);ui.strong("Отображаемая геометрия");
                             ui.label(format!("Вершины: {}",asset.snapshot.positions.len()));
                             ui.label(format!("Треугольники: {}",asset.snapshot.indices.len()/3));
@@ -212,7 +218,7 @@ impl ViewerUi {
                                 });
                             }
                         } else {ui.label("Откройте модель, чтобы увидеть её состав и размеры.");}
-                        ui.add_space(16.);ui.separator();ui.weak("Статические GLB. Текстуры, PBR, скелеты и анимации пока не поддерживаются.");
+                        ui.add_space(16.);ui.separator();ui.weak("Статические GLB: PNG/JPEG, цвета вершин, OPAQUE/MASK. PBR, BLEND, скелеты и анимации пока не поддерживаются.");
                     });
                 });
             }
@@ -231,6 +237,7 @@ impl ViewerUi {
                 ui.label("ЛКМ — вращение; ПКМ / средняя — перемещение; колесо — масштаб.");
                 ui.label("F — вписать модель; Esc — отменить загрузку; H — справка.");
                 ui.separator();ui.label("Выбор узла показывает сведения. Подсветка, редактирование и сохранение появятся позднее.");
+                ui.label("Базовые текстуры: встроенные PNG/JPEG до 8 бит/канал. PBR-карты и освещение появятся позднее.");
                 ui.collapsing("Лицензии встроенных шрифтов",|ui| {
                     egui::ScrollArea::vertical().max_height(280.).show(ui,|ui| {
                         ui.label(include_str!("../../../assets/font-licenses.txt"));

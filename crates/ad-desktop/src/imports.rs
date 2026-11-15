@@ -220,6 +220,18 @@ mod tests {
         let asset = result.result.unwrap();
         assert_eq!(&**asset.document.source(), original);
         assert_eq!(asset.snapshot.indices.len() / 3, 24);
+        imports.request(fixture("Bad_Image.glb"));
+        assert!(completion(&mut imports).result.is_err());
+        imports.request(fixture("Color_Checker.glb"));
+        assert_eq!(
+            completion(&mut imports)
+                .result
+                .unwrap()
+                .document
+                .texture_stats()
+                .images,
+            1
+        );
     }
     #[test]
     fn cancellation_clears_pending_and_blocks_late_publication() {
