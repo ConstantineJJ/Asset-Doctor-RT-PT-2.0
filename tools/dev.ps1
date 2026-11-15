@@ -1,4 +1,4 @@
-param([Parameter(ValueFromRemainingArguments=$true)][string[]]$CargoArgs)
+param([string[]]$Command)
 $ErrorActionPreference='Stop'
 $repo=Split-Path $PSScriptRoot -Parent
 $localTools=Join-Path (Split-Path $repo -Parent) '.toolchain'
@@ -13,4 +13,4 @@ if (Test-Path (Join-Path $localTools 'cargo\bin\cargo.exe')) {
     $env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=Join-Path $gnuBin 'x86_64-w64-mingw32-gcc.exe'
 }
 Push-Location $repo
-try { & cargo @CargoArgs; exit $LASTEXITCODE } finally { Pop-Location }
+try { & cargo @Command; exit $LASTEXITCODE } finally { Pop-Location }

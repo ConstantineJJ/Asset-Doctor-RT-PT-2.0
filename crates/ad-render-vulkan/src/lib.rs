@@ -1,5 +1,7 @@
 //! Isolated GPU experiment. No asset/document ownership or product editing.
 
+pub mod context;
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct SurfaceSize {
     pub width: u32,
@@ -18,8 +20,26 @@ mod tests {
 
     #[test]
     fn minimized_or_zero_width_surface_is_not_drawable() {
-        assert!(!SurfaceSize { width: 1280, height: 0 }.drawable());
-        assert!(!SurfaceSize { width: 0, height: 720 }.drawable());
-        assert!(SurfaceSize { width: 1280, height: 720 }.drawable());
+        assert!(
+            !SurfaceSize {
+                width: 1280,
+                height: 0
+            }
+            .drawable()
+        );
+        assert!(
+            !SurfaceSize {
+                width: 0,
+                height: 720
+            }
+            .drawable()
+        );
+        assert!(
+            SurfaceSize {
+                width: 1280,
+                height: 720
+            }
+            .drawable()
+        );
     }
 }
