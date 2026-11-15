@@ -12,3 +12,11 @@ These are technical fixtures, not the future diagnostic patient or a PBR referen
 Bad_Accessor.glb has an out-of-range POSITION reference. It exercises a malformed
 input that could panic inside gltf-json 1.4.1 without application preflight. The
 worker must return an error and successfully process the next valid request.
+
+Color_Checker.glb contains two authored quads, a numerical 2×2 RGBA PNG, selected
+UVs and linear vertex colors. One source image is shared by two textures with
+different sampler settings; the left material is OPAQUE and the right is MASK.
+Its mip-chain RGBA footprint is 20 bytes; decoded base pixels are 16 bytes.
+Bad_Image.glb has malformed PNG data. Huge_Image_Header.glb declares 32768×32768
+dimensions and must fail admission before allocating that image. Regenerate these
+with `python tools/make_color_fixtures.py`. No user model/image is bundled.

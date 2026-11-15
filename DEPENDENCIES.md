@@ -21,6 +21,9 @@
 | egui-ash-renderer | 0.13.0 exact, default allocator | MIT | Maintained ash 0.38 painter for egui 0.36. Updates font textures/buffers after frame waits and records into supplied command buffer. Replace inside Vulkan UI overlay |
 | epaint_default_fonts | 0.36.2 | (MIT OR Apache-2.0) AND OFL-1.1 AND Ubuntu-font-1.0 | Unchanged bundled Ubuntu/Hack/Noto/emoji fonts for Cyrillic UI. Font copyright and full upstream notices preserved in assets/font-licenses.txt and embedded in Help |
 | epaint/emath/ecolor; glifo/harfrust/skrifa/read-fonts; vello_cpu/common | 0.36.2; 0.2.0/0.12.0/0.44.0/0.41.0; 0.1.0 | MIT OR Apache-2.0 (full resolved inventory in Cargo.lock) | UI tessellation/text shaping/rasterization dependencies, no second GPU backend. Actual per-library runtime footprint unprofiled |
+| image | 0.25.10 exact, PNG/JPEG only, defaults disabled | MIT OR Apache-2.0 | In-memory, limit-aware embedded base-color decoder behind ad-formats; no file/network helper or other codecs invoked. Replace inside formats/color.rs |
+| zune-jpeg / zune-core | 0.5.15 / 0.5.3, transitive | MIT OR Apache-2.0 OR Zlib | JPEG codec used through image; not a second file importer |
+| moxcms / pxfm / byteorder-lite | 0.8.1 / 0.1.30 / 0.1.0, transitive | BSD-3-Clause OR Apache-2.0 / BSD-3-Clause OR Apache-2.0 / Unlicense OR MIT | image's support graph; original image bytes remain preserved, no explicit ICC conversion requested |
 
 The initial GNU-only libloading 0.8.8 constraint was removed after MSVC readiness;
 0.8.9 now builds and passes checks. Cargo.lock is the full transitive inventory,
@@ -31,7 +34,8 @@ GLB parsing is selected for the static subset (ADR-0013); the egui viewer shell
 experiment is accepted in ADR-0014. Permanent UI-backend evaluation in ADR-0004
 and PBR remain open. Naga adds build dependencies, not a runtime GPU backend.
 The UI graph adds 44 resolved packages (including target-only entries). Release
-desktop EXE grew from 1,679,872 to 7,024,128 bytes including bundled fonts/notices;
+desktop EXE grew from 1,679,872 to 7,024,128 bytes for the UI, then 7,441,408 bytes
+with the bounded image decoder (six added resolved packages), including fonts/notices;
 this is an aggregate measurement, not per-library profiling or total runtime RAM.
 Evaluate actual footprint,
 platform behavior, licenses and advisories before adding each. No old npm/Tauri

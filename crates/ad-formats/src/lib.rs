@@ -1,4 +1,5 @@
 //! Self-contained file format boundary. No OS dialogs, network or Vulkan.
+mod color;
 use ad_document::{
     AssetDocument, AssetError, AssetResult, Cancellation, DocumentId, DocumentParts, ErrorCode,
     ImportLimits, MeshId, MeshPrimitive, Node, NodeId, geometry_bytes,
@@ -72,7 +73,10 @@ pub fn import_glb(
     if doc.extensions_used().any(|name| {
         matches!(
             name,
-            "KHR_draco_mesh_compression" | "EXT_meshopt_compression" | "KHR_mesh_quantization"
+            "KHR_draco_mesh_compression"
+                | "EXT_meshopt_compression"
+                | "KHR_mesh_quantization"
+                | "KHR_texture_transform"
         )
     }) {
         return Err(unsupported(
@@ -145,13 +149,14 @@ pub fn import_glb(
     let mut meshes = Vec::new();
     let mut mesh_ids = Vec::new();
     let mut decoded = 0usize;
+    let mut color_images = color::ColorImages::default();
     for mesh in doc.meshes() {
         let mut ids = Vec::new();
         for primitive in mesh.primitives() {
             cancel.check()?;
-            if primitive.material().alpha_mode() != gltf::material::AlphaMode::Opaque {
+            if primitive.material().alpha_mode() == gltf::material::AlphaMode::Blend {
                 return Err(unsupported(
-                    "Transparent/masked materials are not supported by this geometry viewer yet",
+                    "Alpha BLEND materials are not supported by this viewer yet",
                 ));
             }
             if primitive.mode() != gltf::mesh::Mode::Triangles
@@ -196,6 +201,61 @@ pub fn import_glb(
                 return Err(budget());
             }
             let reader = primitive.reader(|_| Some(bin));
+            let color_texture = primitive
+                .material()
+                .pbr_metallic_roughness()
+                .base_color_texture();
+            let mut uvs = None;
+            if let Some(info) = &color_texture {
+                let accessor = primitive
+                    .get(&gltf::Semantic::TexCoords(info.tex_coord()))
+                    .ok_or_else(|| {
+                        invalid("Base-color texture needs its declared TEXCOORD attribute")
+                    })?;
+                color::validate_attribute(accessor, position.count(), false)?;
+                let mut values = Vec::new();
+                values
+                    .try_reserve_exact(position.count())
+                    .map_err(|_| budget())?;
+                for (i, uv) in reader
+                    .read_tex_coords(info.tex_coord())
+                    .ok_or_else(|| invalid("Cannot read texture coordinates"))?
+                    .into_f32()
+                    .enumerate()
+                {
+                    if i % 4096 == 0 {
+                        cancel.check()?;
+                    }
+                    values.push(uv);
+                }
+                uvs = Some(values);
+            }
+            let mut colors = None;
+            if let Some(accessor) = primitive.get(&gltf::Semantic::Colors(0)) {
+                color::validate_attribute(accessor, position.count(), true)?;
+                let mut values = Vec::new();
+                values
+                    .try_reserve_exact(position.count())
+                    .map_err(|_| budget())?;
+                for (i, value) in reader
+                    .read_colors(0)
+                    .ok_or_else(|| invalid("Cannot read vertex colors"))?
+                    .into_rgba_f32()
+                    .enumerate()
+                {
+                    if i % 4096 == 0 {
+                        cancel.check()?;
+                    }
+                    values.push(value);
+                }
+                colors = Some(values);
+            }
+            let color_texture = color_texture
+                .map(|info| color_images.load(info.texture(), bin, limits, cancel))
+                .transpose()?;
+            let alpha_cutoff = (primitive.material().alpha_mode()
+                == gltf::material::AlphaMode::Mask)
+                .then(|| primitive.material().alpha_cutoff().unwrap_or(0.5));
             let mut positions = Vec::new();
             positions
                 .try_reserve_exact(position.count())
@@ -232,6 +292,10 @@ pub fn import_glb(
                     .material()
                     .pbr_metallic_roughness()
                     .base_color_factor(),
+                uvs,
+                colors,
+                color_texture,
+                alpha_cutoff,
             });
         }
         mesh_ids.push(Arc::<[MeshId]>::from(ids));
@@ -253,7 +317,7 @@ pub fn import_glb(
         .ok_or_else(|| invalid("GLB has no scene"))?;
     let roots = scene.nodes().map(|node| NodeId(node.index())).collect();
     let mut notes =
-        vec!["Base-color geometry view; PBR textures/vertex colors are not displayed yet".into()];
+        vec!["Base-color texture/vertex-color view; PBR lighting and other material maps are not displayed yet".into()];
     if doc.scenes().len() > 1 {
         notes.push("Only the default/first scene is displayed".into());
     }
@@ -326,6 +390,105 @@ mod tests {
             ImportLimits::default(),
             &Cancellation::default(),
         )
+    }
+    #[test]
+    fn embedded_color_fixture_decodes_once_and_preserves_linear_attributes_and_source() {
+        let source: Arc<[u8]> =
+            Arc::from(include_bytes!("../../../tests/fixtures/Color_Checker.glb").as_slice());
+        let doc = import_glb(
+            source.clone(),
+            "color".into(),
+            DocumentId(1),
+            ImportLimits::default(),
+            &Cancellation::default(),
+        )
+        .unwrap();
+        assert!(Arc::ptr_eq(&source, doc.source()));
+        let stats = doc.texture_stats();
+        assert_eq!(
+            (
+                stats.textures,
+                stats.images,
+                stats.rgba_bytes,
+                stats.mip_bytes
+            ),
+            (2, 1, 16, 20)
+        );
+        let scene = doc
+            .snapshot(ImportLimits::default(), &Cancellation::default())
+            .unwrap();
+        assert_eq!(scene.uvs[0], [0., 1.]);
+        assert_eq!(scene.colors[1], [0.5, 1., 0.5, 1.]);
+        let first = scene.draws[0].color_texture.as_ref().unwrap();
+        let second = scene.draws[1].color_texture.as_ref().unwrap();
+        assert!(Arc::ptr_eq(&first.image, &second.image));
+        assert_eq!(
+            &*first.image.rgba,
+            &[
+                255, 0, 0, 255, 0, 255, 0, 0, 0, 0, 255, 255, 255, 255, 255, 0
+            ]
+        );
+        assert_eq!(scene.draws[1].alpha_cutoff, Some(0.5));
+    }
+    #[test]
+    fn invalid_images_and_texture_caps_fail_before_publication() {
+        for (bytes, expected) in [
+            (
+                include_bytes!("../../../tests/fixtures/Bad_Image.glb").as_slice(),
+                ErrorCode::InvalidFormat,
+            ),
+            (
+                include_bytes!("../../../tests/fixtures/Huge_Image_Header.glb").as_slice(),
+                ErrorCode::ResourceLimit,
+            ),
+        ] {
+            let result = import_glb(
+                Arc::from(bytes),
+                "bad".into(),
+                DocumentId(1),
+                ImportLimits::default(),
+                &Cancellation::default(),
+            );
+            assert!(matches!(result,Err(AssetError {code,..}) if code==expected));
+        }
+        let bytes = Arc::<[u8]>::from(
+            include_bytes!("../../../tests/fixtures/Color_Checker.glb").as_slice(),
+        );
+        for limits in [
+            ImportLimits {
+                texture_bytes: 19,
+                ..Default::default()
+            },
+            ImportLimits {
+                textures: 1,
+                ..Default::default()
+            },
+        ] {
+            assert!(matches!(
+                import_glb(
+                    bytes.clone(),
+                    "bad".into(),
+                    DocumentId(1),
+                    limits,
+                    &Cancellation::default()
+                ),
+                Err(AssetError {
+                    code: ErrorCode::ResourceLimit,
+                    ..
+                })
+            ));
+        }
+    }
+    #[test]
+    fn invalid_color_and_missing_uv_layouts_do_not_panic() {
+        let mut json = json_doc();
+        json["meshes"][0]["primitives"][0]["attributes"]["COLOR_0"] = json!(1);
+        assert!(load(&json).is_err());
+        let mut json = json_doc();
+        json["images"] = json!([{"bufferView":0,"mimeType":"image/png"}]);
+        json["textures"] = json!([{"source":0}]);
+        json["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"] = json!({"index":0});
+        assert!(load(&json).is_err());
     }
     #[test]
     fn static_glb_preserves_source_hierarchy_color_and_authored_translation() {
@@ -450,10 +613,10 @@ mod tests {
         assert!(load(&json).is_err());
     }
     #[test]
-    fn transparent_materials_are_explicitly_unsupported_until_alpha_rendering_exists() {
-        for mode in ["BLEND", "MASK"] {
+    fn blend_materials_remain_explicitly_unsupported() {
+        {
             let mut json = json_doc();
-            json["materials"][0]["alphaMode"] = json!(mode);
+            json["materials"][0]["alphaMode"] = json!("BLEND");
             assert!(matches!(
                 load(&json),
                 Err(AssetError {

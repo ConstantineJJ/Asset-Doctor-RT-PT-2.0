@@ -67,6 +67,8 @@ impl GpuScene {
                 index_start: d.index_start,
                 index_count: d.index_count,
                 base_color: d.base_color,
+                color_texture: d.color_texture.clone(),
+                alpha_cutoff: d.alpha_cutoff,
             })
             .collect();
         Ok(Self {

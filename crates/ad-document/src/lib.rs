@@ -1,4 +1,6 @@
 //! Renderer-independent immutable asset data and revision-tagged snapshots.
+mod color;
+pub use color::*;
 use std::{
     fmt,
     sync::{
@@ -62,6 +64,9 @@ pub struct ImportLimits {
     pub snapshot_bytes: usize,
     pub nodes: usize,
     pub draws: usize,
+    pub texture_bytes: usize,
+    pub texture_side: u32,
+    pub textures: usize,
 }
 impl Default for ImportLimits {
     fn default() -> Self {
@@ -72,6 +77,9 @@ impl Default for ImportLimits {
             snapshot_bytes: 512 << 20,
             nodes: 50_000,
             draws: 100_000,
+            texture_bytes: 256 << 20,
+            texture_side: 8192,
+            textures: 256,
         }
     }
 }
@@ -87,6 +95,10 @@ pub struct MeshPrimitive {
     pub positions: Vec<[f32; 3]>,
     pub indices: Vec<u32>,
     pub base_color: [f32; 4],
+    pub uvs: Option<Vec<[f32; 2]>>,
+    pub colors: Option<Vec<[f32; 4]>>,
+    pub color_texture: Option<Arc<ColorTexture>>,
+    pub alpha_cutoff: Option<f32>,
 }
 pub struct Node {
     pub name: String,
@@ -105,6 +117,7 @@ pub struct DocumentParts {
 }
 pub struct AssetDocument {
     parts: DocumentParts,
+    texture_stats: TextureStats,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -116,11 +129,15 @@ pub struct DrawRange {
     pub index_start: u32,
     pub index_count: u32,
     pub base_color: [f32; 4],
+    pub color_texture: Option<Arc<ColorTexture>>,
+    pub alpha_cutoff: Option<f32>,
 }
 pub struct GeometrySnapshot {
     pub document_id: DocumentId,
     pub revision: u64,
     pub positions: Vec<[f32; 3]>,
+    pub uvs: Vec<[f32; 2]>,
+    pub colors: Vec<[f32; 4]>,
     pub indices: Vec<u32>,
     pub draws: Vec<DrawRange>,
     pub bounds: Bounds,
@@ -140,8 +157,28 @@ impl AssetDocument {
             ));
         }
         let mut bytes = 0usize;
+        let mut textures = TextureAdmission::default();
         for mesh in &parts.meshes {
             cancel.check()?;
+            if let Some(texture) = &mesh.color_texture {
+                textures.admit(texture, limits)?;
+            }
+            if mesh.uvs.as_ref().is_some_and(|uv| {
+                uv.len() != mesh.positions.len() || uv.iter().flatten().any(|v| !v.is_finite())
+            }) || mesh.colors.as_ref().is_some_and(|colors| {
+                colors.len() != mesh.positions.len()
+                    || colors
+                        .iter()
+                        .flatten()
+                        .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+            }) || (mesh.color_texture.is_some() && mesh.uvs.is_none())
+                || mesh.alpha_cutoff.is_some_and(|v| !v.is_finite() || v < 0.)
+            {
+                return Err(AssetError::new(
+                    ErrorCode::InvalidGeometry,
+                    "Invalid UV/color/material attributes",
+                ));
+            }
             bytes = bytes
                 .checked_add(geometry_bytes(mesh.positions.len(), mesh.indices.len())?)
                 .ok_or_else(|| {
@@ -213,7 +250,10 @@ impl AssetDocument {
                 ));
             }
         }
-        Ok(Self { parts })
+        Ok(Self {
+            parts,
+            texture_stats: textures.stats,
+        })
     }
     pub fn id(&self) -> DocumentId {
         self.parts.id
@@ -229,6 +269,9 @@ impl AssetDocument {
     }
     pub fn roots(&self) -> &[NodeId] {
         &self.parts.roots
+    }
+    pub fn texture_stats(&self) -> TextureStats {
+        self.texture_stats
     }
     pub fn notes(&self) -> &[String] {
         &self.parts.notes
@@ -304,6 +347,8 @@ impl AssetDocument {
             document_id: self.id(),
             revision: 0,
             positions: Vec::new(),
+            uvs: Vec::new(),
+            colors: Vec::new(),
             indices: Vec::new(),
             draws: Vec::new(),
             bounds: Bounds {
@@ -313,6 +358,13 @@ impl AssetDocument {
         };
         result.positions.try_reserve_exact(vertices).map_err(|_| {
             AssetError::new(ErrorCode::ResourceLimit, "Cannot allocate scene vertices")
+        })?;
+        result
+            .uvs
+            .try_reserve_exact(vertices)
+            .map_err(|_| AssetError::new(ErrorCode::ResourceLimit, "Cannot allocate scene UVs"))?;
+        result.colors.try_reserve_exact(vertices).map_err(|_| {
+            AssetError::new(ErrorCode::ResourceLimit, "Cannot allocate scene colors")
         })?;
         result.indices.try_reserve_exact(indices).map_err(|_| {
             AssetError::new(ErrorCode::ResourceLimit, "Cannot allocate scene indices")
@@ -338,11 +390,19 @@ impl AssetDocument {
                     ));
                 }
                 result.positions.push(position.to_array());
+                result
+                    .uvs
+                    .push(mesh.uvs.as_ref().map_or([0.; 2], |uv| uv[i]));
+                result
+                    .colors
+                    .push(mesh.colors.as_ref().map_or([1.; 4], |colors| colors[i]));
             }
             result.draws.push(DrawRange {
                 index_start: result.indices.len() as u32,
                 index_count: mesh.indices.len() as u32,
                 base_color: mesh.base_color,
+                color_texture: mesh.color_texture.clone(),
+                alpha_cutoff: mesh.alpha_cutoff,
             });
             for (i, &index) in mesh.indices.iter().enumerate() {
                 if i % 4096 == 0 {
@@ -363,7 +423,7 @@ impl AssetDocument {
 
 pub fn geometry_bytes(vertices: usize, indices: usize) -> AssetResult<usize> {
     vertices
-        .checked_mul(12)
+        .checked_mul(36)
         .and_then(|value| {
             indices
                 .checked_mul(4)
@@ -385,6 +445,10 @@ mod tests {
                 positions: vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [99999., 0., 0.]],
                 indices: vec![0, 1, 2],
                 base_color: [1.; 4],
+                uvs: None,
+                colors: None,
+                color_texture: None,
+                alpha_cutoff: None,
             }],
             nodes: vec![
                 Node {

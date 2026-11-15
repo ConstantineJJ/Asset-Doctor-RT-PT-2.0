@@ -3,18 +3,36 @@
     "file": "Bad_Accessor.glb",
     "bytes": 1104,
     "sha256": "771d135ca03d7e6751171aaca4f7cf87fe04271e1d3242b925ea9c76be4c331b",
-    "origin": "Project-authored synthetic mathematical geometry; no external models or textures"
+    "origin": "Project-authored numeric test geometry and PNG; no external content"
+  },
+  {
+    "file": "Bad_Image.glb",
+    "bytes": 1768,
+    "sha256": "65e95425718f00dfc68f1d55069e15e53a116122a73cb3de950640e0ae3e80a0",
+    "origin": "Project-authored numeric test geometry and PNG; no external content"
   },
   {
     "file": "Bad_Truncated.glb",
     "bytes": 1097,
     "sha256": "bfbc145672afb86c56c7acd8e6fc970594fa4b8d9fc83166406d0c63bc1f2756",
-    "origin": "Project-authored synthetic mathematical geometry; no external models or textures"
+    "origin": "Project-authored numeric test geometry and PNG; no external content"
+  },
+  {
+    "file": "Color_Checker.glb",
+    "bytes": 1840,
+    "sha256": "222bde0768828c6fdc3fc4f0adad32c74ca4407eb4b0f0f353e7ade40b34b78a",
+    "origin": "Project-authored numeric test geometry and PNG; no external content"
+  },
+  {
+    "file": "Huge_Image_Header.glb",
+    "bytes": 1840,
+    "sha256": "03a09f28d6dd14e56cb3eccab154671a4b2afad871ea843d094f32c4bd1dc85f",
+    "origin": "Project-authored numeric test geometry and PNG; no external content"
   },
   {
     "file": "Twin_Cubes.glb",
     "bytes": 1104,
     "sha256": "7567aeb18b354b90c4d93b6641b2bea76e50029d696b5d82cdc6802c4c209058",
-    "origin": "Project-authored synthetic mathematical geometry; no external models or textures"
+    "origin": "Project-authored numeric test geometry and PNG; no external content"
   }
 ]
