@@ -354,7 +354,7 @@ pub fn import_glb(
         .or_else(|| doc.scenes().next())
         .ok_or_else(|| invalid("GLB has no scene"))?;
     let roots = scene.nodes().map(|node| NodeId(node.index())).collect();
-    let mut notes = vec!["Two-sided preview; optional direct PBR uses metallic/roughness factors only, without environment lighting or shadows".into()];
+    let mut notes = vec!["Обе стороны граней видимы. PBR использует параметры металла/шероховатости без окружения и теней.".into()];
     if doc.materials().any(|m| {
         m.pbr_metallic_roughness()
             .metallic_roughness_texture()
@@ -364,10 +364,10 @@ pub fn import_glb(
             || m.emissive_texture().is_some()
             || m.emissive_factor() != [0.; 3]
     }) {
-        notes.push("Metallic/roughness, normal, occlusion and emissive maps/emission are retained in source but not displayed".into());
+        notes.push("Карты металла/шероховатости, нормалей, окклюзии и свечение сохранены в источнике, но не отображаются.".into());
     }
     if doc.scenes().len() > 1 {
-        notes.push("Only the default/first scene is displayed".into());
+        notes.push("Отображается только основная/первая сцена.".into());
     }
     cancel.check()?;
     AssetDocument::new(
@@ -462,6 +462,35 @@ mod tests {
             .unwrap();
         assert_eq!(scene.draws[0].metallic_roughness, [1.; 2]);
         assert_eq!(scene.fallback_normal_vertices, scene.positions.len());
+    }
+    #[test]
+    fn material_fixture_preserves_factor_variation_and_ignored_map_notice() {
+        let source =
+            Arc::<[u8]>::from(include_bytes!("../../../tests/fixtures/Pbr_Factors.glb").as_slice());
+        let doc = import_glb(
+            source.clone(),
+            "factors".into(),
+            DocumentId(1),
+            ImportLimits::default(),
+            &Cancellation::default(),
+        )
+        .unwrap();
+        let scene = doc
+            .snapshot(ImportLimits::default(), &Cancellation::default())
+            .unwrap();
+        assert_eq!(scene.fallback_normal_vertices, 6);
+        assert_eq!(scene.draws[0].metallic_roughness, [0., 0.15]);
+        assert_eq!(scene.draws[5].metallic_roughness, [1., 0.95]);
+        assert_eq!(scene.normals[0], [0., 1., 0.]);
+        assert!(Arc::ptr_eq(&source, doc.source()));
+        let mut json = json_doc();
+        json["images"] = json!([{"bufferView":0,"mimeType":"image/png"}]);
+        json["textures"] = json!([{"source":0}]);
+        json["materials"][0]["normalTexture"] = json!({"index":0});
+        // Ignored maps are not decoded or treated as a base-color map.
+        let doc = load(&json).unwrap();
+        assert_eq!(doc.texture_stats().images, 0);
+        assert!(doc.notes().iter().any(|n| n.contains("не отображаются")));
     }
     #[test]
     fn embedded_color_fixture_decodes_once_and_preserves_linear_attributes_and_source() {

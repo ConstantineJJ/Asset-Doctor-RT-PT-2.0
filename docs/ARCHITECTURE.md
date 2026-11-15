@@ -37,6 +37,13 @@ pixels across instances and carry UV/linear-color arrays. Vulkan owns image/mip,
 sampler and descriptor resources only. Candidate upload is transactional and never
 changes document bytes. Base-color sampling is presentation state, not an edit.
 
+ADR-0016 preserves optional source normals and metallic/roughness factors. The
+snapshot derives world normals independently with inverse-transpose; a zero
+sentinel requests geometric fallback. Session lighting mode/exposure/intensities
+stay outside the document. Vulkan consumes four plain vertex streams and a128-byte
+camera/material/light push block. These settings neither edit materials nor create
+scene lamps; editable lamps and general lighting contracts remain future work.
+
 The owner's advisory v0.1 proposal was reviewed in
 ARCHITECTURE_PROPOSAL_REVIEW.md. Session history and revision-keyed findings are
 application/derived state, not fields that every saved asset must embed. Compare

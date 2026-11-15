@@ -52,13 +52,17 @@ impl Camera {
     pub fn matrix(&self, width: u32, height: u32) -> [[f32; 4]; 4] {
         let aspect = width.max(1) as f32 / height.max(1) as f32;
         let distance = self.distance / aspect.clamp(0.05, 1.0);
-        let eye = self.center + self.direction() * distance;
+        let eye = Vec3::from_array(self.eye(width, height));
         let near = (self.radius * 0.0001).max(0.000001);
         let far = (distance + self.radius * 4.0)
             .max(self.radius * 10.0)
             .max(near * 100.0);
         let projection = rh::proj::vulkan::perspective(45f32.to_radians(), aspect, near, far);
         (projection * rh::view::look_at_mat4(eye, self.center, Vec3::Y)).to_cols_array_2d()
+    }
+    pub fn eye(&self, width: u32, height: u32) -> [f32; 3] {
+        let aspect = width.max(1) as f32 / height.max(1) as f32;
+        (self.center + self.direction() * (self.distance / aspect.clamp(0.05, 1.0))).to_array()
     }
 }
 #[cfg(test)]
@@ -74,11 +78,14 @@ mod tests {
             };
             camera.fit(bounds);
             let initial = camera.matrix(1200, 760);
+            let eye = camera.eye(1200, 760);
             camera.orbit(80., -40.);
             camera.pan(5., 4., 760.);
             camera.zoom(3.);
             let moved = camera.matrix(960, 600);
             assert_ne!(initial, moved);
+            assert_ne!(eye, camera.eye(960, 600));
+            assert!(camera.eye(1, 100).iter().all(|v| v.is_finite()));
             assert!(moved.iter().flatten().all(|v| v.is_finite()));
             assert!(camera.matrix(0, 0).iter().flatten().all(|v| v.is_finite()));
         }

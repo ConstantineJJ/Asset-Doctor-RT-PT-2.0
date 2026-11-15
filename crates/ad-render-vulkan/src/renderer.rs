@@ -1,3 +1,4 @@
+use crate::lighting::{ShadingMode, ViewLighting};
 use crate::ui::{Overlay, UiFrame, ViewportRect};
 use crate::{
     SurfaceSize,
@@ -31,8 +32,11 @@ pub struct Renderer {
     overlay: Option<Overlay>,
     view_projection: [[f32; 4]; 4],
     sample_textures: bool,
+    eye: [f32; 3],
+    lighting: ViewLighting,
     pub frames: u64,
     pub mesh_frames: u64,
+    pub pbr_frames: u64,
     pub recreations: u64,
 }
 
@@ -54,6 +58,8 @@ impl Renderer {
             presentation_pending: false,
             scene: None,
             sample_textures: true,
+            eye: [0., 0., 4.],
+            lighting: ViewLighting::default(),
             overlay: None,
             view_projection: [
                 [1., 0., 0., 0.],
@@ -63,6 +69,7 @@ impl Renderer {
             ],
             frames: 0,
             mesh_frames: 0,
+            pbr_frames: 0,
             recreations: 0,
         };
         // SAFETY: Live device, valid queue family. Self owns every successful
@@ -114,11 +121,24 @@ impl Renderer {
             .as_ref()
             .map(|scene| (scene.document_id, scene.revision))
     }
-    pub fn set_view_projection(&mut self, matrix: [[f32; 4]; 4]) -> GpuResult<()> {
-        if matrix.iter().flatten().any(|v| !v.is_finite()) {
-            return Err("Nonfinite camera matrix refused".into());
+    pub fn set_camera(&mut self, matrix: [[f32; 4]; 4], eye: [f32; 3]) -> GpuResult<()> {
+        if matrix
+            .iter()
+            .flatten()
+            .chain(eye.iter())
+            .any(|v| !v.is_finite())
+        {
+            return Err("Nonfinite camera matrix/eye refused".into());
         }
         self.view_projection = matrix;
+        self.eye = eye;
+        Ok(())
+    }
+    pub fn set_lighting(&mut self, lighting: ViewLighting) -> GpuResult<()> {
+        if !lighting.valid() {
+            return Err("Invalid view lighting settings refused".into());
+        }
+        self.lighting = lighting;
         Ok(())
     }
     pub fn set_textures_enabled(&mut self, enabled: bool) {
@@ -294,8 +314,13 @@ impl Renderer {
                 device.cmd_bind_vertex_buffers(
                     self.command,
                     0,
-                    &[scene.vertices.handle, scene.uvs.handle, scene.colors.handle],
-                    &[0, 0, 0],
+                    &[
+                        scene.vertices.handle,
+                        scene.uvs.handle,
+                        scene.colors.handle,
+                        scene.normals.handle,
+                    ],
+                    &[0, 0, 0, 0],
                 );
                 device.cmd_bind_index_buffer(
                     self.command,
@@ -307,10 +332,24 @@ impl Renderer {
                     let push = Push {
                         view_projection: self.view_projection,
                         base_color: draw.base_color,
-                        encode_srgb: u32::from(chain.encode_srgb),
-                        alpha_cutoff: draw.alpha_cutoff.unwrap_or(-1.),
-                        sample_textures: u32::from(self.sample_textures),
-                        padding: 0,
+                        eye_exposure: [
+                            self.eye[0],
+                            self.eye[1],
+                            self.eye[2],
+                            self.lighting.exposure_ev,
+                        ],
+                        material: [
+                            draw.metallic_roughness[0],
+                            draw.metallic_roughness[1],
+                            draw.alpha_cutoff.unwrap_or(-1.),
+                            0.,
+                        ],
+                        lighting: [
+                            self.lighting.key,
+                            self.lighting.fill,
+                            self.lighting.flags(self.sample_textures, chain.encode_srgb),
+                            0.,
+                        ],
                     };
                     device.cmd_bind_descriptor_sets(
                         self.command,
@@ -423,6 +462,9 @@ impl Renderer {
                     self.frames += 1;
                     if self.scene.is_some() {
                         self.mesh_frames += 1;
+                        if self.lighting.mode == ShadingMode::DirectPbr {
+                            self.pbr_frames += 1;
+                        }
                     }
                     if suboptimal || changed {
                         Ok(FrameResult::Recreate)

@@ -30,6 +30,12 @@
     "origin": "Project-authored numeric test geometry and PNG; no external content"
   },
   {
+    "file": "Pbr_Factors.glb",
+    "bytes": 28084,
+    "sha256": "45eb0df5152f96fa3f92a7ded4494d88c41938f968252a1b01d4fd3e892a9c9e",
+    "origin": "Project-authored numeric test data; no external content"
+  },
+  {
     "file": "Twin_Cubes.glb",
     "bytes": 1104,
     "sha256": "7567aeb18b354b90c4d93b6641b2bea76e50029d696b5d82cdc6802c4c209058",

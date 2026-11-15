@@ -2,6 +2,7 @@
 
 pub mod context;
 mod gpu;
+pub mod lighting;
 mod pipeline;
 pub mod presentation;
 pub mod renderer;

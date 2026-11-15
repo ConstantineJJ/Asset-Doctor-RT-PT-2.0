@@ -101,6 +101,7 @@ impl App {
             let context = renderer.context();
             let frames = renderer.frames;
             let mesh_frames = renderer.mesh_frames;
+            let pbr_frames = renderer.pbr_frames;
             drop(renderer); // Retire ALL Vulkan objects while native window is alive.
             let errors = context.validation_errors();
             eprintln!(
@@ -116,7 +117,10 @@ impl App {
                 && self.smoke_import
                 && (self.current.is_none()
                     || !self.failed_replacement_preserved
-                    || mesh_frames < 15)
+                    || mesh_frames < 15
+                    || (self.ui.lighting.mode
+                        == ad_render_vulkan::lighting::ShadingMode::DirectPbr
+                        && pbr_frames < 15))
             {
                 self.error = Some("Import/rejected-replacement smoke did not complete".into());
             }
@@ -135,6 +139,10 @@ impl App {
                         "asset_smoke imported={} mesh_frames={mesh_frames} rejected_replacement_preserved={}",
                         self.current.is_some(),
                         self.failed_replacement_preserved
+                    );
+                    eprintln!(
+                        "lighting_smoke mode={:?} pbr_frames={pbr_frames}",
+                        self.ui.lighting.mode
                     );
                     eprintln!(
                         "SMOKE_PASS frames={frames} resize=true minimize=true restore=true close_requested=true validation_enabled={} validation_errors=0",
@@ -304,8 +312,12 @@ impl App {
         }
         let renderer = self.renderer.as_mut().expect("Drawable renderer checked");
         let (width, height) = frame.scene.map_or((1, 1), |r| (r.width, r.height));
-        renderer.set_view_projection(self.camera.matrix(width, height))?;
+        renderer.set_camera(
+            self.camera.matrix(width, height),
+            self.camera.eye(width, height),
+        )?;
         renderer.set_textures_enabled(self.ui.textures);
+        renderer.set_lighting(self.ui.lighting)?;
         let result = renderer.draw_ui(&mut frame)?;
         if result == FrameResult::Recreate {
             let size = window.inner_size();
@@ -576,10 +588,12 @@ fn run() -> GpuResult<()> {
     let mut initial_path = None;
     let mut smoke_import = false;
     let mut smoke_bad = None;
+    let mut ui = viewer_ui::ViewerUi::default();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--require-validation" => validation = true,
+            "--pbr" => ui.lighting.mode = ad_render_vulkan::lighting::ShadingMode::DirectPbr,
             "--smoke" => {
                 smoke = true;
                 validation = true;
@@ -602,7 +616,7 @@ fn run() -> GpuResult<()> {
             }
             "--help" => {
                 println!(
-                    "AssetDoctorRTPT [--require-validation] [--open model.glb] [--smoke] [--smoke-import model.glb --smoke-bad bad.glb]"
+                    "AssetDoctorRTPT [--require-validation] [--pbr] [--open model.glb] [--smoke] [--smoke-import model.glb --smoke-bad bad.glb]"
                 );
                 return Ok(());
             }
@@ -637,7 +651,7 @@ fn run() -> GpuResult<()> {
         smoke_bad,
         expected_tag: None,
         failed_replacement_preserved: false,
-        ui: viewer_ui::ViewerUi::default(),
+        ui,
     };
     event_loop.run_app(&mut app)?;
     if let Some(error) = app.error {

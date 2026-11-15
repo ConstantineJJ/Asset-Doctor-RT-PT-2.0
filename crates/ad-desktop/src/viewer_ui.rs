@@ -1,6 +1,7 @@
 use crate::{imports::PreparedAsset, ui_model::SceneTree};
 use ad_render_vulkan::{
     SurfaceSize,
+    lighting::{ShadingMode, ViewLighting},
     ui::{UiFrame, ViewportRect},
 };
 use egui::{Color32, RichText};
@@ -18,6 +19,7 @@ pub struct ViewerUi {
     pub show_tree: bool,
     pub show_summary: bool,
     pub textures: bool,
+    pub lighting: ViewLighting,
     help: bool,
     pub tree: SceneTree,
     scene: egui::Rect,
@@ -25,6 +27,8 @@ pub struct ViewerUi {
     pub error: Option<String>,
     #[cfg(test)]
     open_rect: egui::Rect,
+    #[cfg(test)]
+    reset_lighting_rect: egui::Rect,
 }
 impl Default for ViewerUi {
     fn default() -> Self {
@@ -42,6 +46,7 @@ impl Default for ViewerUi {
             show_tree: false,
             show_summary: true,
             textures: true,
+            lighting: ViewLighting::default(),
             help: false,
             tree: SceneTree::default(),
             scene: egui::Rect::NOTHING,
@@ -49,6 +54,8 @@ impl Default for ViewerUi {
             error: None,
             #[cfg(test)]
             open_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            reset_lighting_rect: egui::Rect::NOTHING,
         }
     }
 }
@@ -193,6 +200,20 @@ impl ViewerUi {
                     egui::ScrollArea::vertical().show(ui,|ui| {
                         ui.heading("Сводка");ui.separator();
                         ui.checkbox(&mut self.textures,"Базовые текстуры").on_hover_text("Включить выборку встроенных PNG/JPEG. Исходные материалы не изменяются.");
+                        egui::ComboBox::from_id_salt("shading_mode").selected_text(match self.lighting.mode {ShadingMode::BaseColor=>"Базовый вид", ShadingMode::DirectPbr=>"PBR · направленный свет"}).show_ui(ui,|ui| {
+                            ui.selectable_value(&mut self.lighting.mode,ShadingMode::BaseColor,"Базовый вид");
+                            ui.selectable_value(&mut self.lighting.mode,ShadingMode::DirectPbr,"PBR · направленный свет");
+                        });
+                        if self.lighting.mode==ShadingMode::DirectPbr {
+                            ui.add(egui::Slider::new(&mut self.lighting.exposure_ev,-6.0..=6.0).text("Экспозиция · EV"));
+                            ui.add(egui::Slider::new(&mut self.lighting.key,0.0..=8.0).text("Основной свет"));
+                            ui.add(egui::Slider::new(&mut self.lighting.fill,0.0..=1.0).text("Заполнение"));
+                            let reset=ui.button("Сбросить освещение");
+                            #[cfg(test)]
+                            {self.reset_lighting_rect=reset.rect;}
+                            if reset.clicked() {self.lighting=ViewLighting{mode:ShadingMode::DirectPbr,..Default::default()};}
+                            ui.weak("Параметры материалов без PBR-карт. Заполнение приблизительное; без HDR-окружения и теней.");
+                        }
                         if let Some(asset)=asset {
                             ui.strong(asset.document.name());
                             ui.label(format!("Исходный файл: {:.2} МиБ",asset.document.source().len() as f64/1048576.));
@@ -204,6 +225,7 @@ impl ViewerUi {
                             ui.label(format!("Вершины: {}",asset.snapshot.positions.len()));
                             ui.label(format!("Треугольники: {}",asset.snapshot.indices.len()/3));
                             ui.label(format!("Примитивы с повторами: {}",asset.snapshot.draws.len()));
+                            ui.label(format!("Нормаль грани: {} вершин",asset.snapshot.fallback_normal_vertices)).on_hover_text("Авторская нормаль отсутствует, нулевая или преобразование вырождено. Источник не исправляется.");
                             ui.weak("С учётом экземпляров в сцене");
                             let b=asset.snapshot.bounds;
                             ui.add_space(12.);ui.strong("Габариты · метры");
@@ -217,8 +239,11 @@ impl ViewerUi {
                                     for r in 0..4 {ui.monospace(format!("{:.3}  {:.3}  {:.3}  {:.3}",node.local[0][r],node.local[1][r],node.local[2][r],node.local[3][r]));}
                                 });
                             }
+                            ui.collapsing("Ограничения просмотра",|ui| {
+                                for note in asset.document.notes() {ui.weak(note);}
+                            });
                         } else {ui.label("Откройте модель, чтобы увидеть её состав и размеры.");}
-                        ui.add_space(16.);ui.separator();ui.weak("Статические GLB: PNG/JPEG, цвета вершин, OPAQUE/MASK. PBR, BLEND, скелеты и анимации пока не поддерживаются.");
+                        ui.add_space(16.);ui.separator();ui.weak("Статические GLB: PNG/JPEG, цвета вершин, нормали, OPAQUE/MASK. PBR — предварительный режим. BLEND, скелеты и анимации пока не поддерживаются.");
                     });
                 });
             }
@@ -237,7 +262,8 @@ impl ViewerUi {
                 ui.label("ЛКМ — вращение; ПКМ / средняя — перемещение; колесо — масштаб.");
                 ui.label("F — вписать модель; Esc — отменить загрузку; H — справка.");
                 ui.separator();ui.label("Выбор узла показывает сведения. Подсветка, редактирование и сохранение появятся позднее.");
-                ui.label("Базовые текстуры: встроенные PNG/JPEG до 8 бит/канал. PBR-карты и освещение появятся позднее.");
+                ui.label("В Сводке: базовый вид или PBR с авторскими нормалями, металлом и шероховатостью. Экспозиция и свет меняют только просмотр.");
+                ui.label("Базовые текстуры: встроенные PNG/JPEG до 8 бит/канал. Карты металла/шероховатости, нормалей, окклюзии и свечения, HDR-окружение и тени пока не отображаются. Обе стороны граней видимы.");
                 ui.collapsing("Лицензии встроенных шрифтов",|ui| {
                     egui::ScrollArea::vertical().max_height(280.).show(ui,|ui| {
                         ui.label(include_str!("../../../assets/font-licenses.txt"));
@@ -300,6 +326,68 @@ mod tests {
             rect.center().y as f64 * scale
         ));
         assert!(!ui.camera_at(24. * scale, 24. * scale));
+    }
+    #[test]
+    fn lighting_reset_keeps_pbr_mode_and_does_not_change_texture_view_or_asset() {
+        let mut ui = ViewerUi {
+            lighting: ViewLighting {
+                mode: ShadingMode::DirectPbr,
+                exposure_ev: 2.,
+                key: 7.,
+                fill: 0.8,
+            },
+            textures: false,
+            ..Default::default()
+        };
+        let source = std::sync::Arc::<[u8]>::from(
+            include_bytes!("../../../tests/fixtures/Pbr_Factors.glb").as_slice(),
+        );
+        let document = ad_formats::import_glb(
+            source.clone(),
+            "factors".into(),
+            ad_document::DocumentId(1),
+            ad_document::ImportLimits::default(),
+            &ad_document::Cancellation::default(),
+        )
+        .unwrap();
+        let snapshot = std::sync::Arc::new(
+            document
+                .snapshot(
+                    ad_document::ImportLimits::default(),
+                    &ad_document::Cancellation::default(),
+                )
+                .unwrap(),
+        );
+        let asset = PreparedAsset { document, snapshot };
+        let (out, rect, _) = ui.layout(raw(1200., 1000.), Some(&asset), false);
+        out.drop_without_applying_deltas();
+        assert!(rect.width() > 100.);
+        let position = ui.reset_lighting_rect.center();
+        assert!(ui.reset_lighting_rect.is_positive());
+        for pressed in [true, false] {
+            let mut input = raw(1200., 1000.);
+            input.events = vec![
+                egui::Event::PointerMoved(position),
+                egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::default(),
+                },
+            ];
+            let (out, _, _) = ui.layout(input, Some(&asset), false);
+            out.drop_without_applying_deltas();
+        }
+        assert_eq!(
+            ui.lighting,
+            ViewLighting {
+                mode: ShadingMode::DirectPbr,
+                ..Default::default()
+            }
+        );
+        assert!(!ui.textures);
+        assert!(std::sync::Arc::ptr_eq(asset.document.source(), &source));
+        assert_eq!(asset.snapshot.fallback_normal_vertices, 6);
     }
     #[test]
     fn open_button_emits_one_action_on_release() {

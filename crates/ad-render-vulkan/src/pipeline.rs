@@ -7,10 +7,9 @@ use std::{io::Cursor, sync::Arc};
 pub(crate) struct Push {
     pub view_projection: [[f32; 4]; 4],
     pub base_color: [f32; 4],
-    pub encode_srgb: u32,
-    pub alpha_cutoff: f32,
-    pub sample_textures: u32,
-    pub padding: u32,
+    pub eye_exposure: [f32; 4],
+    pub material: [f32; 4],
+    pub lighting: [f32; 4],
 }
 pub(crate) struct MeshPipeline {
     pub handle: vk::Pipeline,
@@ -97,6 +96,11 @@ impl MeshPipeline {
                     stride: 16,
                     input_rate: vk::VertexInputRate::VERTEX,
                 },
+                vk::VertexInputBindingDescription {
+                    binding: 3,
+                    stride: 12,
+                    input_rate: vk::VertexInputRate::VERTEX,
+                },
             ];
             let attributes = [
                 vk::VertexInputAttributeDescription {
@@ -115,6 +119,12 @@ impl MeshPipeline {
                     location: 2,
                     binding: 2,
                     format: vk::Format::R32G32B32A32_SFLOAT,
+                    offset: 0,
+                },
+                vk::VertexInputAttributeDescription {
+                    location: 3,
+                    binding: 3,
+                    format: vk::Format::R32G32B32_SFLOAT,
                     offset: 0,
                 },
             ];
@@ -179,5 +189,18 @@ impl Drop for MeshPipeline {
             self.gpu.device.destroy_pipeline(self.handle, None);
             self.gpu.device.destroy_pipeline_layout(self.layout, None);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Push;
+    #[test]
+    fn push_layout_matches_glsl_and_guaranteed_vulkan_budget() {
+        assert_eq!(std::mem::size_of::<Push>(), 128);
+        assert_eq!(std::mem::offset_of!(Push, base_color), 64);
+        assert_eq!(std::mem::offset_of!(Push, eye_exposure), 80);
+        assert_eq!(std::mem::offset_of!(Push, material), 96);
+        assert_eq!(std::mem::offset_of!(Push, lighting), 112);
     }
 }

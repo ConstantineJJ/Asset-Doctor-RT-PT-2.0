@@ -1,5 +1,13 @@
 # Project pulse
 
+## 2026-11-15 — Optional direct PBR on Vulkan
+
+- Added a fourth GPU normal stream and128-byte camera/material/light push block. Direct preview uses GGX/Smith/Schlick metallic workflow, one fixed directional key, explicitly approximate fill, exposure and Reinhard mapping. Source roughness is preserved; shader floors it at0.045 for a finite specular lobe. Authored normals face the camera in the existing two-sided geometry view. Default base-color branch retains prior face lighting and texture/MASK behavior.
+- Summary provides Base/PBR mode, exposureEV/key/fill/reset; these are session-only view controls, not material edits or editable scene lamps. Ignored MR/normal/occlusion/emission maps have an explicit Russian notice. No IBL/HDR/shadows, BLEND, culling parity, tangents/normal maps or additional material extensions claimed. Added project-authored six-sphere factor fixture with missing/singular-normal markers and developer --pbr smoke mode.
+- Final checks:43 tests(10desktop/9document/15formats/9renderer), fmt, all-target clippy warnings denied, Windows release workspace build, cargo-deny advisories/bans/licenses/sources PASS. No new package/version or policy exception; document enables glam f64. Release EXE7,677,440bytes. Source-only CPU/GPU review found no concrete blocker.
+- Native release checks: factor scene in PBR, Color_Checker in PBR and default mode, plain static default, real Birch0 in PBR. Each presented15 mesh frames, rejected malformed replacement while preserving current CPU/GPU scene and completed resize/minimize/restore/native close with validation enabled and0errors. PBR runs counted15PBR presents. Requested child VK_LAYER_VALIDATE_SYNC=1; effective layer setting not independently queried. Birch sourceSHA256 unchanged. Logs artifacts/release-import-smoke{-pbr-factors,-pbr-color,-color,}-sync.* and birch-pbr-smoke.*. Self-closing windows only, no mouse automation/capture; windows closed.
+- Owner PASS applies to earlier base-color car examples, not this PBR build. New visual response, BRDF/pixel equivalence, peaks/performance and allocation/device-loss injection remain open. No legacy/Arc-XRay changes or push. Next: owner visual check, then bounded metallic/roughness/normal-map channel contracts.
+
 ## 2026-11-15 — Authored normal and material data increment
 
 - Owner reported PASS with two textured car screenshots. This confirms those base-color examples; broad UV/mask/material acceptance remains separate.

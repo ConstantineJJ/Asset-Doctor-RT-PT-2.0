@@ -44,9 +44,11 @@ animation autoplay, distinct floors and independent environment toggle.
 Four independent crates now implement immutable static document data, bounded GLB
 formats, ash Vulkan presentation and a native viewer shell. Embedded PNG/JPEG
 base-color maps, selected UVs, linear vertex colors and OPAQUE/MASK rendering are
-implemented in ADR-0015. Final workspace has 36 tests; native static/textured import,
+implemented in ADR-0015. ADR-0016 adds authored normal preservation and optional
+direct PBR with metallic/roughness factors, exposure and approximate fill.
+Final workspace has43 tests; native static/textured/PBR import,
 rejected replacement and resize/minimize/restore/close smoke pass with validation.
-Full UI/parity, repair, rig/animation, export, PBR lighting/other maps and RT/PT
-remain open. Current evidence and limits are in BASE_COLOR_REPORT_2026-11-15.md.
+Full UI/parity, repair, rig/animation, export, PBR maps/environment/shadows and RT/PT
+remain open. Current evidence and limits are in DIRECT_PBR_REPORT_2026-11-15.md.
 Application name includes 2.0; engineering package starts at 0.1.0 to avoid
 confusing this new prototype with Legacy 2.0.14 or a released product.

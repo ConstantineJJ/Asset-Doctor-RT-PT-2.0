@@ -28,7 +28,13 @@
 - [x] D1: Shared image/sampler data, bounded PNG/JPEG decoder, UV/colors/MASK and immutable source; malformed/budget/recovery tests.
 - [x] D2: Vulkan SRGB images/mips/samplers/descriptors and transactional upload; source colors/textures sampled with a presentation toggle.
 - [x] D3: 36 tests, fmt/clippy/dependency checks/Windows release build; static/color/Birch0 native import/failure/lifecycle checks, 0 validation errors.
-- [ ] D4: Owner visual acceptance of base colors/UV orientation/masks; fault injection/peak memory/performance remain open.
-- [ ] Next raster increment: authored normals and bounded PBR material/lighting contracts before implementation.
-- [ ] Later: PBR, diagnostics, Heal, manual rig/animation, unified Compare, verified export and installer.
+- [x] D4a: Owner PASS with two textured car examples; this accepts those displayed base-color cases.
+- [ ] D4b: Broader UV/mask/minification cases, fault injection/peak memory/performance remain open.
+- [x] E0: Relevant read-only normal/light behavior audit and bounded ADR-0016; no legacy implementation carried over.
+- [x] E1: Preserve authored normals/material factors, derive world normals, validate malformed data/factors and geometry budgets.39 tests at CPU increment.
+- [x] E2: Optional Vulkan direct PBR, actual eye, session-only exposure/key/fill/reset; base-color mode remains default.43 tests, fmt/clippy/release/dependency checks PASS.
+- [x] E3: Native factors/PBR-textured/base-color/static/Birch0 replacement+lifecycle smoke;15 mesh presents each,0 validation errors, no capture or computer input.
+- [ ] E4: Owner visual review of PBR response; calibrated BRDF/pixel comparison, GPU fault injection and memory/performance remain unverified.
+- [ ] Next raster increment: metallic/roughness and normal-map contracts/audit before adding material texture channels; keep UI/renderer/domain separate.
+- [ ] Later: environment/shadows/full PBR, diagnostics, Heal, manual rig/animation, unified Compare, verified export and installer.
 - [ ] Later: RT → PT → Mixamo rights check/autorig/retargeting.
