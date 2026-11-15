@@ -2,7 +2,7 @@
 
 **Asset Doctor RT-PT 2.0** is a native Windows application in development for diagnosing, repairing, editing, and preparing 3D assets. The project is being built **from scratch** in Rust, with a Vulkan-based GPU renderer designed to run on local hardware.
 
-> **Status:** Native foundation verified on Windows/RTX 5060 Ti. A standalone EXE opens a native window and presents a Vulkan clear frame, with resize/minimize/restore/close and the supplied icon. Asset viewing/import, editing, PBR, RT and PT remain planned.
+> **Status:** Static GLB viewing works on Windows/RTX 5060 Ti: native Open/drop, background loading, orbit/pan/zoom/fit and depth-tested Vulkan geometry with base colors. Editing, PBR/textures, rig/animation, RT and PT remain planned. This is an engineering prototype, not the final application interface.
 
 ## Planned Features
 
@@ -15,7 +15,7 @@
 ## Technology and Design Principles
 
 - **Rust:** Application core, asset operations, project state, and processing tasks.
-- **Vulkan:** Native GPU rendering; `ash` is being considered as the initial integration library.
+- **Vulkan:** Native GPU rendering through `ash`, isolated from the asset document.
 - **Native UI:** No React, Three.js, or WebView.
 - **Modular Architecture:** Asset data and processing logic are independent of the GPU renderer and user interface.
 - **Non-Destructive Workflow:** Original assets are preserved, with repair and export operations validated through checks and re-import tests.
@@ -46,8 +46,18 @@ The supplied icon is preserved in `assets/app.png`; `assets/app.ico` is embedded
 in the EXE and `assets/window-icon.png` is applied to the window.
 
 Current runnable prototype: `target/release/AssetDoctorRTPT.exe` after release
-build. It shows a red clear-attachment test marker, not a loaded asset or final
-interface. See [native verification report](docs/NATIVE_FOUNDATION_REPORT_2026-11-15.md).
+build. Before loading a model it shows the red test marker. Press **Ctrl+O** or
+drop a self-contained static **.glb** into the window. For a known supported model,
+use [Twin_Cubes.glb](tests/fixtures/Twin_Cubes.glb).
+
+- Left drag: orbit; right/middle drag: pan; wheel: zoom.
+- **F**: frame the model; **Esc**: cancel loading; **H**: controls and compatibility.
+- Loading failure/cancellation retains the previous model. Sources are read only.
+- This increment supports opaque static triangles and embedded BIN geometry.
+  It displays base colors with face lighting, without textures or PBR. External
+  resources, compressed geometry, sparse accessors, transparency, skins, animations
+  and morph targets are explicitly rejected. See the [compatibility and verification
+  report](docs/STATIC_VIEWER_REPORT_2026-11-15.md) for exact scope.
 
 ## Build on Windows
 
@@ -73,13 +83,15 @@ environment. Its explicit array preserves Cargo's argument separator:
 .\tools\dev.ps1 -Command @('test','--workspace','--locked')
 .\tools\dev.ps1 -Command @('run','--locked','-p','ad-desktop','--','--require-validation')
 .\tools\smoke.ps1
+.\tools\import-smoke.ps1
+.\tools\import-smoke.ps1 -SynchronizationValidation
 ```
 
 The separate probe prints actual GPU/API/heap/queue/extension availability. It does not
 enable RT or create a swapchain. Without validation layers the ordinary probe
 reports `validation_enabled=false`; `--require-validation` fails explicitly.
 The native experiment requires swapchain-maintenance presentation fences; broader
-device fallback is not implemented. It uses one in-flight clear frame and an
+device fallback is not implemented. It uses one in-flight frame and an
 overlay-compatible UNORM target; the PBR color pipeline remains future work.
 tools/smoke.ps1 requires validation, checks resize/minimize/restore/native close
 and returns failure if any validation error occurs. It does not change overlay

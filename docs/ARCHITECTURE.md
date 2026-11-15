@@ -18,9 +18,14 @@ flowchart TD
 ```
 
 The diagram is a logical target, not all existing crates. Present workspace has
-ad-render-vulkan (GPU lifetime/presentation) and ad-desktop (window/events/OS icon).
+ad-document (immutable domain data/snapshot), ad-formats (bounded GLB parsing),
+ad-render-vulkan (GPU lifetime/presentation/geometry) and ad-desktop (window,
+input/camera, native dialogs and one bounded import worker).
 Renderer accepts raw-handle targets retained by Arc; it does not import winit.
-Neither crate owns asset/document data.
+Only ad-document defines authoritative asset data; desktop owns the current
+document and swaps it after candidate GPU upload succeeds. Renderer owns GPU
+buffers/draw ranges, never the source document. Formats/document import no UI
+or GPU crates. See ADR-0013 for the implemented static subset.
 Add a crate only when its independent boundary is implemented and justified.
 
 The owner's advisory v0.1 proposal was reviewed in
@@ -28,7 +33,8 @@ ARCHITECTURE_PROPOSAL_REVIEW.md. Session history and revision-keyed findings are
 application/derived state, not fields that every saved asset must embed. Compare
 uses one document/session inventory, not an independent editing architecture.
 
-Coordinate/ID/material/source-preservation contracts are proposals in ADR-0002.
+Coordinate/ID/source-preservation contracts are accepted for the static subset in
+ADR-0002/ADR-0013; general materials, editing/history and export remain open.
 Renderer consumes immutable snapshots keyed by document identity/revision. GPU
 handles and presentation normalization never live in document data. UI emits
 commands; workers return candidate results with version, progress and cancel state.
