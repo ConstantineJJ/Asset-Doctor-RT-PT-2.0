@@ -1,5 +1,11 @@
 # Project pulse
 
+## 2026-11-15 — MR texture data/admission increment
+
+- Owner continued after a PBR car screenshot showing exposure/key controls. Recorded as owner evidence for that example, not full map/BRDF acceptance. Relevant read-only map behavior audit and ADR-0017 accepted.
+- Generic independent Texture retains image/sampler identity across base-color and MR roles. Admission counts unique decoded pixels once and each sampled transfer variant separately, including prospective mip storage/count caps. Cache shares CPU pixels while admitting SRGB and linear use. Import preserves separate declared MR UVs and image; snapshot56bytes/vertex+indices. Embedded MR resource restrictions now apply even in base-color mode; failures retain the old asset.
+- Numeric MR_Checker fixture uses one encoded image/source texture in both roles, distinct UV0/UV1, adversarial R/A and MR-only material; Bad_MR_Image tests MR-only malformed decode.47workspace tests and clippy PASS; encoding-budget refusal failed before implementation then passed. Source review found a variant-count predecode gap; reproduced RED and fixed GREEN so exhausted variants refuse before a new image codec. GPU sampling follows; no native launch in this data step. No new dependency or source edit/push.
+
 ## 2026-11-15 — Optional direct PBR on Vulkan
 
 - Added a fourth GPU normal stream and128-byte camera/material/light push block. Direct preview uses GGX/Smith/Schlick metallic workflow, one fixed directional key, explicitly approximate fill, exposure and Reinhard mapping. Source roughness is preserved; shader floors it at0.045 for a finite specular lobe. Authored normals face the camera in the existing two-sided geometry view. Default base-color branch retains prior face lighting and texture/MASK behavior.

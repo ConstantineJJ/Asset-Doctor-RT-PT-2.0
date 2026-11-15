@@ -100,7 +100,9 @@ pub struct MeshPrimitive {
     pub base_color: [f32; 4],
     pub uvs: Option<Vec<[f32; 2]>>,
     pub colors: Option<Vec<[f32; 4]>>,
-    pub color_texture: Option<Arc<ColorTexture>>,
+    pub color_texture: Option<Arc<Texture>>,
+    pub metallic_roughness_texture: Option<Arc<Texture>>,
+    pub metallic_roughness_uvs: Option<Vec<[f32; 2]>>,
     pub alpha_cutoff: Option<f32>,
 }
 pub struct Node {
@@ -133,7 +135,8 @@ pub struct DrawRange {
     pub index_count: u32,
     pub base_color: [f32; 4],
     pub metallic_roughness: [f32; 2],
-    pub color_texture: Option<Arc<ColorTexture>>,
+    pub color_texture: Option<Arc<Texture>>,
+    pub metallic_roughness_texture: Option<Arc<Texture>>,
     pub alpha_cutoff: Option<f32>,
 }
 pub struct GeometrySnapshot {
@@ -143,6 +146,7 @@ pub struct GeometrySnapshot {
     pub normals: Vec<[f32; 3]>,
     pub fallback_normal_vertices: usize,
     pub uvs: Vec<[f32; 2]>,
+    pub metallic_roughness_uvs: Vec<[f32; 2]>,
     pub colors: Vec<[f32; 4]>,
     pub indices: Vec<u32>,
     pub draws: Vec<DrawRange>,
@@ -180,7 +184,20 @@ impl AssetDocument {
                 ));
             }
             if let Some(texture) = &mesh.color_texture {
-                textures.admit(texture, limits)?;
+                textures.admit(texture, TextureEncoding::Srgb, limits)?;
+            }
+            if let Some(texture) = &mesh.metallic_roughness_texture {
+                textures.admit(texture, TextureEncoding::Linear, limits)?;
+            }
+            if mesh.metallic_roughness_uvs.as_ref().is_some_and(|uv| {
+                uv.len() != mesh.positions.len() || uv.iter().flatten().any(|v| !v.is_finite())
+            }) || (mesh.metallic_roughness_texture.is_some()
+                && mesh.metallic_roughness_uvs.is_none())
+            {
+                return Err(AssetError::new(
+                    ErrorCode::InvalidGeometry,
+                    "Invalid metallic/roughness UV attributes",
+                ));
             }
             if mesh.uvs.as_ref().is_some_and(|uv| {
                 uv.len() != mesh.positions.len() || uv.iter().flatten().any(|v| !v.is_finite())
@@ -369,6 +386,7 @@ impl AssetDocument {
             normals: Vec::new(),
             fallback_normal_vertices: 0,
             uvs: Vec::new(),
+            metallic_roughness_uvs: Vec::new(),
             colors: Vec::new(),
             indices: Vec::new(),
             draws: Vec::new(),
@@ -390,6 +408,15 @@ impl AssetDocument {
         result.colors.try_reserve_exact(vertices).map_err(|_| {
             AssetError::new(ErrorCode::ResourceLimit, "Cannot allocate scene colors")
         })?;
+        result
+            .metallic_roughness_uvs
+            .try_reserve_exact(vertices)
+            .map_err(|_| {
+                AssetError::new(
+                    ErrorCode::ResourceLimit,
+                    "Cannot allocate metallic/roughness UVs",
+                )
+            })?;
         result.indices.try_reserve_exact(indices).map_err(|_| {
             AssetError::new(ErrorCode::ResourceLimit, "Cannot allocate scene indices")
         })?;
@@ -423,6 +450,11 @@ impl AssetDocument {
                 result
                     .uvs
                     .push(mesh.uvs.as_ref().map_or([0.; 2], |uv| uv[i]));
+                result.metallic_roughness_uvs.push(
+                    mesh.metallic_roughness_uvs
+                        .as_ref()
+                        .map_or([0.; 2], |uv| uv[i]),
+                );
                 result
                     .colors
                     .push(mesh.colors.as_ref().map_or([1.; 4], |colors| colors[i]));
@@ -433,6 +465,7 @@ impl AssetDocument {
                 base_color: mesh.base_color,
                 metallic_roughness: mesh.metallic_roughness,
                 color_texture: mesh.color_texture.clone(),
+                metallic_roughness_texture: mesh.metallic_roughness_texture.clone(),
                 alpha_cutoff: mesh.alpha_cutoff,
             });
             for (i, &index) in mesh.indices.iter().enumerate() {
@@ -454,7 +487,7 @@ impl AssetDocument {
 
 pub fn geometry_bytes(vertices: usize, indices: usize) -> AssetResult<usize> {
     vertices
-        .checked_mul(48)
+        .checked_mul(56)
         .and_then(|value| {
             indices
                 .checked_mul(4)
@@ -481,6 +514,8 @@ mod tests {
                 uvs: None,
                 colors: None,
                 color_texture: None,
+                metallic_roughness_texture: None,
+                metallic_roughness_uvs: None,
                 alpha_cutoff: None,
             }],
             nodes: vec![
@@ -548,7 +583,7 @@ mod tests {
             .unwrap();
         assert_eq!(snapshot.normals, [[0.; 3]; 4]);
         assert_eq!(snapshot.fallback_normal_vertices, 4);
-        assert_eq!(geometry_bytes(4, 3).unwrap(), 204);
+        assert_eq!(geometry_bytes(4, 3).unwrap(), 236);
         for bad in [f32::NAN, -0.1, 1.1] {
             let mut data = parts();
             data.meshes[0].metallic_roughness[0] = bad;

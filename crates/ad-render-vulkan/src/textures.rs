@@ -4,7 +4,7 @@ use crate::{
     resources::{Buffer, memory_type},
 };
 use ad_document::{
-    ColorTexture, DrawRange, Filter, ImportLimits, Mipmap, TextureAdmission, TextureImage,
+    DrawRange, Filter, ImportLimits, Mipmap, Texture, TextureAdmission, TextureImage,
     TextureSampler, Wrap,
 };
 use ash::vk;
@@ -443,7 +443,7 @@ pub(crate) struct TextureBindings {
 impl TextureBindings {
     pub fn new(gpu: Arc<Gpu>, draws: &[DrawRange]) -> GpuResult<Self> {
         let mut admission = TextureAdmission::default();
-        let mut textures = vec![Arc::new(ColorTexture {
+        let mut textures = vec![Arc::new(Texture {
             image: Arc::new(TextureImage {
                 width: 1,
                 height: 1,
@@ -455,7 +455,11 @@ impl TextureBindings {
         let mut draw_slots = Vec::with_capacity(draws.len());
         for draw in draws {
             let slot = if let Some(texture) = &draw.color_texture {
-                admission.admit(texture, ImportLimits::default())?;
+                admission.admit(
+                    texture,
+                    ad_document::TextureEncoding::Srgb,
+                    ImportLimits::default(),
+                )?;
                 *lookup
                     .entry(Arc::as_ptr(texture) as usize)
                     .or_insert_with(|| {

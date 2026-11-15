@@ -1,6 +1,6 @@
 use ad_document::{
-    AssetError, AssetResult, Cancellation, ColorTexture, ErrorCode, Filter, ImportLimits, Mipmap,
-    TextureImage, TextureSampler, Wrap, mip_storage_bytes,
+    AssetError, AssetResult, Cancellation, ErrorCode, Filter, ImportLimits, Mipmap, Texture,
+    TextureAdmission, TextureEncoding, TextureImage, TextureSampler, Wrap, mip_storage_bytes,
 };
 use image::{ImageDecoder, ImageReader};
 use std::{collections::HashMap, io::Cursor, sync::Arc};
@@ -13,32 +13,34 @@ fn image_error(error: image::ImageError) -> AssetError {
     };
     AssetError::new(
         code,
-        format!("Cannot decode embedded base-color image: {error}"),
+        format!("Cannot decode embedded material image: {error}"),
     )
 }
 fn budget() -> AssetError {
     AssetError::new(
         ErrorCode::ResourceLimit,
-        "Base-color images exceed the texture budget",
+        "Material images exceed the texture budget",
     )
 }
 
 #[derive(Default)]
-pub struct ColorImages {
+pub struct MaterialImages {
     images: HashMap<usize, Arc<TextureImage>>,
-    textures: HashMap<usize, Arc<ColorTexture>>,
-    mip_bytes: usize,
+    textures: HashMap<usize, Arc<Texture>>,
+    admission: TextureAdmission,
 }
-impl ColorImages {
+impl MaterialImages {
     pub fn load(
         &mut self,
         texture: gltf::Texture<'_>,
+        encoding: TextureEncoding,
         bin: &[u8],
         limits: ImportLimits,
         cancel: &Cancellation,
-    ) -> AssetResult<Arc<ColorTexture>> {
+    ) -> AssetResult<Arc<Texture>> {
         cancel.check()?;
         if let Some(existing) = self.textures.get(&texture.index()) {
+            self.admission.admit(existing, encoding, limits)?;
             return Ok(existing.clone());
         }
         if self.textures.len() >= limits.textures {
@@ -48,13 +50,15 @@ impl ColorImages {
         let image = if let Some(image) = self.images.get(&source.index()) {
             image.clone()
         } else {
-            if self.images.len() >= limits.textures {
+            if self.images.len() >= limits.textures
+                || self.admission.stats.sampled_images >= limits.textures
+            {
                 return Err(budget());
             }
             let gltf::image::Source::View { view, mime_type } = source.source() else {
                 return Err(AssetError::new(
                     ErrorCode::Unsupported,
-                    "Base-color images must use embedded PNG/JPEG buffer views in this build",
+                    "Material images must use embedded PNG/JPEG buffer views in this build",
                 ));
             };
             let end = view
@@ -69,12 +73,9 @@ impl ColorImages {
             })?;
             let remaining = limits
                 .texture_bytes
-                .checked_sub(self.mip_bytes)
+                .checked_sub(self.admission.stats.mip_bytes)
                 .ok_or_else(budget)?;
-            let image = Arc::new(decode(encoded, mime_type, limits, remaining, cancel)?);
-            self.mip_bytes += mip_storage_bytes(image.width, image.height)?;
-            self.images.insert(source.index(), image.clone());
-            image
+            Arc::new(decode(encoded, mime_type, limits, remaining, cancel)?)
         };
         use gltf::texture::{MagFilter, MinFilter, WrappingMode};
         let sampler = texture.sampler();
@@ -91,7 +92,7 @@ impl ColorImages {
             WrappingMode::MirroredRepeat => Wrap::MirroredRepeat,
             WrappingMode::Repeat => Wrap::Repeat,
         };
-        let color = Arc::new(ColorTexture {
+        let color = Arc::new(Texture {
             image,
             sampler: TextureSampler {
                 min,
@@ -105,6 +106,8 @@ impl ColorImages {
                 v: wrap(sampler.wrap_t()),
             },
         });
+        self.admission.admit(&color, encoding, limits)?;
+        self.images.insert(source.index(), color.image.clone());
         self.textures.insert(texture.index(), color.clone());
         Ok(color)
     }
@@ -122,7 +125,7 @@ fn decode(
         _ => {
             return Err(AssetError::new(
                 ErrorCode::Unsupported,
-                "Only embedded PNG/JPEG base-color images are supported",
+                "Only embedded PNG/JPEG material images are supported",
             ));
         }
     };
@@ -142,7 +145,7 @@ fn decode(
         {
             return Err(AssetError::new(
                 ErrorCode::Unsupported,
-                "Base-color images above 8 bits per channel are not supported yet",
+                "Material images above 8 bits per channel are not supported yet",
             ));
         }
         decoder.dimensions()
@@ -192,6 +195,69 @@ pub fn validate_attribute(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn exhausted_variant_count_refuses_new_image_before_entering_its_codec() {
+        let glb =
+            gltf::binary::Glb::from_slice(include_bytes!("../../../tests/fixtures/MR_Checker.glb"))
+                .unwrap();
+        let mut metadata: serde_json::Value = serde_json::from_slice(&glb.json).unwrap();
+        let views = metadata["bufferViews"].as_array_mut().unwrap();
+        let view = views.len();
+        views.push(serde_json::json!({"buffer":0,"byteOffset":0,"byteLength":7}));
+        metadata["images"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"bufferView":view,"mimeType":"image/png"}));
+        metadata["textures"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"source":1}));
+        let doc = gltf::Document::from_json(serde_json::from_value(metadata).unwrap()).unwrap();
+        let bin = glb.bin.as_deref().unwrap();
+        let limits = ImportLimits {
+            textures: 2,
+            ..Default::default()
+        };
+        let mut images = MaterialImages::default();
+        let cancel = Cancellation::default();
+        images
+            .load(
+                doc.textures().next().unwrap(),
+                TextureEncoding::Srgb,
+                bin,
+                limits,
+                &cancel,
+            )
+            .unwrap();
+        images
+            .load(
+                doc.textures().next().unwrap(),
+                TextureEncoding::Linear,
+                bin,
+                limits,
+                &cancel,
+            )
+            .unwrap();
+        let error = images
+            .load(
+                doc.textures().nth(1).unwrap(),
+                TextureEncoding::Linear,
+                bin,
+                limits,
+                &cancel,
+            )
+            .err()
+            .unwrap();
+        // The malformed PNG would return InvalidFormat if its codec were entered.
+        assert_eq!(error.code, ErrorCode::ResourceLimit);
+        assert_eq!(
+            (
+                images.admission.stats.images,
+                images.admission.stats.sampled_images
+            ),
+            (1, 2)
+        );
+    }
     #[test]
     fn jpeg_is_decoded_with_admission_and_cancel_checks() {
         let mut data = Vec::new();

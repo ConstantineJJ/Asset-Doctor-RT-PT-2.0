@@ -12,6 +12,12 @@
     "origin": "Project-authored numeric test geometry and PNG; no external content"
   },
   {
+    "file": "Bad_MR_Image.glb",
+    "bytes": 36552,
+    "sha256": "6d04310b1ea0550cd0fef5fc52a15bfa2321e66cd2d155307c7499afd5452ab2",
+    "origin": "Project-authored numeric MR/UV/PNG data; no external content"
+  },
+  {
     "file": "Bad_Truncated.glb",
     "bytes": 1097,
     "sha256": "bfbc145672afb86c56c7acd8e6fc970594fa4b8d9fc83166406d0c63bc1f2756",
@@ -28,6 +34,12 @@
     "bytes": 1840,
     "sha256": "03a09f28d6dd14e56cb3eccab154671a4b2afad871ea843d094f32c4bd1dc85f",
     "origin": "Project-authored numeric test geometry and PNG; no external content"
+  },
+  {
+    "file": "MR_Checker.glb",
+    "bytes": 36640,
+    "sha256": "1d887c1d91641276c6bff2c4e063b55271f0472099b2aea5b686c39e800fe93f",
+    "origin": "Project-authored numeric MR/UV/PNG data; no external content"
   },
   {
     "file": "Pbr_Factors.glb",

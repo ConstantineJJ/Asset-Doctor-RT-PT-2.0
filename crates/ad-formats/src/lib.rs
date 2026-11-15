@@ -2,7 +2,7 @@
 mod color;
 use ad_document::{
     AssetDocument, AssetError, AssetResult, Cancellation, DocumentId, DocumentParts, ErrorCode,
-    ImportLimits, MeshId, MeshPrimitive, Node, NodeId, geometry_bytes,
+    ImportLimits, MeshId, MeshPrimitive, Node, NodeId, TextureEncoding, geometry_bytes,
 };
 use std::sync::Arc;
 
@@ -149,7 +149,7 @@ pub fn import_glb(
     let mut meshes = Vec::new();
     let mut mesh_ids = Vec::new();
     let mut decoded = 0usize;
-    let mut color_images = color::ColorImages::default();
+    let mut material_images = color::MaterialImages::default();
     for mesh in doc.meshes() {
         let mut ids = Vec::new();
         for primitive in mesh.primitives() {
@@ -232,31 +232,38 @@ pub fn import_glb(
                 .material()
                 .pbr_metallic_roughness()
                 .base_color_texture();
-            let mut uvs = None;
-            if let Some(info) = &color_texture {
-                let accessor = primitive
-                    .get(&gltf::Semantic::TexCoords(info.tex_coord()))
-                    .ok_or_else(|| {
-                        invalid("Base-color texture needs its declared TEXCOORD attribute")
-                    })?;
-                color::validate_attribute(accessor, position.count(), false)?;
-                let mut values = Vec::new();
-                values
-                    .try_reserve_exact(position.count())
-                    .map_err(|_| budget())?;
-                for (i, uv) in reader
-                    .read_tex_coords(info.tex_coord())
-                    .ok_or_else(|| invalid("Cannot read texture coordinates"))?
-                    .into_f32()
-                    .enumerate()
-                {
-                    if i % 4096 == 0 {
-                        cancel.check()?;
+            let mr_texture = primitive
+                .material()
+                .pbr_metallic_roughness()
+                .metallic_roughness_texture();
+            let mut uv_sets = [None, None];
+            for (info, output) in [&color_texture, &mr_texture].into_iter().zip(&mut uv_sets) {
+                if let Some(info) = info {
+                    let accessor = primitive
+                        .get(&gltf::Semantic::TexCoords(info.tex_coord()))
+                        .ok_or_else(|| {
+                            invalid("Material texture needs its declared TEXCOORD attribute")
+                        })?;
+                    color::validate_attribute(accessor, position.count(), false)?;
+                    let mut values = Vec::new();
+                    values
+                        .try_reserve_exact(position.count())
+                        .map_err(|_| budget())?;
+                    for (i, uv) in reader
+                        .read_tex_coords(info.tex_coord())
+                        .ok_or_else(|| invalid("Cannot read texture coordinates"))?
+                        .into_f32()
+                        .enumerate()
+                    {
+                        if i % 4096 == 0 {
+                            cancel.check()?;
+                        }
+                        values.push(uv);
                     }
-                    values.push(uv);
+                    *output = Some(values);
                 }
-                uvs = Some(values);
             }
+            let [uvs, metallic_roughness_uvs] = uv_sets;
             let mut colors = None;
             if let Some(accessor) = primitive.get(&gltf::Semantic::Colors(0)) {
                 color::validate_attribute(accessor, position.count(), true)?;
@@ -278,7 +285,20 @@ pub fn import_glb(
                 colors = Some(values);
             }
             let color_texture = color_texture
-                .map(|info| color_images.load(info.texture(), bin, limits, cancel))
+                .map(|info| {
+                    material_images.load(info.texture(), TextureEncoding::Srgb, bin, limits, cancel)
+                })
+                .transpose()?;
+            let metallic_roughness_texture = mr_texture
+                .map(|info| {
+                    material_images.load(
+                        info.texture(),
+                        TextureEncoding::Linear,
+                        bin,
+                        limits,
+                        cancel,
+                    )
+                })
                 .transpose()?;
             let alpha_cutoff = (primitive.material().alpha_mode()
                 == gltf::material::AlphaMode::Mask)
@@ -333,6 +353,8 @@ pub fn import_glb(
                 uvs,
                 colors,
                 color_texture,
+                metallic_roughness_texture,
+                metallic_roughness_uvs,
                 alpha_cutoff,
             });
         }
@@ -354,17 +376,16 @@ pub fn import_glb(
         .or_else(|| doc.scenes().next())
         .ok_or_else(|| invalid("GLB has no scene"))?;
     let roots = scene.nodes().map(|node| NodeId(node.index())).collect();
-    let mut notes = vec!["Обе стороны граней видимы. PBR использует параметры металла/шероховатости без окружения и теней.".into()];
+    let mut notes = vec!["Обе стороны граней видимы. PBR использует параметры и карты металла/шероховатости без окружения и теней.".into()];
     if doc.materials().any(|m| {
-        m.pbr_metallic_roughness()
-            .metallic_roughness_texture()
-            .is_some()
-            || m.normal_texture().is_some()
+        m.normal_texture().is_some()
             || m.occlusion_texture().is_some()
             || m.emissive_texture().is_some()
             || m.emissive_factor() != [0.; 3]
     }) {
-        notes.push("Карты металла/шероховатости, нормалей, окклюзии и свечение сохранены в источнике, но не отображаются.".into());
+        notes.push(
+            "Карты нормалей, окклюзии и свечение сохранены в источнике, но не отображаются.".into(),
+        );
     }
     if doc.scenes().len() > 1 {
         notes.push("Отображается только основная/первая сцена.".into());
@@ -462,6 +483,105 @@ mod tests {
             .unwrap();
         assert_eq!(scene.draws[0].metallic_roughness, [1.; 2]);
         assert_eq!(scene.fallback_normal_vertices, scene.positions.len());
+    }
+    #[test]
+    fn mr_texture_uses_independent_uvs_and_shares_pixels_across_transfer_roles() {
+        let source: Arc<[u8]> =
+            Arc::from(include_bytes!("../../../tests/fixtures/MR_Checker.glb").as_slice());
+        let doc = import_glb(
+            source.clone(),
+            "MR".into(),
+            DocumentId(1),
+            ImportLimits::default(),
+            &Cancellation::default(),
+        )
+        .unwrap();
+        let scene = doc
+            .snapshot(ImportLimits::default(), &Cancellation::default())
+            .unwrap();
+        let stats = doc.texture_stats();
+        assert_eq!(
+            (
+                stats.images,
+                stats.textures,
+                stats.sampled_images,
+                stats.rgba_bytes,
+                stats.mip_bytes
+            ),
+            (1, 1, 2, 16, 40)
+        );
+        assert_eq!(scene.uvs[0], [0.25, 0.25]);
+        assert_eq!(scene.metallic_roughness_uvs[0], [0., 1.]);
+        assert!(Arc::ptr_eq(
+            scene.draws[0].color_texture.as_ref().unwrap(),
+            scene.draws[0].metallic_roughness_texture.as_ref().unwrap()
+        ));
+        assert!(Arc::ptr_eq(
+            scene.draws[0].metallic_roughness_texture.as_ref().unwrap(),
+            scene.draws[2].metallic_roughness_texture.as_ref().unwrap()
+        ));
+        assert_eq!(
+            &*scene.draws[0]
+                .metallic_roughness_texture
+                .as_ref()
+                .unwrap()
+                .image
+                .rgba,
+            &[
+                255, 64, 0, 0, 0, 128, 255, 255, 128, 255, 128, 0, 255, 0, 255, 255
+            ]
+        );
+        assert_eq!(scene.draws[1].metallic_roughness, [0.5, 0.5]);
+        assert!(scene.draws[2].color_texture.is_none());
+        assert!(Arc::ptr_eq(doc.source(), &source));
+        for limits in [
+            ImportLimits {
+                texture_bytes: 39,
+                ..Default::default()
+            },
+            ImportLimits {
+                textures: 1,
+                ..Default::default()
+            },
+        ] {
+            assert!(matches!(
+                import_glb(
+                    source.clone(),
+                    "MR".into(),
+                    DocumentId(2),
+                    limits,
+                    &Cancellation::default()
+                ),
+                Err(AssetError {
+                    code: ErrorCode::ResourceLimit,
+                    ..
+                })
+            ));
+        }
+    }
+    #[test]
+    fn malformed_mr_images_missing_or_invalid_uvs_are_explicit_errors() {
+        assert!(matches!(
+            import_glb(
+                Arc::from(include_bytes!("../../../tests/fixtures/Bad_MR_Image.glb").as_slice()),
+                "bad MR".into(),
+                DocumentId(1),
+                ImportLimits::default(),
+                &Cancellation::default()
+            ),
+            Err(AssetError {
+                code: ErrorCode::InvalidFormat,
+                ..
+            })
+        ));
+        let mut json = json_doc();
+        json["images"] = json!([{"bufferView":0,"mimeType":"image/png"}]);
+        json["textures"] = json!([{"source":0}]);
+        json["materials"][0]["pbrMetallicRoughness"]["metallicRoughnessTexture"] =
+            json!({"index":0,"texCoord":1});
+        assert!(load(&json).err().unwrap().message.contains("TEXCOORD"));
+        json["meshes"][0]["primitives"][0]["attributes"]["TEXCOORD_1"] = json!(0);
+        assert!(load(&json).is_err());
     }
     #[test]
     fn material_fixture_preserves_factor_variation_and_ignored_map_notice() {
