@@ -8,6 +8,7 @@ pub mod renderer;
 mod resources;
 mod scene;
 mod swapchain;
+mod textures;
 pub mod ui;
 pub use gpu::SurfaceTarget;
 

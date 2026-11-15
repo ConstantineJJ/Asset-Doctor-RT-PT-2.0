@@ -1,12 +1,24 @@
+use crate::textures::TextureBindings;
 use crate::{context::GpuResult, gpu::Gpu, resources::Buffer};
-use ad_document::{DocumentId, DrawRange, GeometrySnapshot, ImportLimits, geometry_bytes};
+use ad_document::{DocumentId, GeometrySnapshot, ImportLimits, geometry_bytes};
 use ash::vk;
 use std::sync::Arc;
+
+pub(crate) struct GpuDraw {
+    pub index_start: u32,
+    pub index_count: u32,
+    pub base_color: [f32; 4],
+    pub alpha_cutoff: Option<f32>,
+    pub texture_slot: usize,
+}
 
 pub(crate) struct GpuScene {
     pub vertices: Buffer,
     pub indices: Buffer,
-    pub draws: Vec<DrawRange>,
+    pub uvs: Buffer,
+    pub colors: Buffer,
+    pub textures: TextureBindings,
+    pub draws: Vec<GpuDraw>,
     pub document_id: DocumentId,
     pub revision: u64,
 }
@@ -16,6 +28,14 @@ impl GpuScene {
             || snapshot.indices.is_empty()
             || snapshot.draws.is_empty()
             || snapshot.draws.len() > ImportLimits::default().draws
+            || snapshot.uvs.len() != snapshot.positions.len()
+            || snapshot.colors.len() != snapshot.positions.len()
+            || snapshot.uvs.iter().flatten().any(|v| !v.is_finite())
+            || snapshot
+                .colors
+                .iter()
+                .flatten()
+                .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
             || geometry_bytes(snapshot.positions.len(), snapshot.indices.len())?
                 > ImportLimits::default().snapshot_bytes
             || snapshot
@@ -29,6 +49,7 @@ impl GpuScene {
                 .any(|value| !value.is_finite())
             || snapshot.draws.iter().any(|draw| {
                 draw.index_count == 0
+                    || draw.alpha_cutoff.is_some_and(|v| !v.is_finite() || v < 0.)
                     || !draw.index_count.is_multiple_of(3)
                     || draw
                         .index_start
@@ -46,7 +67,7 @@ impl GpuScene {
         }
         // SAFETY: Arrays contain only initialized f32/u32 values, with no padding.
         // Slices borrow the immutable snapshot through the synchronous copy.
-        let (vertices, indices) = unsafe {
+        let (vertices, indices, uvs, colors) = unsafe {
             (
                 std::slice::from_raw_parts(
                     snapshot.positions.as_ptr().cast::<u8>(),
@@ -56,24 +77,39 @@ impl GpuScene {
                     snapshot.indices.as_ptr().cast::<u8>(),
                     snapshot.indices.len() * 4,
                 ),
+                std::slice::from_raw_parts(
+                    snapshot.uvs.as_ptr().cast::<u8>(),
+                    snapshot.uvs.len() * 8,
+                ),
+                std::slice::from_raw_parts(
+                    snapshot.colors.as_ptr().cast::<u8>(),
+                    snapshot.colors.len() * 16,
+                ),
             )
         };
         let vertices = Buffer::upload(gpu.clone(), vertices, vk::BufferUsageFlags::VERTEX_BUFFER)?;
-        let indices = Buffer::upload(gpu, indices, vk::BufferUsageFlags::INDEX_BUFFER)?;
+        let indices = Buffer::upload(gpu.clone(), indices, vk::BufferUsageFlags::INDEX_BUFFER)?;
+        let uvs = Buffer::upload(gpu.clone(), uvs, vk::BufferUsageFlags::VERTEX_BUFFER)?;
+        let colors = Buffer::upload(gpu.clone(), colors, vk::BufferUsageFlags::VERTEX_BUFFER)?;
+        let textures = TextureBindings::new(gpu, &snapshot.draws)?;
         let draws = snapshot
             .draws
             .iter()
-            .map(|d| DrawRange {
+            .enumerate()
+            .map(|(i, d)| GpuDraw {
                 index_start: d.index_start,
                 index_count: d.index_count,
                 base_color: d.base_color,
-                color_texture: d.color_texture.clone(),
                 alpha_cutoff: d.alpha_cutoff,
+                texture_slot: textures.draw_slots[i],
             })
             .collect();
         Ok(Self {
             vertices,
             indices,
+            uvs,
+            colors,
+            textures,
             draws,
             document_id: snapshot.document_id,
             revision: snapshot.revision,

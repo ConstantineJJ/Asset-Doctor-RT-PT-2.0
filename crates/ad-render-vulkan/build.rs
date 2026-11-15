@@ -25,6 +25,18 @@ fn main() {
         let options = naga::back::spv::Options {
             flags: naga::back::spv::WriterFlags::LABEL_VARYINGS,
             fake_missing_bindings: false,
+            binding_map: (0..2)
+                .map(|binding| {
+                    (
+                        naga::ResourceBinding { group: 0, binding },
+                        naga::back::spv::BindingInfo {
+                            descriptor_set: 0,
+                            binding,
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect(),
             ..Default::default()
         };
         let pipeline = naga::back::spv::PipelineOptions {

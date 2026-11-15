@@ -1,0 +1,560 @@
+use crate::{
+    context::GpuResult,
+    gpu::Gpu,
+    resources::{Buffer, memory_type},
+};
+use ad_document::{
+    ColorTexture, DrawRange, Filter, ImportLimits, Mipmap, TextureAdmission, TextureImage,
+    TextureSampler, Wrap,
+};
+use ash::vk;
+use std::{collections::HashMap, sync::Arc};
+
+pub(crate) struct TextureLayout {
+    pub handle: vk::DescriptorSetLayout,
+    gpu: Arc<Gpu>,
+}
+impl TextureLayout {
+    pub fn new(gpu: Arc<Gpu>) -> GpuResult<Self> {
+        let bindings = [
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_count(1)
+                .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_count(1)
+                .descriptor_type(vk::DescriptorType::SAMPLER)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+        ];
+        // SAFETY: Bindings live through creation; owner retains the device.
+        let handle = unsafe {
+            gpu.device.create_descriptor_set_layout(
+                &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
+                None,
+            )?
+        };
+        Ok(Self { handle, gpu })
+    }
+}
+impl Drop for TextureLayout {
+    fn drop(&mut self) {
+        // SAFETY: Pipeline/pool owners retire dependent use before releasing layout.
+        unsafe {
+            self.gpu
+                .device
+                .destroy_descriptor_set_layout(self.handle, None);
+        }
+    }
+}
+
+struct Upload {
+    pool: vk::CommandPool,
+    fence: vk::Fence,
+    pending: bool,
+    gpu: Arc<Gpu>,
+}
+impl Upload {
+    fn new(gpu: Arc<Gpu>) -> GpuResult<Self> {
+        let mut upload = Self {
+            pool: vk::CommandPool::null(),
+            fence: vk::Fence::null(),
+            pending: false,
+            gpu,
+        };
+        // SAFETY: Partial allocations are immediately owned and cleaned on failure.
+        unsafe {
+            upload.pool = upload.gpu.device.create_command_pool(
+                &vk::CommandPoolCreateInfo::default()
+                    .queue_family_index(upload.gpu.family)
+                    .flags(vk::CommandPoolCreateFlags::TRANSIENT),
+                None,
+            )?;
+            upload.fence = upload
+                .gpu
+                .device
+                .create_fence(&vk::FenceCreateInfo::default(), None)?;
+        }
+        Ok(upload)
+    }
+    fn submit(&mut self, command: vk::CommandBuffer) -> GpuResult<()> {
+        // SAFETY: Single-threaded queue ownership, recorded private command buffer;
+        // source staging/image allocations remain live until this fence retires.
+        unsafe {
+            self.gpu.device.end_command_buffer(command)?;
+            let commands = [command];
+            let submit = [vk::SubmitInfo::default().command_buffers(&commands)];
+            self.gpu
+                .device
+                .queue_submit(self.gpu.queue, &submit, self.fence)?;
+            self.pending = true;
+            self.gpu
+                .device
+                .wait_for_fences(&[self.fence], true, u64::MAX)?;
+            self.pending = false;
+        }
+        Ok(())
+    }
+}
+impl Drop for Upload {
+    fn drop(&mut self) {
+        // SAFETY: Retire a submitted copy even if a later wait failed. On device loss
+        // Vulkan permits destruction. Command buffers are released with their pool.
+        unsafe {
+            if self.pending {
+                let _ = self.gpu.device.device_wait_idle();
+            }
+            self.gpu.device.destroy_fence(self.fence, None);
+            self.gpu.device.destroy_command_pool(self.pool, None);
+        }
+    }
+}
+
+struct GpuImage {
+    image: vk::Image,
+    memory: vk::DeviceMemory,
+    view: vk::ImageView,
+    mips: u32,
+    gpu: Arc<Gpu>,
+}
+fn barrier(
+    device: &ash::Device,
+    command: vk::CommandBuffer,
+    image: vk::Image,
+    range: vk::ImageSubresourceRange,
+    layouts: (vk::ImageLayout, vk::ImageLayout),
+    access: (vk::AccessFlags, vk::AccessFlags),
+    stages: (vk::PipelineStageFlags, vk::PipelineStageFlags),
+) {
+    let barriers = [vk::ImageMemoryBarrier::default()
+        .image(image)
+        .subresource_range(range)
+        .old_layout(layouts.0)
+        .new_layout(layouts.1)
+        .src_access_mask(access.0)
+        .dst_access_mask(access.1)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)];
+    // SAFETY: Caller records to a live command buffer with ranges/layouts tracking
+    // only the new privately owned image. No queue-family ownership transfer.
+    unsafe {
+        device.cmd_pipeline_barrier(
+            command,
+            stages.0,
+            stages.1,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &barriers,
+        );
+    }
+}
+impl GpuImage {
+    fn upload(gpu: Arc<Gpu>, data: &TextureImage) -> GpuResult<Self> {
+        data.validate(ImportLimits::default())?;
+        let staging = Buffer::upload(gpu.clone(), &data.rgba, vk::BufferUsageFlags::TRANSFER_SRC)?;
+        let mut result = Self {
+            image: vk::Image::null(),
+            memory: vk::DeviceMemory::null(),
+            view: vk::ImageView::null(),
+            mips: 32 - data.width.max(data.height).leading_zeros(),
+            gpu,
+        };
+        let device = &result.gpu.device;
+        // SAFETY: Validated nonzero dimensions/byte length; every created handle
+        // is owned before the next fallible call. Upload guard retires GPU copies.
+        unsafe {
+            let format = vk::Format::R8G8B8A8_SRGB;
+            let props = result
+                .gpu
+                .surface
+                .context
+                .instance
+                .get_physical_device_format_properties(result.gpu.physical, format);
+            let required = vk::FormatFeatureFlags::SAMPLED_IMAGE
+                | vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR
+                | vk::FormatFeatureFlags::BLIT_SRC
+                | vk::FormatFeatureFlags::BLIT_DST;
+            if !props.optimal_tiling_features.contains(required) {
+                return Err(
+                    "GPU does not support sampled SRGB images with linear mip generation".into(),
+                );
+            }
+            result.image = device.create_image(
+                &vk::ImageCreateInfo::default()
+                    .image_type(vk::ImageType::TYPE_2D)
+                    .format(format)
+                    .extent(vk::Extent3D {
+                        width: data.width,
+                        height: data.height,
+                        depth: 1,
+                    })
+                    .mip_levels(result.mips)
+                    .array_layers(1)
+                    .samples(vk::SampleCountFlags::TYPE_1)
+                    .tiling(vk::ImageTiling::OPTIMAL)
+                    .usage(
+                        vk::ImageUsageFlags::TRANSFER_DST
+                            | vk::ImageUsageFlags::TRANSFER_SRC
+                            | vk::ImageUsageFlags::SAMPLED,
+                    )
+                    .sharing_mode(vk::SharingMode::EXCLUSIVE),
+                None,
+            )?;
+            let req = device.get_image_memory_requirements(result.image);
+            result.memory = device.allocate_memory(
+                &vk::MemoryAllocateInfo::default()
+                    .allocation_size(req.size)
+                    .memory_type_index(memory_type(
+                        &result.gpu,
+                        req.memory_type_bits,
+                        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                    )?),
+                None,
+            )?;
+            device.bind_image_memory(result.image, result.memory, 0)?;
+            let range = vk::ImageSubresourceRange::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .level_count(result.mips)
+                .layer_count(1);
+            result.view = device.create_image_view(
+                &vk::ImageViewCreateInfo::default()
+                    .image(result.image)
+                    .view_type(vk::ImageViewType::TYPE_2D)
+                    .format(format)
+                    .subresource_range(range),
+                None,
+            )?;
+            let mut upload = Upload::new(result.gpu.clone())?;
+            let command = device.allocate_command_buffers(
+                &vk::CommandBufferAllocateInfo::default()
+                    .command_pool(upload.pool)
+                    .level(vk::CommandBufferLevel::PRIMARY)
+                    .command_buffer_count(1),
+            )?[0];
+            device.begin_command_buffer(
+                command,
+                &vk::CommandBufferBeginInfo::default()
+                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+            )?;
+            barrier(
+                device,
+                command,
+                result.image,
+                range,
+                (
+                    vk::ImageLayout::UNDEFINED,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                ),
+                (vk::AccessFlags::empty(), vk::AccessFlags::TRANSFER_WRITE),
+                (
+                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    vk::PipelineStageFlags::TRANSFER,
+                ),
+            );
+            device.cmd_copy_buffer_to_image(
+                command,
+                staging.handle,
+                result.image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[vk::BufferImageCopy::default()
+                    .image_subresource(
+                        vk::ImageSubresourceLayers::default()
+                            .aspect_mask(vk::ImageAspectFlags::COLOR)
+                            .layer_count(1),
+                    )
+                    .image_extent(vk::Extent3D {
+                        width: data.width,
+                        height: data.height,
+                        depth: 1,
+                    })],
+            );
+            let (mut width, mut height) = (data.width as i32, data.height as i32);
+            for level in 1..result.mips {
+                let previous = vk::ImageSubresourceRange {
+                    base_mip_level: level - 1,
+                    level_count: 1,
+                    ..range
+                };
+                barrier(
+                    device,
+                    command,
+                    result.image,
+                    previous,
+                    (
+                        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                        vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                    ),
+                    (
+                        vk::AccessFlags::TRANSFER_WRITE,
+                        vk::AccessFlags::TRANSFER_READ,
+                    ),
+                    (
+                        vk::PipelineStageFlags::TRANSFER,
+                        vk::PipelineStageFlags::TRANSFER,
+                    ),
+                );
+                let (next_w, next_h) = ((width / 2).max(1), (height / 2).max(1));
+                let sub = vk::ImageSubresourceLayers::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .layer_count(1);
+                let blit = [vk::ImageBlit::default()
+                    .src_subresource(sub.mip_level(level - 1))
+                    .src_offsets([
+                        vk::Offset3D::default(),
+                        vk::Offset3D {
+                            x: width,
+                            y: height,
+                            z: 1,
+                        },
+                    ])
+                    .dst_subresource(sub.mip_level(level))
+                    .dst_offsets([
+                        vk::Offset3D::default(),
+                        vk::Offset3D {
+                            x: next_w,
+                            y: next_h,
+                            z: 1,
+                        },
+                    ])];
+                device.cmd_blit_image(
+                    command,
+                    result.image,
+                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                    result.image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &blit,
+                    vk::Filter::LINEAR,
+                );
+                barrier(
+                    device,
+                    command,
+                    result.image,
+                    previous,
+                    (
+                        vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    ),
+                    (vk::AccessFlags::TRANSFER_READ, vk::AccessFlags::SHADER_READ),
+                    (
+                        vk::PipelineStageFlags::TRANSFER,
+                        vk::PipelineStageFlags::FRAGMENT_SHADER,
+                    ),
+                );
+                width = next_w;
+                height = next_h;
+            }
+            barrier(
+                device,
+                command,
+                result.image,
+                vk::ImageSubresourceRange {
+                    base_mip_level: result.mips - 1,
+                    level_count: 1,
+                    ..range
+                },
+                (
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                ),
+                (
+                    vk::AccessFlags::TRANSFER_WRITE,
+                    vk::AccessFlags::SHADER_READ,
+                ),
+                (
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::PipelineStageFlags::FRAGMENT_SHADER,
+                ),
+            );
+            upload.submit(command)?;
+        }
+        Ok(result)
+    }
+}
+impl Drop for GpuImage {
+    fn drop(&mut self) {
+        // SAFETY: Candidate upload guard or scene renderer retires all using work.
+        unsafe {
+            self.gpu.device.destroy_image_view(self.view, None);
+            self.gpu.device.destroy_image(self.image, None);
+            self.gpu.device.free_memory(self.memory, None);
+        }
+    }
+}
+struct Sampler {
+    handle: vk::Sampler,
+    gpu: Arc<Gpu>,
+}
+impl Sampler {
+    fn new(gpu: Arc<Gpu>, source: TextureSampler, mips: u32) -> GpuResult<Self> {
+        let filter = |value| match value {
+            Filter::Nearest => vk::Filter::NEAREST,
+            Filter::Linear => vk::Filter::LINEAR,
+        };
+        let wrap = |value| match value {
+            Wrap::Repeat => vk::SamplerAddressMode::REPEAT,
+            Wrap::MirroredRepeat => vk::SamplerAddressMode::MIRRORED_REPEAT,
+            Wrap::ClampToEdge => vk::SamplerAddressMode::CLAMP_TO_EDGE,
+        };
+        // SAFETY: No optional device features requested; all enums/LOD ranges valid.
+        let handle = unsafe {
+            gpu.device.create_sampler(
+                &vk::SamplerCreateInfo::default()
+                    .min_filter(filter(source.min))
+                    .mag_filter(filter(source.mag))
+                    .mipmap_mode(if source.mipmap == Mipmap::Linear {
+                        vk::SamplerMipmapMode::LINEAR
+                    } else {
+                        vk::SamplerMipmapMode::NEAREST
+                    })
+                    .address_mode_u(wrap(source.u))
+                    .address_mode_v(wrap(source.v))
+                    .address_mode_w(vk::SamplerAddressMode::REPEAT)
+                    .max_lod(if source.mipmap == Mipmap::None {
+                        0.
+                    } else {
+                        (mips - 1) as f32
+                    }),
+                None,
+            )?
+        };
+        Ok(Self { handle, gpu })
+    }
+}
+impl Drop for Sampler {
+    fn drop(&mut self) {
+        // SAFETY: Scene retire/pool deletion precedes releasing sampled resources.
+        unsafe {
+            self.gpu.device.destroy_sampler(self.handle, None);
+        }
+    }
+}
+
+pub(crate) struct TextureBindings {
+    pub sets: Vec<vk::DescriptorSet>,
+    pub draw_slots: Vec<usize>,
+    pool: vk::DescriptorPool,
+    layout: TextureLayout,
+    images: Vec<GpuImage>,
+    samplers: Vec<Sampler>,
+    gpu: Arc<Gpu>,
+}
+impl TextureBindings {
+    pub fn new(gpu: Arc<Gpu>, draws: &[DrawRange]) -> GpuResult<Self> {
+        let mut admission = TextureAdmission::default();
+        let mut textures = vec![Arc::new(ColorTexture {
+            image: Arc::new(TextureImage {
+                width: 1,
+                height: 1,
+                rgba: Arc::from([255; 4]),
+            }),
+            sampler: TextureSampler::default(),
+        })];
+        let mut lookup = HashMap::new();
+        let mut draw_slots = Vec::with_capacity(draws.len());
+        for draw in draws {
+            let slot = if let Some(texture) = &draw.color_texture {
+                admission.admit(texture, ImportLimits::default())?;
+                *lookup
+                    .entry(Arc::as_ptr(texture) as usize)
+                    .or_insert_with(|| {
+                        textures.push(texture.clone());
+                        textures.len() - 1
+                    })
+            } else {
+                0
+            };
+            draw_slots.push(slot);
+        }
+        let mut result = Self {
+            sets: vec![],
+            draw_slots,
+            pool: vk::DescriptorPool::null(),
+            layout: TextureLayout::new(gpu.clone())?,
+            images: vec![],
+            samplers: vec![],
+            gpu,
+        };
+        let mut images = HashMap::new();
+        let mut image_slots = Vec::with_capacity(textures.len());
+        for texture in &textures {
+            let key = Arc::as_ptr(&texture.image) as usize;
+            let slot = if let Some(slot) = images.get(&key) {
+                *slot
+            } else {
+                let slot = result.images.len();
+                result
+                    .images
+                    .push(GpuImage::upload(result.gpu.clone(), &texture.image)?);
+                images.insert(key, slot);
+                slot
+            };
+            image_slots.push(slot);
+        }
+        // SAFETY: Resource counts admitted above; layouts and image/sampler owners
+        // live through the scene. Partial pool allocation is cleaned by Self.
+        unsafe {
+            let sizes = [
+                vk::DescriptorPoolSize {
+                    ty: vk::DescriptorType::SAMPLED_IMAGE,
+                    descriptor_count: textures.len() as u32,
+                },
+                vk::DescriptorPoolSize {
+                    ty: vk::DescriptorType::SAMPLER,
+                    descriptor_count: textures.len() as u32,
+                },
+            ];
+            result.pool = result.gpu.device.create_descriptor_pool(
+                &vk::DescriptorPoolCreateInfo::default()
+                    .max_sets(textures.len() as u32)
+                    .pool_sizes(&sizes),
+                None,
+            )?;
+            let layouts = vec![result.layout.handle; textures.len()];
+            result.sets = result.gpu.device.allocate_descriptor_sets(
+                &vk::DescriptorSetAllocateInfo::default()
+                    .descriptor_pool(result.pool)
+                    .set_layouts(&layouts),
+            )?;
+            for (index, texture) in textures.iter().enumerate() {
+                let image = &result.images[image_slots[index]];
+                let sampler = Sampler::new(result.gpu.clone(), texture.sampler, image.mips)?;
+                let info = [vk::DescriptorImageInfo {
+                    sampler: sampler.handle,
+                    image_view: image.view,
+                    image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                }];
+                result.gpu.device.update_descriptor_sets(
+                    &[
+                        vk::WriteDescriptorSet::default()
+                            .dst_set(result.sets[index])
+                            .dst_binding(0)
+                            .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                            .image_info(&info),
+                        vk::WriteDescriptorSet::default()
+                            .dst_set(result.sets[index])
+                            .dst_binding(1)
+                            .descriptor_type(vk::DescriptorType::SAMPLER)
+                            .image_info(&info),
+                    ],
+                    &[],
+                );
+                result.samplers.push(sampler);
+            }
+        }
+        eprintln!(
+            "gpu_color_images={} color_textures={} mip_bytes={}",
+            admission.stats.images, admission.stats.textures, admission.stats.mip_bytes
+        );
+        Ok(result)
+    }
+}
+impl Drop for TextureBindings {
+    fn drop(&mut self) {
+        // SAFETY: Scene is retired; releasing pool invalidates sets before image data.
+        unsafe {
+            self.gpu.device.destroy_descriptor_pool(self.pool, None);
+        }
+    }
+}

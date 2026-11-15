@@ -1,3 +1,4 @@
+use crate::textures::TextureLayout;
 use crate::{context::GpuResult, gpu::Gpu};
 use ash::vk;
 use std::{io::Cursor, sync::Arc};
@@ -7,11 +8,14 @@ pub(crate) struct Push {
     pub view_projection: [[f32; 4]; 4],
     pub base_color: [f32; 4],
     pub encode_srgb: u32,
-    pub padding: [u32; 3],
+    pub alpha_cutoff: f32,
+    pub sample_textures: u32,
+    pub padding: u32,
 }
 pub(crate) struct MeshPipeline {
     pub handle: vk::Pipeline,
     pub layout: vk::PipelineLayout,
+    texture_layout: TextureLayout,
     gpu: Arc<Gpu>,
 }
 struct Shader {
@@ -50,6 +54,7 @@ impl MeshPipeline {
         let mut pipeline = Self {
             handle: vk::Pipeline::null(),
             layout: vk::PipelineLayout::null(),
+            texture_layout: TextureLayout::new(gpu.clone())?,
             gpu,
         };
         // SAFETY: All create-info arrays and shader modules live through the
@@ -61,7 +66,9 @@ impl MeshPipeline {
                 size: std::mem::size_of::<Push>() as u32,
             }];
             pipeline.layout = pipeline.gpu.device.create_pipeline_layout(
-                &vk::PipelineLayoutCreateInfo::default().push_constant_ranges(&ranges),
+                &vk::PipelineLayoutCreateInfo::default()
+                    .push_constant_ranges(&ranges)
+                    .set_layouts(&[pipeline.texture_layout.handle]),
                 None,
             )?;
             let stages = [
@@ -74,17 +81,43 @@ impl MeshPipeline {
                     .module(frag.handle)
                     .name(c"main"),
             ];
-            let bindings = [vk::VertexInputBindingDescription {
-                binding: 0,
-                stride: 12,
-                input_rate: vk::VertexInputRate::VERTEX,
-            }];
-            let attributes = [vk::VertexInputAttributeDescription {
-                location: 0,
-                binding: 0,
-                format: vk::Format::R32G32B32_SFLOAT,
-                offset: 0,
-            }];
+            let bindings = [
+                vk::VertexInputBindingDescription {
+                    binding: 0,
+                    stride: 12,
+                    input_rate: vk::VertexInputRate::VERTEX,
+                },
+                vk::VertexInputBindingDescription {
+                    binding: 1,
+                    stride: 8,
+                    input_rate: vk::VertexInputRate::VERTEX,
+                },
+                vk::VertexInputBindingDescription {
+                    binding: 2,
+                    stride: 16,
+                    input_rate: vk::VertexInputRate::VERTEX,
+                },
+            ];
+            let attributes = [
+                vk::VertexInputAttributeDescription {
+                    location: 0,
+                    binding: 0,
+                    format: vk::Format::R32G32B32_SFLOAT,
+                    offset: 0,
+                },
+                vk::VertexInputAttributeDescription {
+                    location: 1,
+                    binding: 1,
+                    format: vk::Format::R32G32_SFLOAT,
+                    offset: 0,
+                },
+                vk::VertexInputAttributeDescription {
+                    location: 2,
+                    binding: 2,
+                    format: vk::Format::R32G32B32A32_SFLOAT,
+                    offset: 0,
+                },
+            ];
             let vertex = vk::PipelineVertexInputStateCreateInfo::default()
                 .vertex_binding_descriptions(&bindings)
                 .vertex_attribute_descriptions(&attributes);

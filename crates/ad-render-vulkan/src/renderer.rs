@@ -30,6 +30,7 @@ pub struct Renderer {
     scene: Option<GpuScene>,
     overlay: Option<Overlay>,
     view_projection: [[f32; 4]; 4],
+    sample_textures: bool,
     pub frames: u64,
     pub mesh_frames: u64,
     pub recreations: u64,
@@ -52,6 +53,7 @@ impl Renderer {
             presented: vk::Fence::null(),
             presentation_pending: false,
             scene: None,
+            sample_textures: true,
             overlay: None,
             view_projection: [
                 [1., 0., 0., 0.],
@@ -118,6 +120,9 @@ impl Renderer {
         }
         self.view_projection = matrix;
         Ok(())
+    }
+    pub fn set_textures_enabled(&mut self, enabled: bool) {
+        self.sample_textures = enabled;
     }
 
     fn wait_idle(&mut self) -> GpuResult<()> {
@@ -286,7 +291,12 @@ impl Renderer {
                         },
                     }],
                 );
-                device.cmd_bind_vertex_buffers(self.command, 0, &[scene.vertices.handle], &[0]);
+                device.cmd_bind_vertex_buffers(
+                    self.command,
+                    0,
+                    &[scene.vertices.handle, scene.uvs.handle, scene.colors.handle],
+                    &[0, 0, 0],
+                );
                 device.cmd_bind_index_buffer(
                     self.command,
                     scene.indices.handle,
@@ -298,8 +308,18 @@ impl Renderer {
                         view_projection: self.view_projection,
                         base_color: draw.base_color,
                         encode_srgb: u32::from(chain.encode_srgb),
-                        padding: [0; 3],
+                        alpha_cutoff: draw.alpha_cutoff.unwrap_or(-1.),
+                        sample_textures: u32::from(self.sample_textures),
+                        padding: 0,
                     };
+                    device.cmd_bind_descriptor_sets(
+                        self.command,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        pipeline.layout,
+                        0,
+                        &[scene.textures.sets[draw.texture_slot]],
+                        &[],
+                    );
                     let bytes = std::slice::from_raw_parts(
                         (&push as *const Push).cast::<u8>(),
                         std::mem::size_of::<Push>(),

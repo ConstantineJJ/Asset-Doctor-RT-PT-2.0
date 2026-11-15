@@ -2,7 +2,7 @@ use crate::{context::GpuResult, gpu::Gpu};
 use ash::vk;
 use std::sync::Arc;
 
-fn memory_type(gpu: &Gpu, bits: u32, flags: vk::MemoryPropertyFlags) -> GpuResult<u32> {
+pub(crate) fn memory_type(gpu: &Gpu, bits: u32, flags: vk::MemoryPropertyFlags) -> GpuResult<u32> {
     // SAFETY: Read-only physical-device query on a live instance.
     let memory = unsafe {
         gpu.surface
