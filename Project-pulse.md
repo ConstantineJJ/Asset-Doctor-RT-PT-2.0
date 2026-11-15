@@ -1,5 +1,13 @@
 # Project pulse
 
+## 2026-11-15 — Source occlusion in inspection fill
+
+- Continued autonomously after normal completion. Read-only AO behavior audit/ADR-0019 accepted. Import now preserves occlusionTexture/independent UV/finite strength[0,1] default1 and strictly admits its resources even in default mode. Source geometry/bytes unchanged. Shared ORM pixels/linear upload remain deduplicated; geometry admission88bytes/vertex+indices.
+- Shader samples linearR, blends1-strength+strength*R and multiplies only approximate fill. Direct diffuse/specular and base mode unchanged. Fourth compatible descriptor set/8streams fit guaranteed minimum;128byte push unchanged (lighting.wstrength). No fifth set is allowed without camera/material binding redesign. Independent AO switch survives lighting reset. Emission remains ignored with explicit note.
+-58workspace tests(13desktop/13document/22formats/10renderer), fmt/clippy warnings denied, Windows release build and cargo-deny all gates PASS. Malformed AO-only source regression RED→GREEN. Source-only CPU/GPU review found no blocker. No new dependency/version/license exception; decoder purpose updated. Release EXE7,727,104bytes.
+- Native AO fixture maps on/off/default:15meshframes,AO15/0/0, one source image/twoformat uploads/40mipbytes shared MR+AO, bad AO replacement retained scene, lifecycle0validationerrors. Normal, color/MASK and empty UI regression0errors. Final heavy Vanguard852516vertices/1559826triangles/3images~192MiB mips:normal15/AO0(no source AO), malformed AO replacement preserved, lifecycle0errors, originalSHA256unchanged. Import runs requested child VK_LAYER_VALIDATE_SYNC=1, effective setting not independently queried.
+- Native interactive AO comparison: key0/fill1 showed map modulation with source strength0 sphere unchanged; key8/fill0 looked unchanged under AO toggle. App closed normally,7652total frames during inspection/0validationerrors, not a benchmark. Tool-displayed captures only. Logs artifacts/release-import-smoke*ao*.*, ao-ui-visual.*, vanguard-ao-regression.*. All windows closed. Quantitative pixel/LOD, peaks/fault injection remain open; no manual acceptance wait. Next: emission/binding contracts, no legacy/report changes or push.
+
 ## 2026-11-15 — Normal map rendering and autonomous visual checks
 
 - Owner explicitly authorized continued development/self-verification without per-step manual acceptance and computer use as needed. Native input/capture checks now permitted; no owner acceptance gate. Publication remains separate/unrequested.

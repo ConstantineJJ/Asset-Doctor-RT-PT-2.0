@@ -34,6 +34,7 @@ pub struct Renderer {
     sample_textures: bool,
     sample_mr_maps: bool,
     sample_normal_maps: bool,
+    sample_occlusion_maps: bool,
     eye: [f32; 3],
     lighting: ViewLighting,
     pub frames: u64,
@@ -41,6 +42,7 @@ pub struct Renderer {
     pub pbr_frames: u64,
     pub mr_frames: u64,
     pub normal_frames: u64,
+    pub occlusion_frames: u64,
     pub recreations: u64,
 }
 
@@ -64,6 +66,7 @@ impl Renderer {
             sample_textures: true,
             sample_mr_maps: true,
             sample_normal_maps: true,
+            sample_occlusion_maps: true,
             eye: [0., 0., 4.],
             lighting: ViewLighting::default(),
             overlay: None,
@@ -78,6 +81,7 @@ impl Renderer {
             pbr_frames: 0,
             mr_frames: 0,
             normal_frames: 0,
+            occlusion_frames: 0,
             recreations: 0,
         };
         // SAFETY: Live device, valid queue family. Self owns every successful
@@ -157,6 +161,9 @@ impl Renderer {
     }
     pub fn set_normal_maps_enabled(&mut self, enabled: bool) {
         self.sample_normal_maps = enabled;
+    }
+    pub fn set_occlusion_maps_enabled(&mut self, enabled: bool) {
+        self.sample_occlusion_maps = enabled;
     }
 
     fn wait_idle(&mut self) -> GpuResult<()> {
@@ -336,8 +343,9 @@ impl Renderer {
                         scene.metallic_roughness_uvs.handle,
                         scene.normal_uvs.handle,
                         scene.tangents.handle,
+                        scene.occlusion_uvs.handle,
                     ],
-                    &[0, 0, 0, 0, 0, 0, 0],
+                    &[0, 0, 0, 0, 0, 0, 0, 0],
                 );
                 device.cmd_bind_index_buffer(
                     self.command,
@@ -368,9 +376,10 @@ impl Renderer {
                                 self.sample_textures,
                                 self.sample_mr_maps,
                                 self.sample_normal_maps && draw.has_normal_map,
+                                self.sample_occlusion_maps && draw.has_occlusion_map,
                                 chain.encode_srgb,
                             ),
-                            0.,
+                            draw.occlusion_strength,
                         ],
                     };
                     device.cmd_bind_descriptor_sets(
@@ -382,6 +391,7 @@ impl Renderer {
                             scene.textures.sets[draw.texture_slots[0]],
                             scene.textures.sets[draw.texture_slots[1]],
                             scene.textures.sets[draw.texture_slots[2]],
+                            scene.textures.sets[draw.texture_slots[3]],
                         ],
                         &[],
                     );
@@ -490,6 +500,14 @@ impl Renderer {
                         self.mesh_frames += 1;
                         if self.lighting.mode == ShadingMode::DirectPbr {
                             self.pbr_frames += 1;
+                            if self.sample_occlusion_maps
+                                && self
+                                    .scene
+                                    .as_ref()
+                                    .is_some_and(|scene| scene.has_occlusion_maps)
+                            {
+                                self.occlusion_frames += 1;
+                            }
                             if self.sample_normal_maps
                                 && self
                                     .scene

@@ -42,3 +42,9 @@ mirrored/nonuniform instance without tangents, degenerate UV with scale0, and ab
 NORMAL with ignored authored tangent/negative normal scale. Alpha alternates0/255.
 One decoded image/linear mip chain20bytes. Bad_Normal_Image references a bad PNG
 only through normal maps. Regenerate with `python tools/make_normal_fixtures.py`.
+
+AO_Checker.glb adds independent UV2 and strength1/0.5/0/default1 to four authored
+spheres. One PNG/source texture is shared by base SRGB, linear MR and linear R AO
+(40prospective mipbytes across2formats). Bad_AO_Image references bad PNG only via
+AO. Regenerate with `python tools/make_ao_fixtures.py`. For visual isolation use
+key0/fill1, then compare key8/fill0: AO should affect only the former.

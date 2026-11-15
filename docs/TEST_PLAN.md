@@ -101,3 +101,14 @@ opened the OS picker; Escape cancellation retained the model. Automated filename
 focus failed despite AX/screenshot targeting, so picker file commit remains unverified
 by automation. It is not a demonstrated importer/picker application defect. No owner
 acceptance gate remains. Mikk/quantitative pixel/LOD/fault-injection checks stay open.
+
+## Source occlusion — bounded integration completed
+
+ADR-0019 adds AO strength/range/UV/admission and shared ORM tests. Malformed AO-only
+data was silently ignored (RED), then explicitly rejected (GREEN).58workspace tests
+include actual AO checkbox and lighting reset independence. Native AO on/off/default,
+normal/MASK/empty regression and heavy Vanguard normal/import/failure/lifecycle
+passed with0validation errors. AO fixture uses source strength0/0.5/1/default1 and
+independent UV2; one linear image serves MR+AO. Native interactive comparison at
+key0/fill1 showed AO modulation and unchanged strength0; key8/fill0 looked unchanged
+when toggling AO. This is qualitative validation, not a calibrated pixel metric.

@@ -25,7 +25,7 @@ fn main() {
         let options = naga::back::spv::Options {
             flags: naga::back::spv::WriterFlags::LABEL_VARYINGS,
             fake_missing_bindings: false,
-            binding_map: (0..3)
+            binding_map: (0..4)
                 .flat_map(|group| (0..2).map(move |binding| (group, binding)))
                 .map(|(group, binding)| {
                     (

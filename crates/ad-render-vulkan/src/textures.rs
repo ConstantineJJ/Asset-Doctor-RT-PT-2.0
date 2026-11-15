@@ -438,7 +438,7 @@ impl Drop for Sampler {
 /// CPU-side plan shares source identity while keeping transfer roles independent.
 struct TexturePlan {
     textures: Vec<(Arc<Texture>, TextureEncoding)>,
-    draw_slots: Vec<[usize; 3]>,
+    draw_slots: Vec<[usize; 4]>,
     stats: TextureStats,
 }
 impl TexturePlan {
@@ -459,11 +459,12 @@ impl TexturePlan {
         let mut lookup = HashMap::new();
         let mut draw_slots = Vec::with_capacity(draws.len());
         for draw in draws {
-            let mut slots = [0, 1, 1];
+            let mut slots = [0, 1, 1, 1];
             for (slot, (texture, encoding)) in slots.iter_mut().zip([
                 (&draw.color_texture, TextureEncoding::Srgb),
                 (&draw.metallic_roughness_texture, TextureEncoding::Linear),
                 (&draw.normal_texture, TextureEncoding::Linear),
+                (&draw.occlusion_texture, TextureEncoding::Linear),
             ]) {
                 if let Some(texture) = texture {
                     admission.admit(texture, encoding, ImportLimits::default())?;
@@ -487,7 +488,7 @@ impl TexturePlan {
 
 pub(crate) struct TextureBindings {
     pub sets: Vec<vk::DescriptorSet>,
-    pub draw_slots: Vec<[usize; 3]>,
+    pub draw_slots: Vec<[usize; 4]>,
     pool: vk::DescriptorPool,
     layout: TextureLayout,
     images: Vec<GpuImage>,
@@ -630,6 +631,8 @@ mod tests {
             metallic_roughness_texture: mr,
             normal_texture: None,
             normal_scale: 1.,
+            occlusion_texture: None,
+            occlusion_strength: 1.,
             alpha_cutoff: None,
         };
         let plan = TexturePlan::new(&[
@@ -640,8 +643,9 @@ mod tests {
         .unwrap();
         let mut normal_draw = draw(None, Some(plan.textures[3].0.clone()));
         normal_draw.normal_texture = normal_draw.metallic_roughness_texture.clone();
+        normal_draw.occlusion_texture = normal_draw.metallic_roughness_texture.clone();
         let shared = TexturePlan::new(&[normal_draw]).unwrap();
-        assert_eq!(shared.draw_slots, [[0, 2, 2]]);
+        assert_eq!(shared.draw_slots, [[0, 2, 2, 2]]);
         assert_eq!(
             (
                 shared.textures.len(),
@@ -650,7 +654,7 @@ mod tests {
             ),
             (3, 1, 20)
         );
-        assert_eq!(plan.draw_slots, [[2, 3, 1], [2, 1, 1], [0, 3, 1]]);
+        assert_eq!(plan.draw_slots, [[2, 3, 1, 1], [2, 1, 1, 1], [0, 3, 1, 1]]);
         assert_eq!(plan.textures.len(), 4);
         assert_eq!(plan.textures[2].1, TextureEncoding::Srgb);
         assert_eq!(plan.textures[3].1, TextureEncoding::Linear);

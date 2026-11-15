@@ -71,6 +71,7 @@ impl MeshPipeline {
                         pipeline.texture_layout.handle,
                         pipeline.texture_layout.handle,
                         pipeline.texture_layout.handle,
+                        pipeline.texture_layout.handle,
                     ]),
                 None,
             )?;
@@ -120,6 +121,11 @@ impl MeshPipeline {
                     stride: 16,
                     input_rate: vk::VertexInputRate::VERTEX,
                 },
+                vk::VertexInputBindingDescription {
+                    binding: 7,
+                    stride: 8,
+                    input_rate: vk::VertexInputRate::VERTEX,
+                },
             ];
             let attributes = [
                 vk::VertexInputAttributeDescription {
@@ -162,6 +168,12 @@ impl MeshPipeline {
                     location: 6,
                     binding: 6,
                     format: vk::Format::R32G32B32A32_SFLOAT,
+                    offset: 0,
+                },
+                vk::VertexInputAttributeDescription {
+                    location: 7,
+                    binding: 7,
+                    format: vk::Format::R32G32_SFLOAT,
                     offset: 0,
                 },
             ];

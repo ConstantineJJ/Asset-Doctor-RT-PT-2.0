@@ -6,6 +6,7 @@ layout(location=3) in vec3 normal;
 layout(location=4) in vec2 metallic_roughness_coord;
 layout(location=5) in vec2 normal_coord;
 layout(location=6) in vec4 tangent;
+layout(location=7) in vec2 occlusion_coord;
 layout(location=0) out vec3 world_position;
 layout(location=1) out vec2 uv;
 layout(location=2) out vec4 tint;
@@ -13,6 +14,7 @@ layout(location=3) out vec3 world_normal;
 layout(location=4) out vec2 mr_uv;
 layout(location=5) out vec2 normal_uv;
 layout(location=6) out vec4 world_tangent;
+layout(location=7) out vec2 ao_uv;
 layout(push_constant) uniform Push { mat4 view_projection; vec4 base_color; vec4 eye_exposure; vec4 material; vec4 lighting; } pc;
 void main() {
     world_position=position;
@@ -22,5 +24,6 @@ void main() {
     mr_uv=metallic_roughness_coord;
     normal_uv=normal_coord;
     world_tangent=tangent;
+    ao_uv=occlusion_coord;
     gl_Position=pc.view_projection*vec4(position,1.0);
 }

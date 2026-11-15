@@ -19,7 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let scene = doc.snapshot(limits, &cancel)?;
     let stats = doc.texture_stats();
     println!(
-        "nodes={} vertices={} triangles={} images={} sampled_images={} textures={} rgba_bytes={} mip_bytes={} fallback_normal_vertices={} mr_primitives={} normal_primitives={} fallback_tangent_vertices={}",
+        "nodes={} vertices={} triangles={} images={} sampled_images={} textures={} rgba_bytes={} mip_bytes={} fallback_normal_vertices={} mr_primitives={} normal_primitives={} fallback_tangent_vertices={} ao_primitives={}",
         doc.nodes().len(),
         scene.positions.len(),
         scene.indices.len() / 3,
@@ -39,7 +39,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .iter()
             .filter(|d| d.normal_texture.is_some())
             .count(),
-        scene.fallback_tangent_vertices
+        scene.fallback_tangent_vertices,
+        scene
+            .draws
+            .iter()
+            .filter(|d| d.occlusion_texture.is_some())
+            .count()
     );
     Ok(())
 }

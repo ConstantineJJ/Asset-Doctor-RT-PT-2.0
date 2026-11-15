@@ -1,9 +1,21 @@
 [
   {
+    "file": "AO_Checker.glb",
+    "bytes": 41944,
+    "sha256": "2a9ab95d130f38e9805d4f45614bf7dee6d0827a90082d147f4c12b932543d6c",
+    "origin": "Project-authored numeric occlusion/UV/PNG data; no external content"
+  },
+  {
     "file": "Bad_Accessor.glb",
     "bytes": 1104,
     "sha256": "771d135ca03d7e6751171aaca4f7cf87fe04271e1d3242b925ea9c76be4c331b",
     "origin": "Project-authored numeric test geometry and PNG; no external content"
+  },
+  {
+    "file": "Bad_AO_Image.glb",
+    "bytes": 41616,
+    "sha256": "02ddcc72f1836eb58755e6126742b565e216b25a46ca48d159d324ba7f2ca9df",
+    "origin": "Project-authored numeric occlusion/UV/PNG data; no external content"
   },
   {
     "file": "Bad_Image.glb",

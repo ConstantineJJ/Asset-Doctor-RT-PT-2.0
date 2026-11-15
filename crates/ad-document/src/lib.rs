@@ -99,6 +99,9 @@ pub struct MeshPrimitive {
     pub normal_texture: Option<Arc<Texture>>,
     pub normal_uvs: Option<Vec<[f32; 2]>>,
     pub normal_scale: f32,
+    pub occlusion_texture: Option<Arc<Texture>>,
+    pub occlusion_uvs: Option<Vec<[f32; 2]>>,
+    pub occlusion_strength: f32,
     pub metallic_roughness: [f32; 2],
     pub indices: Vec<u32>,
     pub base_color: [f32; 4],
@@ -143,6 +146,8 @@ pub struct DrawRange {
     pub metallic_roughness_texture: Option<Arc<Texture>>,
     pub normal_texture: Option<Arc<Texture>>,
     pub normal_scale: f32,
+    pub occlusion_texture: Option<Arc<Texture>>,
+    pub occlusion_strength: f32,
     pub alpha_cutoff: Option<f32>,
 }
 pub struct GeometrySnapshot {
@@ -152,6 +157,7 @@ pub struct GeometrySnapshot {
     pub normals: Vec<[f32; 3]>,
     pub tangents: Vec<[f32; 4]>,
     pub normal_uvs: Vec<[f32; 2]>,
+    pub occlusion_uvs: Vec<[f32; 2]>,
     pub fallback_tangent_vertices: usize,
     pub fallback_normal_vertices: usize,
     pub uvs: Vec<[f32; 2]>,
@@ -179,6 +185,21 @@ impl AssetDocument {
         let mut textures = TextureAdmission::default();
         for mesh in &parts.meshes {
             cancel.check()?;
+            if !mesh.occlusion_strength.is_finite()
+                || !(0.0..=1.0).contains(&mesh.occlusion_strength)
+                || mesh.occlusion_uvs.as_ref().is_some_and(|uv| {
+                    uv.len() != mesh.positions.len() || uv.iter().flatten().any(|v| !v.is_finite())
+                })
+                || (mesh.occlusion_texture.is_some() && mesh.occlusion_uvs.is_none())
+            {
+                return Err(AssetError::new(
+                    ErrorCode::InvalidGeometry,
+                    "Invalid occlusion strength/UV attributes",
+                ));
+            }
+            if let Some(texture) = &mesh.occlusion_texture {
+                textures.admit(texture, TextureEncoding::Linear, limits)?;
+            }
             if !mesh.normal_scale.is_finite()
                 || mesh.tangents.as_ref().is_some_and(|t| {
                     t.len() != mesh.positions.len()
@@ -415,6 +436,7 @@ impl AssetDocument {
             normals: Vec::new(),
             tangents: Vec::new(),
             normal_uvs: Vec::new(),
+            occlusion_uvs: Vec::new(),
             fallback_tangent_vertices: 0,
             fallback_normal_vertices: 0,
             uvs: Vec::new(),
@@ -439,6 +461,12 @@ impl AssetDocument {
         result.normal_uvs.try_reserve_exact(vertices).map_err(|_| {
             AssetError::new(ErrorCode::ResourceLimit, "Cannot allocate normal-map UVs")
         })?;
+        result
+            .occlusion_uvs
+            .try_reserve_exact(vertices)
+            .map_err(|_| {
+                AssetError::new(ErrorCode::ResourceLimit, "Cannot allocate occlusion UVs")
+            })?;
         result
             .uvs
             .try_reserve_exact(vertices)
@@ -496,6 +524,9 @@ impl AssetDocument {
                     .normal_uvs
                     .push(mesh.normal_uvs.as_ref().map_or([0.; 2], |uv| uv[i]));
                 result
+                    .occlusion_uvs
+                    .push(mesh.occlusion_uvs.as_ref().map_or([0.; 2], |uv| uv[i]));
+                result
                     .uvs
                     .push(mesh.uvs.as_ref().map_or([0.; 2], |uv| uv[i]));
                 result.metallic_roughness_uvs.push(
@@ -516,6 +547,8 @@ impl AssetDocument {
                 metallic_roughness_texture: mesh.metallic_roughness_texture.clone(),
                 normal_texture: mesh.normal_texture.clone(),
                 normal_scale: mesh.normal_scale,
+                occlusion_texture: mesh.occlusion_texture.clone(),
+                occlusion_strength: mesh.occlusion_strength,
                 alpha_cutoff: mesh.alpha_cutoff,
             });
             for (i, &index) in mesh.indices.iter().enumerate() {
@@ -537,7 +570,7 @@ impl AssetDocument {
 
 pub fn geometry_bytes(vertices: usize, indices: usize) -> AssetResult<usize> {
     vertices
-        .checked_mul(80)
+        .checked_mul(88)
         .and_then(|value| {
             indices
                 .checked_mul(4)
@@ -562,6 +595,9 @@ mod tests {
                 normal_texture: None,
                 normal_uvs: None,
                 normal_scale: 1.,
+                occlusion_texture: None,
+                occlusion_uvs: None,
+                occlusion_strength: 1.,
                 metallic_roughness: [1.; 2],
                 indices: vec![0, 1, 2],
                 base_color: [1.; 4],
@@ -637,7 +673,7 @@ mod tests {
             .unwrap();
         assert_eq!(snapshot.normals, [[0.; 3]; 4]);
         assert_eq!(snapshot.fallback_normal_vertices, 4);
-        assert_eq!(geometry_bytes(4, 3).unwrap(), 332);
+        assert_eq!(geometry_bytes(4, 3).unwrap(), 364);
         for bad in [f32::NAN, -0.1, 1.1] {
             let mut data = parts();
             data.meshes[0].metallic_roughness[0] = bad;
@@ -702,6 +738,35 @@ mod tests {
         assert!(
             AssetDocument::new(data, ImportLimits::default(), &Cancellation::default()).is_err()
         );
+    }
+    #[test]
+    fn occlusion_strength_is_finite_bounded_and_uvs_match_geometry() {
+        for strength in [f32::NAN, f32::INFINITY, -0.1, 1.1] {
+            let mut data = parts();
+            data.meshes[0].occlusion_strength = strength;
+            assert!(
+                AssetDocument::new(data, ImportLimits::default(), &Cancellation::default())
+                    .is_err()
+            );
+        }
+        let mut data = parts();
+        data.meshes[0].occlusion_uvs = Some(vec![[f32::NAN, 0.]; 4]);
+        assert!(
+            AssetDocument::new(data, ImportLimits::default(), &Cancellation::default()).is_err()
+        );
+        for strength in [0., 0.5, 1.] {
+            let mut data = parts();
+            data.meshes[0].occlusion_strength = strength;
+            let doc = AssetDocument::new(data, ImportLimits::default(), &Cancellation::default())
+                .unwrap();
+            assert_eq!(
+                doc.snapshot(ImportLimits::default(), &Cancellation::default())
+                    .unwrap()
+                    .draws[0]
+                    .occlusion_strength,
+                strength
+            );
+        }
     }
     #[test]
     fn invalid_indices_are_refused_before_any_snapshot() {

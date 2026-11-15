@@ -48,11 +48,12 @@ implemented in ADR-0015. ADR-0016 adds authored normal preservation and optional
 direct PBR with metallic/roughness factors, exposure and approximate fill. ADR-0017
 adds linear metallic/roughness maps with independent UV selection and color-space
 aware image sharing/admission. ADR-0018 adds normal maps with source tangent/scale
-preservation and explicit non-Mikk fallback. Final workspace has54 tests; native static/textured/PBR/MR/normal import,
+preservation and explicit non-Mikk fallback. ADR-0019 adds linear source occlusion
+only to approximate fill. Final workspace has58 tests; native static/textured/PBR/MR/normal/AO import,
 rejected replacement and resize/minimize/restore/close smoke pass with validation.
-Full UI/parity, repair, rig/animation, export, Mikk fidelity, occlusion/emission,
+Full UI/parity, repair, rig/animation, export, Mikk fidelity, emission,
 environment/shadows and RT/PT remain open. Current evidence and limits are in
-NORMAL_TEXTURE_REPORT_2026-11-15.md. Development/self-verification continues
+OCCLUSION_REPORT_2026-11-15.md. Development/self-verification continues
 autonomously under the owner's instruction, without per-increment owner acceptance.
 Application name includes 2.0; engineering package starts at 0.1.0 to avoid
 confusing this new prototype with Legacy 2.0.14 or a released product.

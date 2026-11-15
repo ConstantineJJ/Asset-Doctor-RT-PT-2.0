@@ -49,6 +49,10 @@ per-increment owner acceptance is not a gate. Keep source/audit/verification lim
 - [x] G3:54tests, fmt/clippy/release/dependency checks; native normal on/off/default and prior regressions; RedCat/Mini-bus/Vanguard normal+replacement+lifecycle;0errors, original hashes unchanged.
 - [x] G4: Autonomous native visual fixture/RedCat on-off comparison, zero-scale unchanged, orbit/maximize/close, picker open+cancel;0errors.
 - [ ] G5: Mikk/baked seam equivalence, quantitative pixel/LOD tests, peaks/fault injection. Picker filename-focus automation is unresolved; no manual acceptance dependency.
-- [ ] Next raster increment: bounded occlusion/emission contracts and relevant audit before extending material channels.
+- [x] H0: Relevant AO behavior audit and ADR-0019 fill-only/source/UV/admission contracts.
+- [x] H1: Preserve AO texture/strength/UV and linear MR sharing; malformed ignored AO regression RED→GREEN;88byte vertex admission.
+- [x] H2: Fourth-set linear R sampling affects fill only; independent toggle/reset,58tests, source reviews and Windows/dependency checks.
+- [x] H3: Native AO on/off/default, normal/MASK/empty/heavy regression; replacement+lifecycle0errors; interactive fill/direct comparison and strength0 unchanged.
+- [ ] Next raster increment: emission contracts plus camera/material binding redesign before adding resources beyond4sets/128byte push.
 - [ ] Later: environment/shadows/full PBR, diagnostics, Heal, manual rig/animation, unified Compare, verified export and installer.
 - [ ] Later: RT → PT → Mixamo rights check/autorig/retargeting.

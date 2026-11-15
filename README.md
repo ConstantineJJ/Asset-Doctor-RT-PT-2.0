@@ -2,7 +2,7 @@
 
 **Asset Doctor RT-PT 2.0** is a native Windows application in development for diagnosing, repairing, editing, and preparing 3D assets. The project is being built **from scratch** in Rust, with a Vulkan-based GPU renderer designed to run on local hardware.
 
-> **Status:** Native Vulkan GLB viewer with Open/Fit, scene tree, summary and optional direct PBR with color/MR/normal maps and authored normals/tangents. Editing, occlusion/emission/environment, rig/animation, RT and PT remain planned. This is an engineering prototype.
+> **Status:** Native Vulkan GLB viewer with Open/Fit, scene tree, summary and optional direct PBR with color/MR/normal/occlusion maps and authored normals/tangents. Editing, emission/environment, rig/animation, RT and PT remain planned. This is an engineering prototype.
 
 ## Planned Features
 
@@ -66,6 +66,8 @@ use [Twin_Cubes.glb](tests/fixtures/Twin_Cubes.glb).
   color. **Карты нормалей** independently toggles surface detail. Authored tangents
   take priority; missing/unusable frames use a derivative UV approximation, not
   MikkTSpace. This preview has approximate fill, no environment/shadows.
+  **Окклюзия · AO** independently applies the source map/strength to fill only;
+  direct lighting and the base-color mode stay unchanged.
   Default **Базовый вид** retains the previously accepted face-light appearance.
   External resources, referenced data-URI images, compressed geometry/images,
   texture-transform extensions, sparse accessors, alpha BLEND, skins, animations
@@ -87,6 +89,8 @@ The [normal texture report](docs/NORMAL_TEXTURE_REPORT_2026-11-15.md) adds autho
 tangent transforms, independent normal UVs, scale and sharing. Normal resources
 use the same strict admission in all modes. Runtime and qualitative window checks
 are separate from calibrated Mikk/pixel equivalence.
+The [occlusion report](docs/OCCLUSION_REPORT_2026-11-15.md) records source strength,
+independent UVs, shared linear MR/AO storage and actual fill/direct-light comparison.
 
 ## Build on Windows
 
@@ -120,6 +124,8 @@ environment. Its explicit array preserves Cargo's argument separator:
 .\tools\import-smoke.ps1 -Scene mr -Pbr -NoMrMaps -SynchronizationValidation
 .\tools\import-smoke.ps1 -Scene normal -Pbr -SynchronizationValidation
 .\tools\import-smoke.ps1 -Scene normal -Pbr -NoNormalMaps -SynchronizationValidation
+.\tools\import-smoke.ps1 -Scene ao -Pbr -SynchronizationValidation
+.\tools\import-smoke.ps1 -Scene ao -Pbr -NoAoMaps -SynchronizationValidation
 ```
 
 The separate probe prints actual GPU/API/heap/queue/extension availability. It does not

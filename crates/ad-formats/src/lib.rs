@@ -264,12 +264,15 @@ pub fn import_glb(
                 .pbr_metallic_roughness()
                 .metallic_roughness_texture();
             let normal_info = primitive.material().normal_texture();
+            let occlusion_info = primitive.material().occlusion_texture();
+            let occlusion_strength = occlusion_info.as_ref().map_or(1., |info| info.strength());
             let normal_scale = normal_info.as_ref().map_or(1., |info| info.scale());
-            let mut uv_sets = [None, None, None];
+            let mut uv_sets = [None, None, None, None];
             for (set, output) in [
                 color_texture.as_ref().map(|i| i.tex_coord()),
                 mr_texture.as_ref().map(|i| i.tex_coord()),
                 normal_info.as_ref().map(|i| i.tex_coord()),
+                occlusion_info.as_ref().map(|i| i.tex_coord()),
             ]
             .into_iter()
             .zip(&mut uv_sets)
@@ -300,7 +303,7 @@ pub fn import_glb(
                     *output = Some(values);
                 }
             }
-            let [uvs, metallic_roughness_uvs, normal_uvs] = uv_sets;
+            let [uvs, metallic_roughness_uvs, normal_uvs, occlusion_uvs] = uv_sets;
             let mut colors = None;
             if let Some(accessor) = primitive.get(&gltf::Semantic::Colors(0)) {
                 color::validate_attribute(accessor, position.count(), true)?;
@@ -351,6 +354,17 @@ pub fn import_glb(
             let alpha_cutoff = (primitive.material().alpha_mode()
                 == gltf::material::AlphaMode::Mask)
                 .then(|| primitive.material().alpha_cutoff().unwrap_or(0.5));
+            let occlusion_texture = occlusion_info
+                .map(|info| {
+                    material_images.load(
+                        info.texture(),
+                        TextureEncoding::Linear,
+                        bin,
+                        limits,
+                        cancel,
+                    )
+                })
+                .transpose()?;
             let mut positions = Vec::new();
             positions
                 .try_reserve_exact(position.count())
@@ -387,6 +401,9 @@ pub fn import_glb(
                 normal_texture,
                 normal_uvs,
                 normal_scale,
+                occlusion_texture,
+                occlusion_uvs,
+                occlusion_strength,
                 metallic_roughness: [
                     primitive
                         .material()
@@ -432,12 +449,11 @@ pub fn import_glb(
     if doc.materials().any(|m| m.normal_texture().is_some()) {
         notes.push("Карты нормалей используют авторские касательные, иначе UV-основу по производным. Это приближение без гарантии совпадения с MikkTSpace на швах.".into());
     }
-    if doc.materials().any(|m| {
-        m.occlusion_texture().is_some()
-            || m.emissive_texture().is_some()
-            || m.emissive_factor() != [0.; 3]
-    }) {
-        notes.push("Карты окклюзии и свечение сохранены в источнике, но не отображаются.".into());
+    if doc
+        .materials()
+        .any(|m| m.emissive_texture().is_some() || m.emissive_factor() != [0.; 3])
+    {
+        notes.push("Свечение сохранено в источнике, но не отображается.".into());
     }
     if doc.scenes().len() > 1 {
         notes.push("Отображается только основная/первая сцена.".into());
@@ -511,6 +527,82 @@ mod tests {
             ImportLimits::default(),
             &Cancellation::default(),
         )
+    }
+    #[test]
+    fn ao_uses_independent_linear_uvs_shared_orm_image_and_source_strength() {
+        let source: Arc<[u8]> =
+            Arc::from(include_bytes!("../../../tests/fixtures/AO_Checker.glb").as_slice());
+        let doc = import_glb(
+            source.clone(),
+            "AO".into(),
+            DocumentId(1),
+            ImportLimits::default(),
+            &Cancellation::default(),
+        )
+        .unwrap();
+        let scene = doc
+            .snapshot(ImportLimits::default(), &Cancellation::default())
+            .unwrap();
+        assert!(Arc::ptr_eq(doc.source(), &source));
+        assert_eq!(scene.occlusion_uvs[0], [1., 0.]);
+        assert_ne!(scene.occlusion_uvs[0], scene.metallic_roughness_uvs[0]);
+        assert_eq!(
+            scene
+                .draws
+                .iter()
+                .map(|d| d.occlusion_strength)
+                .collect::<Vec<_>>(),
+            [1., 0.5, 0., 1.]
+        );
+        assert!(Arc::ptr_eq(
+            scene.draws[0].occlusion_texture.as_ref().unwrap(),
+            scene.draws[0].metallic_roughness_texture.as_ref().unwrap()
+        ));
+        assert_eq!(
+            (
+                doc.texture_stats().images,
+                doc.texture_stats().sampled_images,
+                doc.texture_stats().mip_bytes
+            ),
+            (1, 2, 40)
+        );
+        assert!(matches!(
+            import_glb(
+                Arc::from(include_bytes!("../../../tests/fixtures/Bad_AO_Image.glb").as_slice()),
+                "bad AO".into(),
+                DocumentId(1),
+                ImportLimits::default(),
+                &Cancellation::default()
+            ),
+            Err(AssetError {
+                code: ErrorCode::InvalidFormat,
+                ..
+            })
+        ));
+        let mut json = json_doc();
+        json["images"] = json!([{"bufferView":0,"mimeType":"image/png"}]);
+        json["textures"] = json!([{"source":0}]);
+        json["materials"][0]["occlusionTexture"] = json!({"index":0,"texCoord":2});
+        assert!(load(&json).err().unwrap().message.contains("TEXCOORD"));
+    }
+    #[test]
+    fn occlusion_only_bad_image_is_not_silently_ignored() {
+        let mut json = json_doc();
+        json["accessors"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"bufferView":0,"componentType":5126,"count":3,"type":"VEC2"}));
+        json["meshes"][0]["primitives"][0]["attributes"]["TEXCOORD_0"] = json!(2);
+        json["images"] = json!([{"bufferView":0,"mimeType":"image/png"}]);
+        json["textures"] = json!([{"source":0}]);
+        json["materials"][0]["occlusionTexture"] = json!({"index":0});
+        assert!(matches!(
+            load(&json),
+            Err(AssetError {
+                code: ErrorCode::InvalidFormat,
+                ..
+            })
+        ));
     }
     #[test]
     fn normal_texture_shares_linear_mr_image_and_preserves_tangent_uv_scale_contract() {
@@ -733,11 +825,11 @@ mod tests {
         let mut json = json_doc();
         json["images"] = json!([{"bufferView":0,"mimeType":"image/png"}]);
         json["textures"] = json!([{"source":0}]);
-        json["materials"][0]["occlusionTexture"] = json!({"index":0});
+        json["materials"][0]["emissiveTexture"] = json!({"index":0});
         // Ignored maps are not decoded or treated as a base-color map.
         let doc = load(&json).unwrap();
         assert_eq!(doc.texture_stats().images, 0);
-        assert!(doc.notes().iter().any(|n| n.contains("не отображаются")));
+        assert!(doc.notes().iter().any(|n| n.contains("не отображается")));
     }
     #[test]
     fn embedded_color_fixture_decodes_once_and_preserves_linear_attributes_and_source() {

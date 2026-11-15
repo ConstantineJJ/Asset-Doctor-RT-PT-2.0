@@ -6,12 +6,15 @@ layout(location=3) in vec3 world_normal;
 layout(location=4) in vec2 mr_uv;
 layout(location=5) in vec2 normal_uv;
 layout(location=6) in vec4 world_tangent;
+layout(location=7) in vec2 ao_uv;
 layout(set=0,binding=0) uniform texture2D base_color_image;
 layout(set=0,binding=1) uniform sampler base_color_sampler;
 layout(set=1,binding=0) uniform texture2D metallic_roughness_image;
 layout(set=1,binding=1) uniform sampler metallic_roughness_sampler;
 layout(set=2,binding=0) uniform texture2D normal_image;
 layout(set=2,binding=1) uniform sampler normal_sampler;
+layout(set=3,binding=0) uniform texture2D occlusion_image;
+layout(set=3,binding=1) uniform sampler occlusion_sampler;
 layout(location=0) out vec4 color;
 layout(push_constant) uniform Push { mat4 view_projection; vec4 base_color; vec4 eye_exposure; vec4 material; vec4 lighting; } pc;
 const float PI=3.14159265359;
@@ -57,7 +60,7 @@ vec3 perturbed_normal(vec3 n,vec3 texel,vec3 px,vec3 py,vec2 ux,vec2 uy) {
     ts=unit_or(ts,vec3(0.0,0.0,1.0));
     return unit_or(t*ts.x+b*ts.y+n*ts.z,n);
 }
-vec3 direct_pbr(vec3 base,vec3 n,vec2 mr,vec3 v) {
+vec3 direct_pbr(vec3 base,vec3 n,vec2 mr,vec3 v,float occlusion) {
     vec3 l=normalize(vec3(0.4,0.8,0.3));
     vec3 h=unit_or(v+l,n);
     float nv=max(dot(n,v),0.00001);
@@ -76,7 +79,7 @@ vec3 direct_pbr(vec3 base,vec3 n,vec2 mr,vec3 v) {
     vec3 diffuse=(vec3(1.0)-fresnel)*(1.0-metal)*base/PI;
     vec3 specular=fresnel*distribution*visibility;
     // Inspection fill is an explicit approximation; no environment is sampled.
-    vec3 radiance=(diffuse+specular)*nl*pc.lighting.x+((1.0-metal)*base+f0)*pc.lighting.y;
+    vec3 radiance=(diffuse+specular)*nl*pc.lighting.x+((1.0-metal)*base+f0)*pc.lighting.y*occlusion;
     vec3 exposed=max(radiance*exp2(pc.eye_exposure.w),vec3(0.0));
     return exposed/(vec3(1.0)+exposed);
 }
@@ -113,7 +116,11 @@ void main() {
             vec3 texel=texture(sampler2D(normal_image,normal_sampler),normal_uv).rgb;
             surface=perturbed_normal(surface,texel,px,py,normal_dx,normal_dy);
         }
-        linear=direct_pbr(base.rgb,surface*side,mr,v);
+        float occlusion=1.0;
+        if ((flags&32u)!=0u) {
+            occlusion=mix(1.0,texture(sampler2D(occlusion_image,occlusion_sampler),ao_uv).r,pc.lighting.w);
+        }
+        linear=direct_pbr(base.rgb,surface*side,mr,v,occlusion);
     }
     if (pc.material.z>=0.0 && base.a<pc.material.z) {discard;}
     vec3 display=linear;

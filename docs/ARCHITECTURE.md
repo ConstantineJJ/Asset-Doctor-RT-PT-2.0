@@ -58,6 +58,11 @@ the normal role. Seven GPU streams total80bytes/vertex. Authored frame derivatio
 is CPU-side; a bounded non-Mikk derivative fallback is isolated in the shader.
 The source scale uses the spare material push slot, retaining the128-byte budget.
 
+ADR-0019 adds independent AO UV/strength/texture and an88-byte vertex budget. AO
+reuses linear image ownership and applies only to inspection fill. Four compatible
+descriptor sets consume Vulkan's guaranteed minimum; emission must first redesign
+camera/material binding rather than adding a fifth set or exceeding128-byte push.
+
 The owner's advisory v0.1 proposal was reviewed in
 ARCHITECTURE_PROPOSAL_REVIEW.md. Session history and revision-keyed findings are
 application/derived state, not fields that every saved asset must embed. Compare
