@@ -10,6 +10,6 @@ Toolbar → scene tree / Doctor viewport / inspector → animation timeline → 
 
 197 lexical button/input/select/dialog source sites are indexed in LEGACY_UI_SOURCE_SITES.csv, including dynamic template sites. This is NOT a count of visible controls. Label/callback hints are approximate and require semantic mapping. All sites remain UNREVIEWED_SOURCE_SITE until mapped to a catalog ID or excluded with reason.
 
-110 state candidates are indexed in LEGACY_SETTINGS_MATRIX.csv; transient state is deliberately not presented as a confirmed user setting. Complete ranges/persistence require review.
+60 reviewed settings/control rows are in LEGACY_SETTINGS_MATRIX.csv. 110 additional state candidates are in LEGACY_STATE_CANDIDATES.csv; transient state is not automatically a user setting. Complete ranges/persistence and native behavior still require review.
 
 Full UI audit gate is OPEN. No claim that every UI action has been reviewed. Native interaction, DPI, focus, mouse ownership and screenshot atlas remain pending.

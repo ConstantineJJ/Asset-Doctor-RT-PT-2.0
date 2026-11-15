@@ -1,0 +1,21 @@
+[graph]
+targets = ["x86_64-pc-windows-msvc", "x86_64-pc-windows-gnu"]
+all-features = true
+
+[advisories]
+ignore = []
+
+[licenses]
+confidence-threshold = 0.93
+allow = ["MIT", "Apache-2.0", "ISC"]
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

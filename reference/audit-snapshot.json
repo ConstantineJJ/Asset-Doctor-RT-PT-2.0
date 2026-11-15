@@ -1511,13 +1511,211 @@
         "coverage",
         "completion",
         "assessment"
-      ]
+      ],
+      "project": {
+        "name": "Asset Doctor 2.0.14",
+        "created_at": "2026-11-15T00:45:12.821377+00:00",
+        "agent_review": true,
+        "source_root": ".",
+        "mode": "static-read-only",
+        "generator_version": "0.2.1",
+        "viewer_id": "arc-xray-blue-v1"
+      },
+      "node_count": 319,
+      "edge_count": 860,
+      "findings": [
+        {
+          "id": "risk-f0235760b89815cc",
+          "title": "Cyclic module dependencies",
+          "status": "inference"
+        },
+        {
+          "id": "risk-ccab3f123b884d16",
+          "title": "Module depends on many local components",
+          "status": "inference"
+        },
+        {
+          "id": "risk-3143f86b19840278",
+          "title": "Module depends on many local components",
+          "status": "inference"
+        },
+        {
+          "id": "risk-464b7bf28a8909a6",
+          "title": "Module depends on many local components",
+          "status": "inference"
+        },
+        {
+          "id": "risk-3da1b46223b7294e",
+          "title": "Module depends on many local components",
+          "status": "inference"
+        },
+        {
+          "id": "risk-2e4617b632431441",
+          "title": "Module depends on many local components",
+          "status": "inference"
+        },
+        {
+          "id": "risk-8c6849a78c50022d",
+          "title": "Module depends on many local components",
+          "status": "inference"
+        },
+        {
+          "id": "risk-010cdf9f86e388e0",
+          "title": "Module depends on many local components",
+          "status": "inference"
+        },
+        {
+          "id": "risk-10d6fefa31f47fd4",
+          "title": "Module depends on many local components",
+          "status": "inference"
+        },
+        {
+          "id": "risk-7f79769cfa001429",
+          "title": "Module depends on many local components",
+          "status": "inference"
+        },
+        {
+          "id": "risk-2b4377e839ff50ea",
+          "title": "Large source module",
+          "status": "inference"
+        },
+        {
+          "id": "risk-2a0df358d6a70375",
+          "title": "Large source module",
+          "status": "inference"
+        },
+        {
+          "id": "risk-f15c6cda69714b0e",
+          "title": "Large source module",
+          "status": "inference"
+        },
+        {
+          "id": "risk-e1e3ec789d39903b",
+          "title": "Large source module",
+          "status": "inference"
+        },
+        {
+          "id": "risk-69fabcac24643ece",
+          "title": "Large source module",
+          "status": "inference"
+        },
+        {
+          "id": "risk-fb2da093d3bec384",
+          "title": "Large source module",
+          "status": "inference"
+        },
+        {
+          "id": "risk-7b0f00ab543d1123",
+          "title": "Large source module",
+          "status": "inference"
+        },
+        {
+          "id": "risk-f45c48b7d15a89f7",
+          "title": "Large source module",
+          "status": "inference"
+        },
+        {
+          "id": "review-orchestration",
+          "title": "Координация сессии остаётся сосредоточенной в App.tsx",
+          "status": "inference"
+        },
+        {
+          "id": "review-main-thread",
+          "title": "Не все тяжёлые проходы вынесены с UI-потока",
+          "status": "inference"
+        },
+        {
+          "id": "review-decoded-memory",
+          "title": "Размер GLB и byte budgets не ограничивают всю распакованную память",
+          "status": "inference"
+        },
+        {
+          "id": "review-language-storage",
+          "title": "Настройка языка может прервать bootstrap при отказе storage",
+          "status": "inference"
+        },
+        {
+          "id": "review-native-ci",
+          "title": "CI собирает Windows-пакет, но не запускает native tests и smoke-сценарий",
+          "status": "inference"
+        },
+        {
+          "id": "review-startup-retention",
+          "title": "Startup traces ограничены на файл, но не по числу запусков",
+          "status": "inference"
+        },
+        {
+          "id": "review-dependency-residue",
+          "title": "Манифест содержит зависимости без найденного product import",
+          "status": "inference"
+        },
+        {
+          "id": "review-doc-version",
+          "title": "README описывает старую версию установщика",
+          "status": "verified"
+        },
+        {
+          "id": "review-tree-duplication",
+          "title": "Scene-tree преобразование реализовано в нескольких местах",
+          "status": "inference"
+        },
+        {
+          "id": "review-cycle-qualification",
+          "title": "Автоматический цикл RigHistoryBudget ↔ RigEditSession является type-only обратной ссылкой",
+          "status": "verified"
+        }
+      ],
+      "coverage": {
+        "analyzed_files": 264,
+        "discovered_files": 265,
+        "excluded_files": 1,
+        "skipped": [],
+        "unresolved": [],
+        "languages": {
+          "Markdown": 51,
+          "HTML": 1,
+          "JSON": 6,
+          "TypeScript": 195,
+          "YAML": 1,
+          "JavaScript": 2,
+          "PowerShell": 1,
+          "CSS": 1,
+          "TOML": 1,
+          "Rust": 5
+        },
+        "truncated": false,
+        "limitations": [
+          "Static evidence confirms source syntax, not runtime execution, reachability, security or performance.",
+          "Python imports use AST; calls and execution paths are conservative syntactic candidates. Aliasing, monkey patching and reflection are incomplete.",
+          "JavaScript/TypeScript, GDScript, Go, Rust and C# import adapters are lexical: comments, aliases and generated code can cause omissions or false matches.",
+          "Other file types have inventory coverage only. Gitignore rules are not evaluated; explicit excludes and built-in filters apply.",
+          "No dependency installation, project code execution, engine launch, benchmarks or automatic fixes are performed.",
+          "Secrets are excluded by filename and excerpts receive best-effort redaction; review artifacts before sharing."
+        ],
+        "bytes_read": 2237949
+      },
+      "completion": {
+        "status": "complete",
+        "areas": {
+          "architecture": "reviewed",
+          "dependencies": "reviewed",
+          "data": "reviewed",
+          "execution": "reviewed",
+          "review": "reviewed"
+        },
+        "implementation_modules": 163,
+        "reviewed_modules": 163,
+        "pending_nodes": [],
+        "gaps": [],
+        "meaning": "Complete refers to the declared static source scope and recorded agent review; it is not runtime or correctness certification."
+      }
     }
   ],
   "counts": {
     "curated_features": 66,
     "owner_requests": 10,
     "source_control_sites": 197,
+    "reviewed_settings": 60,
     "state_candidates": 110,
     "diagnostic_id_sites": 40,
     "test_files": 32

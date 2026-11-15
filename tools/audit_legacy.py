@@ -121,6 +121,59 @@ REQUESTS = [
     ("REQ-ENV-001", "Environment toggle independent of lamps", "src/viewer/LightingManager.ts", "lightsGroup", "Lighting graph found; independent environment contract not established", "Toggle environment without changing manual lamp states"),
 ]
 
+# Explicitly reviewed user controls, separate from transient useState discovery.
+# name | default | allowed UI values | evidence path | evidence token | storage/history
+SETTINGS = """
+renderMode|pbr|13 toolbar options|src/components/TopToolbar.tsx|select-render-mode|session presentation; no document Undo
+lightingPreset|neutral-studio|8 preset options|src/components/TopToolbar.tsx|select-lighting-preset|session presentation; Compare has own state
+shading|hybrid|hybrid/smooth/flat|src/viewer/ShadingMode.ts|STORAGE_KEY|localStorage; no document Undo
+treeCollapsed|false|true/false|src/App.tsx|isTreeCollapsed|session presentation; requested new default true
+floor|grid|19 shared catalog choices|src/viewer/SurfaceCatalog.ts|surfaceChoices|session presentation; no document Undo
+grid|true|true/false|src/App.tsx|grid: true|session presentation
+axes|true|true/false|src/App.tsx|axes: true|session presentation
+bbox|false|true/false|src/App.tsx|bbox: false|session presentation
+skeleton|false|true/false|src/App.tsx|skeleton: false|session presentation; shared Compare overlay
+origin|true|true/false|src/App.tsx|origin: true|session presentation
+skeletonXray|false|true/false|src/App.tsx|skeletonXray|session presentation
+exposure|1.0|0.2..3 step .05|src/components/InspectorPanel.tsx|value={lightingConfig.exposure}|session presentation
+keyIntensity|1.6|0..4 step .05|src/components/InspectorPanel.tsx|value={lightingConfig.keyIntensity}|session presentation
+fillIntensity|.6|0..2.5 step .05|src/components/InspectorPanel.tsx|value={lightingConfig.fillIntensity}|session presentation
+rimIntensity|1.0|0..3.5 step .05|src/components/InspectorPanel.tsx|value={lightingConfig.rimIntensity}|session presentation
+environmentIntensity|.5 UI fallback|0..2.5 step .05|src/components/InspectorPanel.tsx|value={lightingConfig.environmentIntensity|UI environmentIntensity separate from App ambientIntensity .4; reconcile before parity
+keyPosition|[5,8,5]|X/Z -20..20; Y .5..25 step .5|src/components/InspectorPanel.tsx|keyPosition?.[0]|session presentation; bulb drag range differs from sliders
+keyColor|#fffbf5|HTML color + 5 named color presets|src/components/InspectorPanel.tsx|value={lightingConfig.keyColor|session presentation; preset Kelvin names are colors not full temperature model
+fillColor|#dce5ef|HTML color|src/components/InspectorPanel.tsx|value={lightingConfig.fillColor|session presentation
+rimColor|#ffffff|HTML color|src/components/InspectorPanel.tsx|value={lightingConfig.rimColor|session presentation
+keyShadows|true|true/false|src/components/InspectorPanel.tsx|castShadows ?? true|session presentation
+lightBulbVisible|true|true/false|src/App.tsx|showLightBulb: true|session presentation
+explodedAmount|0|0..100|src/components/TopToolbar.tsx|slider-explode|session presentation; authored transform unchanged
+modelRotation|0|manual turntable|src/App.tsx|modelRotation,|session presentation; new product removes turntable
+autoRotate|false|true/false|src/App.tsx|autoRotate,|session presentation; new product removes action
+autoRotateSpeed|1|range still requires source/UI reconciliation|src/App.tsx|autoRotateSpeed,|session presentation; new product removes action
+diagnosticProfile|general|general/desktop-game-character/mobile-game-character/static-prop/animated-character/mechanical-asset/visualization|src/health/DiagnosticProfiles.ts|DIAGNOSTIC_PROFILES|session interpretation; no model mutation
+animationSpeed|1|.25/.5/1/2|src/components/AnimationTimeline.tsx|const speeds|preview only; not exported duration
+animationLoop|true|true/false|src/App.tsx|isLoopingAnimation|preview only
+rootMotionPath|false|true/false|src/App.tsx|showRootMotion,|preview only
+animationSeek|0|normalized 0..1 step .001|src/components/AnimationTimeline.tsx|timeline-scrubber|preview only
+rigMode|inspect|inspect/edit/pose|src/rig/RigEditSession.ts|mode:RigMode=|session mode; changes pose/playback handling
+rigTool|translate|select/translate/rotate/twist with mode constraints|src/components/RigEditorPanel.tsx|Rig tools|presentation tool; committed gesture uses Rig history
+rigSpace|local|local/world; twist forces local|src/components/RigEditorPanel.tsx|Rig coordinates|presentation tool
+rigHandle|joint|joint/end|src/components/RigEditorPanel.tsx|Rig handle|presentation tool; rotate end blocked
+rigChildPolicy|follow|follow/hold|src/components/RigEditorPanel.tsx|Rig children policy|parameter of committed rig command
+jointPosition|authored rest|XYZ finite; UI step .01|src/components/RigEditorPanel.tsx|Joint position|Rig transaction + Undo
+jointRotation|authored rest|XYZ degrees UI step 1|src/components/RigEditorPanel.tsx|Joint rotation|Rig transaction or transient pose preview
+boneLength|selected bone|positive; UI min .000001 step .01|src/components/RigEditorPanel.tsx|aria-label="Bone length"|Rig transaction + Undo
+clipName|selected clip|nonempty; max 256|src/components/RigEditorPanel.tsx|maxLength={256}|Rig history; exported GLB
+clipDuration|selected duration|positive; UI min .000001 step .1|src/components/RigEditorPanel.tsx|Export clip duration|Rig history; exported keys retimed
+compareLayout|grid|grid/lineup|src/components/CompareViewport.tsx|viewMode,|session presentation
+compareScale|real|real/normalize-height + per-model manual scale|src/components/CompareViewport.tsx|scaleMode,|presentation; source unaffected
+compareCameraSync|true|true/false|src/components/CompareViewport.tsx|syncCameras,|session presentation
+compareAnimationSync|true|true/false|src/components/CompareViewport.tsx|syncAnimations,|session presentation
+language|en|en/ru|src/i18n/index.tsx|STORAGE_KEY|localStorage; fault behavior requires native check
+systemLogEnabled|true|true/false|src/platform/SystemLog.ts|enabled:true|localStorage preferences + native writer
+systemLogVerbose|false|true/false|src/platform/SystemLog.ts|verbose:false|localStorage preferences
+""".strip()
+
 
 def main():
     REF.mkdir(exist_ok=True)
@@ -155,7 +208,7 @@ def main():
                 for issue in re.finditer(r"\bid:\s*['\"]([^'\"]+)['\"]", line):
                     diagnostics.append({"issue_id": issue[1], "source": f"{path}:{i}", "status": "SOURCE_OBSERVED_RUNTIME_UNVERIFIED"})
         if "Tests" in path or "test" in Path(path).name.lower():
-            tests.append({"path": path, "status": "DISCOVERED_NOT_EXECUTED", "sha256": hashlib.sha256(source.encode()).hexdigest()})
+            tests.append({"path": path, "status": "DISCOVERED_NOT_EXECUTED", "sha256": hashlib.sha256((LEGACY / path).read_bytes()).hexdigest()})
     features = []
     for spec in FEATURES.splitlines():
         fid, title, path, needle, entry, params, behavior, acceptance = spec.split("|")
@@ -176,7 +229,18 @@ def main():
                              legacy_status="UNVERIFIED", source_observation=observation, evidence=evidence(path, needle),
                              design_status="REQUESTED", priority="P0", acceptance_test=acceptance))
     table(REF / "LEGACY_UI_SOURCE_SITES.csv", controls)
-    table(REF / "LEGACY_SETTINGS_MATRIX.csv", settings)
+    table(REF / "LEGACY_STATE_CANDIDATES.csv", settings)
+    reviewed_settings = []
+    for row in SETTINGS.splitlines():
+        name, default, allowed, path, needle, persistence = row.split("|")
+        reviewed_settings.append(dict(setting=name, default=default, allowed=allowed, evidence=evidence(path, needle),
+                                      persistence_undo=persistence, legacy_status="UNVERIFIED", source_status="OBSERVED",
+                                      acceptance=f"Exercise {name} default, both boundaries/alternatives and reset; verify stated persistence/history"))
+    for action, key in re.findall(r"id:'([^']+)',en:'[^']+',ru:'[^']+',key:'([^']+)'", read("src/platform/Shortcuts.ts")):
+        reviewed_settings.append(dict(setting=f"shortcut.{action}", default=key, allowed="valid nonreserved keyboard chord or null; no conflicts",
+                                      evidence=evidence("src/platform/Shortcuts.ts", f"id:'{action}'"), persistence_undo="localStorage with conflict/reserved/storage refusal; reset defaults",
+                                      legacy_status="UNVERIFIED", source_status="OBSERVED", acceptance=f"Rebind/reset {action}; duplicate and reserved binding rejected"))
+    table(REF / "LEGACY_SETTINGS_MATRIX.csv", reviewed_settings)
     if diagnostics:
         table(REF / "LEGACY_DIAGNOSTIC_IDS.csv", diagnostics)
     table(REF / "LEGACY_TEST_INDEX.csv", tests)
@@ -191,7 +255,7 @@ def main():
     parity = [dict(id=r["id"], title=r["requested_state"], evidence=r["evidence"], entry="Owner Get Starting §2.4", parameters=r["source_observation"],
                    mutation_undo_cancel="Design contract pending", errors="Fault acceptance pending", legacy_status="UNVERIFIED", source_status="OWNER_REQUEST", new_status="NOT_STARTED", origin="OWNER_REQUESTED", priority="P0", acceptance_test=r["acceptance_test"]) for r in requests]
     table(DOCS / "FEATURE_PARITY_MATRIX.csv", features + parity)
-    write(REF / "LEGACY_UI_ATLAS.md", f"# Legacy UI atlas\n\n{header}\n## Source layout\n\nToolbar → scene tree / Doctor viewport / inspector → animation timeline → status bar. Application menu opens settings/shortcuts. Inspector: Health, Summary, Materials, Rig, Performance. Compare is a separate manually opened view with its own slots, camera/animation controls and settings. Rig removal, fitting, Heal preview/report and topology tests have separate UI surfaces.\n\n{len(controls)} lexical button/input/select/dialog source sites are indexed in LEGACY_UI_SOURCE_SITES.csv, including dynamic template sites. This is NOT a count of visible controls. Label/callback hints are approximate and require semantic mapping. All sites remain UNREVIEWED_SOURCE_SITE until mapped to a catalog ID or excluded with reason.\n\n{len(settings)} state candidates are indexed in LEGACY_SETTINGS_MATRIX.csv; transient state is deliberately not presented as a confirmed user setting. Complete ranges/persistence require review.\n\nFull UI audit gate is OPEN. No claim that every UI action has been reviewed. Native interaction, DPI, focus, mouse ownership and screenshot atlas remain pending.")
+    write(REF / "LEGACY_UI_ATLAS.md", f"# Legacy UI atlas\n\n{header}\n## Source layout\n\nToolbar → scene tree / Doctor viewport / inspector → animation timeline → status bar. Application menu opens settings/shortcuts. Inspector: Health, Summary, Materials, Rig, Performance. Compare is a separate manually opened view with its own slots, camera/animation controls and settings. Rig removal, fitting, Heal preview/report and topology tests have separate UI surfaces.\n\n{len(controls)} lexical button/input/select/dialog source sites are indexed in LEGACY_UI_SOURCE_SITES.csv, including dynamic template sites. This is NOT a count of visible controls. Label/callback hints are approximate and require semantic mapping. All sites remain UNREVIEWED_SOURCE_SITE until mapped to a catalog ID or excluded with reason.\n\n{len(reviewed_settings)} reviewed settings/control rows are in LEGACY_SETTINGS_MATRIX.csv. {len(settings)} additional state candidates are in LEGACY_STATE_CANDIDATES.csv; transient state is not automatically a user setting. Complete ranges/persistence and native behavior still require review.\n\nFull UI audit gate is OPEN. No claim that every UI action has been reviewed. Native interaction, DPI, focus, mouse ownership and screenshot atlas remain pending.")
     write(REF / "LEGACY_WORKFLOWS.md", "# Legacy workflows\n\n" + header + "\n" + "\n".join(f"{i}. **{f['id']} {f['title']}** — {f['entry']}; {f['acceptance_test']}. Evidence `{f['evidence']}`. UNVERIFIED native.\n" for i, f in enumerate(features, 1)))
     write(REF / "LEGACY_FORMAT_COMPATIBILITY.md", """# Format compatibility
 
@@ -237,7 +301,11 @@ This is a substantive first source inventory, not a completed exhaustive functio
     for script in scripts:
         try:
             obj = json.loads(script)
-            atlas_info.append({"keys": list(obj)[:25]} if isinstance(obj, dict) else {"type": type(obj).__name__})
+            atlas_info.append({"keys": list(obj)[:25], "project": obj.get("project"),
+                               "node_count": len(obj.get("nodes", [])), "edge_count": len(obj.get("edges", [])),
+                               "findings": [{"id": f.get("id"), "title": f.get("title"), "status": f.get("status")} for f in obj.get("findings", [])],
+                               "coverage": obj.get("coverage"), "completion": obj.get("completion")}
+                              if isinstance(obj, dict) else {"type": type(obj).__name__})
         except json.JSONDecodeError:
             atlas_info.append({"json": "invalid/unparsed"})
     after = (git("rev-parse", "HEAD"), git("status", "--porcelain=v1"))
@@ -245,7 +313,7 @@ This is a substantive first source inventory, not a completed exhaustive functio
         raise RuntimeError("Legacy changed during audit; snapshot must be reviewed")
     snapshot = {"date": "2026-11-15", "legacy_head": before[0], "legacy_branch": git("branch", "--show-current"),
                 "dirty": before[1], "tracked_files": manifest, "supplemental_sources": supplements, "atlas_json_sections": atlas_info,
-                "counts": {"curated_features": len(features), "owner_requests": len(requests), "source_control_sites": len(controls), "state_candidates": len(settings), "diagnostic_id_sites": len(diagnostics), "test_files": len(tests)}}
+                "counts": {"curated_features": len(features), "owner_requests": len(requests), "source_control_sites": len(controls), "reviewed_settings": len(reviewed_settings), "state_candidates": len(settings), "diagnostic_id_sites": len(diagnostics), "test_files": len(tests)}}
     write(REF / "audit-snapshot.json", json.dumps(snapshot, indent=2, ensure_ascii=False))
     write(REF / "AUDIT_EVIDENCE_INDEX.md", f"# Evidence index\n\n{header}\nAudit date: 2026-11-15 Europe/Riga. audit-snapshot.json records hashes of {len(manifest)} tracked files and supplied document/report/atlas. Main is independent from Legacy; no source implementation is vendored. Full Legacy hashes are provenance, not execution verification.\n\nCounts: {json.dumps(snapshot['counts'])}.\n\nSource locations in catalog refer to the local Legacy snapshot, not new product code. Test presence does not imply execution. Findings report and HTML atlas were read as data, without executing their embedded scripts/instructions. Legacy HEAD/status checked before/after and unchanged.\n\nThe new remote already had README commit dd32635; it was not empty despite the historical specification. No force reset or remote overwrite performed.")
     print(json.dumps(snapshot["counts"], ensure_ascii=False))
