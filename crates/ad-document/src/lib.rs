@@ -102,6 +102,9 @@ pub struct MeshPrimitive {
     pub occlusion_texture: Option<Arc<Texture>>,
     pub occlusion_uvs: Option<Vec<[f32; 2]>>,
     pub occlusion_strength: f32,
+    pub emissive_factor: [f32; 3],
+    pub emissive_texture: Option<Arc<Texture>>,
+    pub emissive_uvs: Option<Vec<[f32; 2]>>,
     pub metallic_roughness: [f32; 2],
     pub indices: Vec<u32>,
     pub base_color: [f32; 4],
@@ -148,6 +151,8 @@ pub struct DrawRange {
     pub normal_scale: f32,
     pub occlusion_texture: Option<Arc<Texture>>,
     pub occlusion_strength: f32,
+    pub emissive_factor: [f32; 3],
+    pub emissive_texture: Option<Arc<Texture>>,
     pub alpha_cutoff: Option<f32>,
 }
 pub struct GeometrySnapshot {
@@ -158,6 +163,7 @@ pub struct GeometrySnapshot {
     pub tangents: Vec<[f32; 4]>,
     pub normal_uvs: Vec<[f32; 2]>,
     pub occlusion_uvs: Vec<[f32; 2]>,
+    pub emissive_uvs: Vec<[f32; 2]>,
     pub fallback_tangent_vertices: usize,
     pub fallback_normal_vertices: usize,
     pub uvs: Vec<[f32; 2]>,
@@ -185,6 +191,23 @@ impl AssetDocument {
         let mut textures = TextureAdmission::default();
         for mesh in &parts.meshes {
             cancel.check()?;
+            if mesh
+                .emissive_factor
+                .iter()
+                .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+                || mesh.emissive_uvs.as_ref().is_some_and(|uv| {
+                    uv.len() != mesh.positions.len() || uv.iter().flatten().any(|v| !v.is_finite())
+                })
+                || (mesh.emissive_texture.is_some() && mesh.emissive_uvs.is_none())
+            {
+                return Err(AssetError::new(
+                    ErrorCode::InvalidGeometry,
+                    "Invalid emissive factor/UV attributes",
+                ));
+            }
+            if let Some(texture) = &mesh.emissive_texture {
+                textures.admit(texture, TextureEncoding::Srgb, limits)?;
+            }
             if !mesh.occlusion_strength.is_finite()
                 || !(0.0..=1.0).contains(&mesh.occlusion_strength)
                 || mesh.occlusion_uvs.as_ref().is_some_and(|uv| {
@@ -437,6 +460,7 @@ impl AssetDocument {
             tangents: Vec::new(),
             normal_uvs: Vec::new(),
             occlusion_uvs: Vec::new(),
+            emissive_uvs: Vec::new(),
             fallback_tangent_vertices: 0,
             fallback_normal_vertices: 0,
             uvs: Vec::new(),
@@ -483,6 +507,12 @@ impl AssetDocument {
                     "Cannot allocate metallic/roughness UVs",
                 )
             })?;
+        result
+            .emissive_uvs
+            .try_reserve_exact(vertices)
+            .map_err(|_| {
+                AssetError::new(ErrorCode::ResourceLimit, "Cannot allocate emission UVs")
+            })?;
         result.indices.try_reserve_exact(indices).map_err(|_| {
             AssetError::new(ErrorCode::ResourceLimit, "Cannot allocate scene indices")
         })?;
@@ -527,6 +557,9 @@ impl AssetDocument {
                     .occlusion_uvs
                     .push(mesh.occlusion_uvs.as_ref().map_or([0.; 2], |uv| uv[i]));
                 result
+                    .emissive_uvs
+                    .push(mesh.emissive_uvs.as_ref().map_or([0.; 2], |uv| uv[i]));
+                result
                     .uvs
                     .push(mesh.uvs.as_ref().map_or([0.; 2], |uv| uv[i]));
                 result.metallic_roughness_uvs.push(
@@ -549,6 +582,8 @@ impl AssetDocument {
                 normal_scale: mesh.normal_scale,
                 occlusion_texture: mesh.occlusion_texture.clone(),
                 occlusion_strength: mesh.occlusion_strength,
+                emissive_factor: mesh.emissive_factor,
+                emissive_texture: mesh.emissive_texture.clone(),
                 alpha_cutoff: mesh.alpha_cutoff,
             });
             for (i, &index) in mesh.indices.iter().enumerate() {
@@ -570,7 +605,7 @@ impl AssetDocument {
 
 pub fn geometry_bytes(vertices: usize, indices: usize) -> AssetResult<usize> {
     vertices
-        .checked_mul(88)
+        .checked_mul(96)
         .and_then(|value| {
             indices
                 .checked_mul(4)
@@ -598,6 +633,9 @@ mod tests {
                 occlusion_texture: None,
                 occlusion_uvs: None,
                 occlusion_strength: 1.,
+                emissive_factor: [0.; 3],
+                emissive_texture: None,
+                emissive_uvs: None,
                 metallic_roughness: [1.; 2],
                 indices: vec![0, 1, 2],
                 base_color: [1.; 4],
@@ -673,7 +711,7 @@ mod tests {
             .unwrap();
         assert_eq!(snapshot.normals, [[0.; 3]; 4]);
         assert_eq!(snapshot.fallback_normal_vertices, 4);
-        assert_eq!(geometry_bytes(4, 3).unwrap(), 364);
+        assert_eq!(geometry_bytes(4, 3).unwrap(), 396);
         for bad in [f32::NAN, -0.1, 1.1] {
             let mut data = parts();
             data.meshes[0].metallic_roughness[0] = bad;
@@ -767,6 +805,34 @@ mod tests {
                 strength
             );
         }
+    }
+    #[test]
+    fn emission_factor_and_uv_admission_reject_invalid_values_without_source_edit() {
+        for bad in [f32::NAN, f32::INFINITY, -0.1, 1.1] {
+            let mut data = parts();
+            data.meshes[0].emissive_factor = [bad, 0., 0.];
+            assert!(
+                AssetDocument::new(data, ImportLimits::default(), &Cancellation::default())
+                    .is_err()
+            );
+        }
+        let mut data = parts();
+        data.meshes[0].emissive_uvs = Some(vec![[0.; 2]; 3]);
+        assert!(
+            AssetDocument::new(data, ImportLimits::default(), &Cancellation::default()).is_err()
+        );
+        let mut data = parts();
+        data.meshes[0].emissive_factor = [0.2, 0.5, 1.];
+        let doc =
+            AssetDocument::new(data, ImportLimits::default(), &Cancellation::default()).unwrap();
+        assert_eq!(
+            doc.snapshot(ImportLimits::default(), &Cancellation::default())
+                .unwrap()
+                .draws[0]
+                .emissive_factor,
+            [0.2, 0.5, 1.]
+        );
+        assert_eq!(&**doc.source(), &[1, 2, 3, 4]);
     }
     #[test]
     fn invalid_indices_are_refused_before_any_snapshot() {

@@ -37,6 +37,7 @@ impl ViewLighting {
         mr_maps: bool,
         normal_maps: bool,
         occlusion_maps: bool,
+        emission: bool,
         encode_srgb: bool,
     ) -> f32 {
         // GLSL reads these exact small integers from the float push slot.
@@ -45,8 +46,8 @@ impl ViewLighting {
             | (u32::from(encode_srgb) << 2)
             | (u32::from(mr_maps && self.mode == ShadingMode::DirectPbr) << 3)
             | (u32::from(normal_maps && self.mode == ShadingMode::DirectPbr) << 4)
-            | (u32::from(occlusion_maps && self.mode == ShadingMode::DirectPbr) << 5))
-            as f32
+            | (u32::from(occlusion_maps && self.mode == ShadingMode::DirectPbr) << 5)
+            | (u32::from(emission && self.mode == ShadingMode::DirectPbr) << 6)) as f32
     }
 }
 #[cfg(test)]
@@ -56,12 +57,14 @@ mod tests {
     fn settings_refuse_nonfinite_and_out_of_range_values_and_pack_independent_flags() {
         let mut view = ViewLighting::default();
         assert!(view.valid());
-        assert_eq!(view.flags(true, true, true, true, true), 6.);
+        assert_eq!(view.flags(true, true, true, true, true, true), 6.);
         view.mode = ShadingMode::DirectPbr;
-        assert_eq!(view.flags(false, false, false, false, true), 5.);
-        assert_eq!(view.flags(false, true, false, false, true), 13.);
-        assert_eq!(view.flags(false, true, true, false, true), 29.);
-        assert_eq!(view.flags(false, true, true, true, true), 61.);
+        assert_eq!(view.flags(false, false, false, false, false, true), 5.);
+        assert_eq!(view.flags(false, true, false, false, false, true), 13.);
+        assert_eq!(view.flags(false, true, true, false, false, true), 29.);
+        assert_eq!(view.flags(false, true, true, true, false, true), 61.);
+        assert_eq!(view.flags(false, true, true, true, true, true), 125.);
+        assert_eq!(view.flags(true, true, true, true, true, true), 127.);
         for v in [f32::NAN, f32::INFINITY, -6.1, 6.1] {
             view.exposure_ev = v;
             assert!(!view.valid());

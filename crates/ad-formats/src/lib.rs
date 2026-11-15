@@ -264,15 +264,18 @@ pub fn import_glb(
                 .pbr_metallic_roughness()
                 .metallic_roughness_texture();
             let normal_info = primitive.material().normal_texture();
+            let emissive_info = primitive.material().emissive_texture();
+            let emissive_factor = primitive.material().emissive_factor();
             let occlusion_info = primitive.material().occlusion_texture();
             let occlusion_strength = occlusion_info.as_ref().map_or(1., |info| info.strength());
             let normal_scale = normal_info.as_ref().map_or(1., |info| info.scale());
-            let mut uv_sets = [None, None, None, None];
+            let mut uv_sets = [None, None, None, None, None];
             for (set, output) in [
                 color_texture.as_ref().map(|i| i.tex_coord()),
                 mr_texture.as_ref().map(|i| i.tex_coord()),
                 normal_info.as_ref().map(|i| i.tex_coord()),
                 occlusion_info.as_ref().map(|i| i.tex_coord()),
+                emissive_info.as_ref().map(|i| i.tex_coord()),
             ]
             .into_iter()
             .zip(&mut uv_sets)
@@ -303,7 +306,13 @@ pub fn import_glb(
                     *output = Some(values);
                 }
             }
-            let [uvs, metallic_roughness_uvs, normal_uvs, occlusion_uvs] = uv_sets;
+            let [
+                uvs,
+                metallic_roughness_uvs,
+                normal_uvs,
+                occlusion_uvs,
+                emissive_uvs,
+            ] = uv_sets;
             let mut colors = None;
             if let Some(accessor) = primitive.get(&gltf::Semantic::Colors(0)) {
                 color::validate_attribute(accessor, position.count(), true)?;
@@ -349,6 +358,11 @@ pub fn import_glb(
                         limits,
                         cancel,
                     )
+                })
+                .transpose()?;
+            let emissive_texture = emissive_info
+                .map(|info| {
+                    material_images.load(info.texture(), TextureEncoding::Srgb, bin, limits, cancel)
                 })
                 .transpose()?;
             let alpha_cutoff = (primitive.material().alpha_mode()
@@ -404,6 +418,9 @@ pub fn import_glb(
                 occlusion_texture,
                 occlusion_uvs,
                 occlusion_strength,
+                emissive_factor,
+                emissive_texture,
+                emissive_uvs,
                 metallic_roughness: [
                     primitive
                         .material()
@@ -450,10 +467,10 @@ pub fn import_glb(
         notes.push("Карты нормалей используют авторские касательные, иначе UV-основу по производным. Это приближение без гарантии совпадения с MikkTSpace на швах.".into());
     }
     if doc
-        .materials()
-        .any(|m| m.emissive_texture().is_some() || m.emissive_factor() != [0.; 3])
+        .extensions_used()
+        .any(|name| name == "KHR_materials_emissive_strength")
     {
-        notes.push("Свечение сохранено в источнике, но не отображается.".into());
+        notes.push("Усиление свечения KHR_materials_emissive_strength не отображается; используются только основные параметры glTF.".into());
     }
     if doc.scenes().len() > 1 {
         notes.push("Отображается только основная/первая сцена.".into());
@@ -527,6 +544,86 @@ mod tests {
             ImportLimits::default(),
             &Cancellation::default(),
         )
+    }
+    #[test]
+    fn emission_preserves_srgb_image_identity_independent_uvs_factor_only_and_mask() {
+        let source: Arc<[u8]> =
+            Arc::from(include_bytes!("../../../tests/fixtures/Emission_Checker.glb").as_slice());
+        let doc = import_glb(
+            source.clone(),
+            "emission".into(),
+            DocumentId(1),
+            ImportLimits::default(),
+            &Cancellation::default(),
+        )
+        .unwrap();
+        let scene = doc
+            .snapshot(ImportLimits::default(), &Cancellation::default())
+            .unwrap();
+        assert!(Arc::ptr_eq(doc.source(), &source));
+        assert_eq!(scene.emissive_uvs[0], [0., 0.]);
+        assert_ne!(scene.emissive_uvs[0], scene.uvs[0]);
+        assert_eq!(
+            (
+                doc.texture_stats().images,
+                doc.texture_stats().sampled_images,
+                doc.texture_stats().mip_bytes
+            ),
+            (1, 2, 40)
+        );
+        assert!(Arc::ptr_eq(
+            scene.draws[0].emissive_texture.as_ref().unwrap(),
+            scene.draws[0].color_texture.as_ref().unwrap()
+        ));
+        assert_eq!(scene.draws[0].emissive_factor, [1., 0.5, 0.25]);
+        assert_eq!(scene.draws[1].emissive_factor, [0.; 3]);
+        assert!(scene.draws[2].emissive_texture.is_none());
+        assert_eq!(scene.draws[2].emissive_factor, [0.2, 0.6, 1.]);
+        assert_eq!(scene.draws[3].alpha_cutoff, Some(0.5));
+        assert!(matches!(
+            import_glb(
+                Arc::from(
+                    include_bytes!("../../../tests/fixtures/Bad_Emission_Image.glb").as_slice()
+                ),
+                "bad emission".into(),
+                DocumentId(1),
+                ImportLimits::default(),
+                &Cancellation::default()
+            ),
+            Err(AssetError {
+                code: ErrorCode::InvalidFormat,
+                ..
+            })
+        ));
+        assert_eq!(
+            load(&json_doc())
+                .unwrap()
+                .snapshot(ImportLimits::default(), &Cancellation::default())
+                .unwrap()
+                .draws[0]
+                .emissive_factor,
+            [0.; 3]
+        );
+    }
+    #[test]
+    fn malformed_emission_only_map_is_admitted_instead_of_silently_ignored() {
+        let mut json = json_doc();
+        json["accessors"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"bufferView":0,"componentType":5126,"count":3,"type":"VEC2"}));
+        json["meshes"][0]["primitives"][0]["attributes"]["TEXCOORD_0"] = json!(2);
+        json["images"] = json!([{"bufferView":0,"mimeType":"image/png"}]);
+        json["textures"] = json!([{"source":0}]);
+        json["materials"][0]["emissiveTexture"] = json!({"index":0});
+        json["materials"][0]["emissiveFactor"] = json!([1., 0.5, 0.25]);
+        assert!(matches!(
+            load(&json),
+            Err(AssetError {
+                code: ErrorCode::InvalidFormat,
+                ..
+            })
+        ));
     }
     #[test]
     fn ao_uses_independent_linear_uvs_shared_orm_image_and_source_strength() {
@@ -803,7 +900,7 @@ mod tests {
         assert!(load(&json).is_err());
     }
     #[test]
-    fn material_fixture_preserves_factor_variation_and_ignored_map_notice() {
+    fn material_fixture_preserves_factor_variation_and_optional_extension_notice() {
         let source =
             Arc::<[u8]>::from(include_bytes!("../../../tests/fixtures/Pbr_Factors.glb").as_slice());
         let doc = import_glb(
@@ -825,7 +922,7 @@ mod tests {
         let mut json = json_doc();
         json["images"] = json!([{"bufferView":0,"mimeType":"image/png"}]);
         json["textures"] = json!([{"source":0}]);
-        json["materials"][0]["emissiveTexture"] = json!({"index":0});
+        json["extensionsUsed"] = json!(["KHR_materials_emissive_strength"]);
         // Ignored maps are not decoded or treated as a base-color map.
         let doc = load(&json).unwrap();
         assert_eq!(doc.texture_stats().images, 0);

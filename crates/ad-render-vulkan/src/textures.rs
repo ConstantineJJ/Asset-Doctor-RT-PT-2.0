@@ -10,7 +10,7 @@ use ad_document::{
 use ash::vk;
 use std::{collections::HashMap, sync::Arc};
 
-pub(crate) const MATERIAL_CHANNELS: usize = 4;
+pub(crate) const MATERIAL_CHANNELS: usize = 5;
 const MAX_MATERIAL_SETS: usize = 4096;
 
 pub(crate) struct TextureLayout {
@@ -469,12 +469,13 @@ impl TexturePlan {
         let mut materials = Vec::new();
         let mut material_lookup = HashMap::new();
         for draw in draws {
-            let mut slots = [0, 1, 1, 1];
+            let mut slots = [0, 1, 1, 1, 0];
             for (slot, (texture, encoding)) in slots.iter_mut().zip([
                 (&draw.color_texture, TextureEncoding::Srgb),
                 (&draw.metallic_roughness_texture, TextureEncoding::Linear),
                 (&draw.normal_texture, TextureEncoding::Linear),
                 (&draw.occlusion_texture, TextureEncoding::Linear),
+                (&draw.emissive_texture, TextureEncoding::Srgb),
             ]) {
                 if let Some(texture) = texture {
                     admission.admit(texture, encoding, ImportLimits::default())?;
@@ -669,6 +670,8 @@ mod tests {
             normal_scale: 1.,
             occlusion_texture: None,
             occlusion_strength: 1.,
+            emissive_factor: [0.; 3],
+            emissive_texture: None,
             alpha_cutoff: None,
         };
         let plan = TexturePlan::new(
@@ -685,7 +688,7 @@ mod tests {
         normal_draw.occlusion_texture = normal_draw.metallic_roughness_texture.clone();
         let shared = TexturePlan::new(&[normal_draw], 4096).unwrap();
         assert_eq!(shared.draw_slots, [0]);
-        assert_eq!(shared.materials, [[0, 2, 2, 2]]);
+        assert_eq!(shared.materials, [[0, 2, 2, 2, 0]]);
         assert_eq!(
             (
                 shared.textures.len(),
@@ -695,7 +698,16 @@ mod tests {
             (3, 1, 20)
         );
         assert_eq!(plan.draw_slots, [0, 1, 2]);
-        assert_eq!(plan.materials, [[2, 3, 1, 1], [2, 1, 1, 1], [0, 3, 1, 1]]);
+        assert_eq!(
+            plan.materials,
+            [[2, 3, 1, 1, 0], [2, 1, 1, 1, 0], [0, 3, 1, 1, 0]]
+        );
+        let mut emissive = draw(Some(plan.textures[2].0.clone()), None);
+        emissive.emissive_texture = emissive.color_texture.clone();
+        emissive.emissive_factor = [1.; 3];
+        let emission = TexturePlan::new(&[emissive], 1).unwrap();
+        assert_eq!(emission.materials, [[2, 1, 1, 1, 2]]);
+        assert_eq!(emission.stats.sampled_images, 1);
         assert_eq!(plan.textures.len(), 4);
         let repeated = TexturePlan::new(
             &[

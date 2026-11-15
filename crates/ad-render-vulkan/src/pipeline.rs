@@ -123,6 +123,11 @@ impl MeshPipeline {
                     stride: 8,
                     input_rate: vk::VertexInputRate::VERTEX,
                 },
+                vk::VertexInputBindingDescription {
+                    binding: 8,
+                    stride: 8,
+                    input_rate: vk::VertexInputRate::VERTEX,
+                },
             ];
             let attributes = [
                 vk::VertexInputAttributeDescription {
@@ -170,6 +175,12 @@ impl MeshPipeline {
                 vk::VertexInputAttributeDescription {
                     location: 7,
                     binding: 7,
+                    format: vk::Format::R32G32_SFLOAT,
+                    offset: 0,
+                },
+                vk::VertexInputAttributeDescription {
+                    location: 8,
+                    binding: 8,
                     format: vk::Format::R32G32_SFLOAT,
                     offset: 0,
                 },

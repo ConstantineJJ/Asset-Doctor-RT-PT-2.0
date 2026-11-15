@@ -55,6 +55,9 @@ per-increment owner acceptance is not a gate. Keep source/audit/verification lim
 - [x] H3: Native AO on/off/default, normal/MASK/empty/heavy regression; replacement+lifecycle0errors; interactive fill/direct comparison and strength0 unchanged.
 - [x] I0: ADR-0020 frame/material binding redesign; baseline portability and lifetime contracts.
 - [x] I1:96byte frame UBO updated only after fence retirement; material tuple dedup/cap4096;64byte push.60tests and native channel/lifecycle regressions0errors.
-- [ ] Next raster increment: source emission contracts and SRGB map/factor rendering in the new binding layout.
+- [x] J0: Core emission audit/ADR-0021; independent SRGB image/UV/factor admission,96byte vertex budget.
+- [x] J1: Fifth material channel in set1; additive-before-exposure contribution, independent toggle/reset,64tests and required Windows/dependency checks.
+- [x] J2: Native emission on/off/default, prior channel/lifecycle checks and heavy Vanguard;0validationerrors. Lights-off native visual showed factor0 dark, factor-only and textured emission; toggle off darkens all.
+- [ ] Next: bounded read-only geometry diagnostics contracts and source-backed findings; environment/shadows remain future raster work.
 - [ ] Later: environment/shadows/full PBR, diagnostics, Heal, manual rig/animation, unified Compare, verified export and installer.
 - [ ] Later: RT → PT → Mixamo rights check/autorig/retargeting.

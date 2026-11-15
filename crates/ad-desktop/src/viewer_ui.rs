@@ -22,6 +22,7 @@ pub struct ViewerUi {
     pub mr_maps: bool,
     pub normal_maps: bool,
     pub ao_maps: bool,
+    pub emission: bool,
     pub lighting: ViewLighting,
     help: bool,
     pub tree: SceneTree,
@@ -38,6 +39,8 @@ pub struct ViewerUi {
     normal_maps_rect: egui::Rect,
     #[cfg(test)]
     ao_maps_rect: egui::Rect,
+    #[cfg(test)]
+    emission_rect: egui::Rect,
 }
 impl Default for ViewerUi {
     fn default() -> Self {
@@ -58,6 +61,7 @@ impl Default for ViewerUi {
             mr_maps: true,
             normal_maps: true,
             ao_maps: true,
+            emission: true,
             lighting: ViewLighting::default(),
             help: false,
             tree: SceneTree::default(),
@@ -74,6 +78,8 @@ impl Default for ViewerUi {
             normal_maps_rect: egui::Rect::NOTHING,
             #[cfg(test)]
             ao_maps_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            emission_rect: egui::Rect::NOTHING,
         }
     }
 }
@@ -232,6 +238,9 @@ impl ViewerUi {
                             let _ao=ui.checkbox(&mut self.ao_maps,"Окклюзия · AO").on_hover_text("Затемнение заполняющего света из карты материала. Направленный свет не меняется.");
                             #[cfg(test)]
                             {self.ao_maps_rect=_ao.rect;}
+                            let _emission=ui.checkbox(&mut self.emission,"Свечение").on_hover_text("Собственный цвет поверхности из материала и карты. Без ореола и освещения соседних объектов.");
+                            #[cfg(test)]
+                            {self.emission_rect=_emission.rect;}
                             ui.add(egui::Slider::new(&mut self.lighting.exposure_ev,-6.0..=6.0).text("Экспозиция · EV"));
                             ui.add(egui::Slider::new(&mut self.lighting.key,0.0..=8.0).text("Основной свет"));
                             ui.add(egui::Slider::new(&mut self.lighting.fill,0.0..=1.0).text("Заполнение"));
@@ -293,7 +302,7 @@ impl ViewerUi {
                 ui.label("F — вписать модель; Esc — отменить загрузку; H — справка.");
                 ui.separator();ui.label("Выбор узла показывает сведения. Подсветка, редактирование и сохранение появятся позднее.");
                 ui.label("В Сводке: базовый вид или PBR с авторскими нормалями, металлом и шероховатостью. Экспозиция и свет меняют только просмотр.");
-                ui.label("Цвет, металл/шероховатость, нормали и окклюзия: встроенные PNG/JPEG до 8 бит/канал с независимыми переключателями. AO влияет только на заполняющий свет. Нормали используют авторские касательные либо приближённую UV-основу без MikkTSpace. Свечение, HDR-окружение и тени пока не отображаются; обе стороны граней видимы.");
+                ui.label("Цвет, металл/шероховатость, нормали, окклюзия и свечение: встроенные PNG/JPEG до 8 бит/канал с независимыми переключателями. AO влияет только на заполняющий свет. Нормали используют авторские касательные либо приближённую UV-основу без MikkTSpace. Свечение не освещает соседние объекты; ореол, HDR-окружение и тени пока не отображаются. Обе стороны граней видимы.");
                 ui.collapsing("Лицензии встроенных шрифтов",|ui| {
                     egui::ScrollArea::vertical().max_height(280.).show(ui,|ui| {
                         ui.label(include_str!("../../../assets/font-licenses.txt"));
@@ -370,6 +379,7 @@ mod tests {
             mr_maps: false,
             normal_maps: false,
             ao_maps: false,
+            emission: false,
             ..Default::default()
         };
         let source = std::sync::Arc::<[u8]>::from(
@@ -422,6 +432,7 @@ mod tests {
         assert!(!ui.mr_maps);
         assert!(!ui.normal_maps);
         assert!(!ui.ao_maps);
+        assert!(!ui.emission);
         assert!(std::sync::Arc::ptr_eq(asset.document.source(), &source));
         assert_eq!(asset.snapshot.fallback_normal_vertices, 6);
     }
@@ -508,6 +519,34 @@ mod tests {
             out.drop_without_applying_deltas();
         }
         assert!(!ui.ao_maps && ui.normal_maps && ui.mr_maps && ui.textures);
+    }
+    #[test]
+    fn emission_switch_leaves_other_material_channels_enabled() {
+        let mut ui = ViewerUi {
+            lighting: ViewLighting {
+                mode: ShadingMode::DirectPbr,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (out, _, _) = ui.layout(raw(1200., 1000.), None, false);
+        out.drop_without_applying_deltas();
+        let position = ui.emission_rect.center();
+        for pressed in [true, false] {
+            let mut input = raw(1200., 1000.);
+            input.events = vec![
+                egui::Event::PointerMoved(position),
+                egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::default(),
+                },
+            ];
+            let (out, _, _) = ui.layout(input, None, false);
+            out.drop_without_applying_deltas();
+        }
+        assert!(!ui.emission && ui.ao_maps && ui.normal_maps && ui.mr_maps && ui.textures);
     }
     #[test]
     fn open_button_emits_one_action_on_release() {

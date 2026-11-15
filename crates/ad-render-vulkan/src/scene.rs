@@ -15,6 +15,8 @@ pub(crate) struct GpuDraw {
     pub has_occlusion_map: bool,
     pub normal_scale: f32,
     pub has_normal_map: bool,
+    pub emissive_factor: [f32; 3],
+    pub has_emission: bool,
 }
 
 pub(crate) struct GpuScene {
@@ -23,6 +25,7 @@ pub(crate) struct GpuScene {
     pub tangents: Buffer,
     pub normal_uvs: Buffer,
     pub occlusion_uvs: Buffer,
+    pub emissive_uvs: Buffer,
     pub indices: Buffer,
     pub uvs: Buffer,
     pub metallic_roughness_uvs: Buffer,
@@ -34,6 +37,7 @@ pub(crate) struct GpuScene {
     pub has_mr_maps: bool,
     pub has_normal_maps: bool,
     pub has_occlusion_maps: bool,
+    pub has_emission: bool,
 }
 impl GpuScene {
     pub fn new(gpu: Arc<Gpu>, snapshot: &GeometrySnapshot) -> GpuResult<Self> {
@@ -53,6 +57,12 @@ impl GpuScene {
             || snapshot.tangents.len() != snapshot.positions.len()
             || snapshot.normal_uvs.len() != snapshot.positions.len()
             || snapshot.occlusion_uvs.len() != snapshot.positions.len()
+            || snapshot.emissive_uvs.len() != snapshot.positions.len()
+            || snapshot
+                .emissive_uvs
+                .iter()
+                .flatten()
+                .any(|v| !v.is_finite())
             || snapshot
                 .occlusion_uvs
                 .iter()
@@ -82,6 +92,10 @@ impl GpuScene {
                 .any(|value| !value.is_finite())
             || snapshot.draws.iter().any(|draw| {
                 draw.index_count == 0
+                    || draw
+                        .emissive_factor
+                        .iter()
+                        .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
                     || !draw.normal_scale.is_finite()
                     || !draw.occlusion_strength.is_finite()
                     || !(0.0..=1.0).contains(&draw.occlusion_strength)
@@ -117,6 +131,7 @@ impl GpuScene {
             tangents,
             normal_uvs,
             occlusion_uvs,
+            emissive_uvs,
         ) = unsafe {
             (
                 std::slice::from_raw_parts(
@@ -155,6 +170,10 @@ impl GpuScene {
                     snapshot.occlusion_uvs.as_ptr().cast::<u8>(),
                     snapshot.occlusion_uvs.len() * 8,
                 ),
+                std::slice::from_raw_parts(
+                    snapshot.emissive_uvs.as_ptr().cast::<u8>(),
+                    snapshot.emissive_uvs.len() * 8,
+                ),
             )
         };
         let vertices = Buffer::upload(gpu.clone(), vertices, vk::BufferUsageFlags::VERTEX_BUFFER)?;
@@ -175,6 +194,11 @@ impl GpuScene {
             metallic_roughness_uvs,
             vk::BufferUsageFlags::VERTEX_BUFFER,
         )?;
+        let emissive_uvs = Buffer::upload(
+            gpu.clone(),
+            emissive_uvs,
+            vk::BufferUsageFlags::VERTEX_BUFFER,
+        )?;
         let textures = TextureBindings::new(gpu, &snapshot.draws)?;
         let draws = snapshot
             .draws
@@ -191,6 +215,8 @@ impl GpuScene {
                 has_normal_map: d.normal_texture.is_some(),
                 has_occlusion_map: d.occlusion_texture.is_some(),
                 occlusion_strength: d.occlusion_strength,
+                emissive_factor: d.emissive_factor,
+                has_emission: d.emissive_factor.iter().any(|&v| v > 0.),
             })
             .collect();
         Ok(Self {
@@ -200,6 +226,7 @@ impl GpuScene {
             normal_uvs,
             occlusion_uvs,
             indices,
+            emissive_uvs,
             uvs,
             metallic_roughness_uvs,
             colors,
@@ -213,6 +240,10 @@ impl GpuScene {
                 .any(|d| d.metallic_roughness_texture.is_some()),
             has_normal_maps: snapshot.draws.iter().any(|d| d.normal_texture.is_some()),
             has_occlusion_maps: snapshot.draws.iter().any(|d| d.occlusion_texture.is_some()),
+            has_emission: snapshot
+                .draws
+                .iter()
+                .any(|d| d.emissive_factor.iter().any(|&v| v > 0.)),
         })
     }
 }

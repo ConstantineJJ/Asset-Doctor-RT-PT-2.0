@@ -1,5 +1,14 @@
 # Project pulse
 
+## 2026-11-15 — Core material emission
+
+- ADR-0021/read-only slice08 audit accepted before implementation. Preserved emissiveFactor linearRGB[0,1]/default0 and independent emissiveTexture UV; SRGB image sharing with base, strict admission even factor0/defaultview. Bad emission-only PNG regression RED→GREEN. Optional KHR_materials_emissive_strength explicitly noted unsupported; required extensions refused. Source bytes unchanged.
+- Vulkan fifth material image/sampler pair stays in set1;96byte vertex streams,96byte frame and64byte push,4096tuple cap. Adds factor×sampleRGB before exposure/Reinhard in PBR only, independently of AO/key/fill/base sampling; alpha ignored and base MASK retained. Session emission toggle survives reset. No bloom/GI/cast light/HDR environment.
+-64tests(14desktop/14document/24formats/12renderer), fmt/clippy denied warnings, release Windows build and cargo-deny PASS. Independent CPU/GPU source reviews found no blocker. No package/version/policy changes. Fixture uses authored numeric geometry/PNG only.
+- Native fixture on/off/default:15mesh presents,emission15/0/0, shared base/emission SRGB upload plus linearMR,2material tuples,40mipbytes. Bad emission replacement retained model. AO/normal/colorMASK/empty regressions and lifecycle all0validationerrors; child sync setting requested, effective setting not independently queried.
+- Heavy Vanguard852516vertices/1559826triangles now admits all4images/4textures,223696208mipbytes, emission15/normal15/MR15, failed replacement/lifecycle0errors, sourceSHA256unchanged. Existing256MiB texture cap unchanged.
+- Native interactive fixture with key0/fill0: factor0 sphere dark, factor-only and textured emission visible; disabling emission darkened all, re-enabling restored it. Base texture toggle retained emission and changed only MASK coverage. Normal close,5059total frames/0validationerrors; not a benchmark/pixel oracle. App closed and capture session reset. Logs artifacts/emission-ui-visual.*, vanguard-emission-smoke.*, release-import-smoke*emission*.*. No push/Legacy/report edits. Next: bounded read-only geometry diagnostics contracts.
+
 ## 2026-11-15 — Frame/material binding redesign
 
 - ADR-0020 accepted before emission. Replaced4channel sets/128byte push with frameUBO96bytes(set0) and deduplicated whole-material descriptors(set1),64byte per-draw push. Frame allocation survives recreation, overwrite happens after single in-flight submission/presentation retirement. Source/document and88byte geometry unchanged.

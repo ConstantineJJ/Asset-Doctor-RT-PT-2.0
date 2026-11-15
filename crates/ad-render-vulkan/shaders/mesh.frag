@@ -7,6 +7,7 @@ layout(location=4) in vec2 mr_uv;
 layout(location=5) in vec2 normal_uv;
 layout(location=6) in vec4 world_tangent;
 layout(location=7) in vec2 ao_uv;
+layout(location=8) in vec2 emissive_uv;
 layout(set=1,binding=0) uniform texture2D base_color_image;
 layout(set=1,binding=1) uniform sampler base_color_sampler;
 layout(set=1,binding=2) uniform texture2D metallic_roughness_image;
@@ -15,6 +16,8 @@ layout(set=1,binding=4) uniform texture2D normal_image;
 layout(set=1,binding=5) uniform sampler normal_sampler;
 layout(set=1,binding=6) uniform texture2D occlusion_image;
 layout(set=1,binding=7) uniform sampler occlusion_sampler;
+layout(set=1,binding=8) uniform texture2D emissive_image;
+layout(set=1,binding=9) uniform sampler emissive_sampler;
 layout(location=0) out vec4 color;
 layout(set=0,binding=0,std140) uniform Frame { mat4 view_projection; vec4 eye_exposure; vec4 lighting; } frame;
 layout(push_constant) uniform Push { vec4 base_color; vec4 material; vec4 view; vec4 emissive; } pc;
@@ -61,7 +64,7 @@ vec3 perturbed_normal(vec3 n,vec3 texel,vec3 px,vec3 py,vec2 ux,vec2 uy) {
     ts=unit_or(ts,vec3(0.0,0.0,1.0));
     return unit_or(t*ts.x+b*ts.y+n*ts.z,n);
 }
-vec3 direct_pbr(vec3 base,vec3 n,vec2 mr,vec3 v,float occlusion) {
+vec3 direct_pbr(vec3 base,vec3 n,vec2 mr,vec3 v,float occlusion,vec3 emission) {
     vec3 l=normalize(vec3(0.4,0.8,0.3));
     vec3 h=unit_or(v+l,n);
     float nv=max(dot(n,v),0.00001);
@@ -81,7 +84,7 @@ vec3 direct_pbr(vec3 base,vec3 n,vec2 mr,vec3 v,float occlusion) {
     vec3 specular=fresnel*distribution*visibility;
     // Inspection fill is an explicit approximation; no environment is sampled.
     vec3 radiance=(diffuse+specular)*nl*frame.lighting.x+((1.0-metal)*base+f0)*frame.lighting.y*occlusion;
-    vec3 exposed=max(radiance*exp2(frame.eye_exposure.w),vec3(0.0));
+    vec3 exposed=max((radiance+emission)*exp2(frame.eye_exposure.w),vec3(0.0));
     return exposed/(vec3(1.0)+exposed);
 }
 void main() {
@@ -121,7 +124,12 @@ void main() {
         if ((flags&32u)!=0u) {
             occlusion=mix(1.0,texture(sampler2D(occlusion_image,occlusion_sampler),ao_uv).r,pc.view.y);
         }
-        linear=direct_pbr(base.rgb,surface*side,mr,v,occlusion);
+        vec3 emission=vec3(0.0);
+        if ((flags&64u)!=0u) {
+            // Hardware SRGB decode of RGB; emission alpha never affects coverage.
+            emission=pc.emissive.rgb*texture(sampler2D(emissive_image,emissive_sampler),emissive_uv).rgb;
+        }
+        linear=direct_pbr(base.rgb,surface*side,mr,v,occlusion,emission);
     }
     if (pc.material.z>=0.0 && base.a<pc.material.z) {discard;}
     vec3 display=linear;

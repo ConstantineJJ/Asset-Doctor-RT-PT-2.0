@@ -18,6 +18,12 @@
     "origin": "Project-authored numeric occlusion/UV/PNG data; no external content"
   },
   {
+    "file": "Bad_Emission_Image.glb",
+    "bytes": 41664,
+    "sha256": "01d19f09f0d53cb0a007a9ac4d9687ac4eae648ef930d7a7a203cce7fc948508",
+    "origin": "Project-authored numeric emission/UV/PNG data; no external content"
+  },
+  {
     "file": "Bad_Image.glb",
     "bytes": 1768,
     "sha256": "65e95425718f00dfc68f1d55069e15e53a116122a73cb3de950640e0ae3e80a0",
@@ -46,6 +52,12 @@
     "bytes": 1840,
     "sha256": "222bde0768828c6fdc3fc4f0adad32c74ca4407eb4b0f0f353e7ade40b34b78a",
     "origin": "Project-authored numeric test geometry and PNG; no external content"
+  },
+  {
+    "file": "Emission_Checker.glb",
+    "bytes": 41996,
+    "sha256": "34dc709091920a49cd6c34ee9afa7b6f8d347ce0cac0bea4914fb081797e8e7f",
+    "origin": "Project-authored numeric emission/UV/PNG data; no external content"
   },
   {
     "file": "Huge_Image_Header.glb",

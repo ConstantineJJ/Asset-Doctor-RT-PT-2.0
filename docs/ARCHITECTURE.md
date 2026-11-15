@@ -69,6 +69,11 @@ buffer writes only follow single-frame fence retirement. Up to4096unique texture
 tuples are admitted before image/pool allocation; source factors can share tuples.
 This leaves baseline Vulkan capacity for emission without descriptor indexing.
 
+ADR-0021 adds core emission factor and SRGB map with independent UV. The fifth
+material channel stays in set1, sharing base SRGB upload where identities agree.
+Geometry admission is96bytes/vertex; frame96/push64 and tuple4096caps are unchanged.
+Emission adds before exposure in PBR only, independent of AO and key/fill.
+
 The owner's advisory v0.1 proposal was reviewed in
 ARCHITECTURE_PROPOSAL_REVIEW.md. Session history and revision-keyed findings are
 application/derived state, not fields that every saved asset must embed. Compare
