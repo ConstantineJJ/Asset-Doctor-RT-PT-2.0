@@ -4,13 +4,13 @@ Owner authorizes autonomous development and computer use without manual acceptan
 No push/release authorized. Source models, Legacy and supplied Arc-XRay are read-only.
 
 Current local work:
--6f759da: frame/material binding redesign,96byte frameUBO/64byte push,2sets,
+- `6f759da`: frame/material binding redesign,96byte frameUBO/64byte push,2sets,
   deduplicated material tuple cap4096.
--cff6693: core emission SRGB image/factor/independent UV, strict admission and
+- `cff6693`: core emission SRGB image/factor/independent UV, strict admission and
   independent PBR switch; no bloom/GI/environment or emission-strength extension.
--79cbef8: independent ad-analysis with robust adaptive zero-area predicate,
+- `79cbef8`: independent ad-analysis with robust adaptive zero-area predicate,
   oriented same-index duplicates, unused vertices and missing/zero normals.
--95a957a: worker report plus native Diagnostics window and known-defect fixture.
+- `95a957a`: worker report plus native Diagnostics window and known-defect fixture.
 
 Latest code gates:72tests (5analysis/17desktop/14document/24formats/12renderer),
 fmt, all-target clippy with warnings denied, Windows release build and cargo-deny
