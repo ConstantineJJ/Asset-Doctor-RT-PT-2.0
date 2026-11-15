@@ -52,6 +52,20 @@ pub fn import_glb(
     if root.nodes.len() > limits.nodes {
         return Err(budget());
     }
+    // gltf-json 1.4.1's POSITION validation hook indexes this reference before
+    // returning validation errors. Preflight it before invoking that dependency.
+    for mesh in &root.meshes {
+        for primitive in &mesh.primitives {
+            cancel.check()?;
+            if primitive
+                .attributes
+                .values()
+                .any(|id| id.value() >= root.accessors.len())
+            {
+                return Err(invalid("Primitive attribute references a missing accessor"));
+            }
+        }
+    }
     let doc = gltf::Document::from_json(root)
         .map_err(|e| invalid(&format!("glTF validation failed: {e}")))?;
     cancel.check()?;
@@ -135,6 +149,11 @@ pub fn import_glb(
         let mut ids = Vec::new();
         for primitive in mesh.primitives() {
             cancel.check()?;
+            if primitive.material().alpha_mode() != gltf::material::AlphaMode::Opaque {
+                return Err(unsupported(
+                    "Transparent/masked materials are not supported by this geometry viewer yet",
+                ));
+            }
             if primitive.mode() != gltf::mesh::Mode::Triangles
                 || primitive.morph_targets().len() > 0
             {
@@ -145,8 +164,27 @@ pub fn import_glb(
             let position = primitive
                 .get(&gltf::Semantic::Positions)
                 .ok_or_else(|| invalid("Mesh has no POSITION attribute"))?;
-            if position.data_type() != gltf::accessor::DataType::F32 {
-                return Err(unsupported("This build requires floating-point positions"));
+            if position.data_type() != gltf::accessor::DataType::F32
+                || position.dimensions() != gltf::accessor::Dimensions::Vec3
+                || position.normalized()
+            {
+                return Err(invalid(
+                    "Positions must use non-normalized F32 VEC3 accessors",
+                ));
+            }
+            if let Some(indices) = primitive.indices()
+                && (indices.dimensions() != gltf::accessor::Dimensions::Scalar
+                    || indices.normalized()
+                    || !matches!(
+                        indices.data_type(),
+                        gltf::accessor::DataType::U8
+                            | gltf::accessor::DataType::U16
+                            | gltf::accessor::DataType::U32
+                    ))
+            {
+                return Err(invalid(
+                    "Indices must use non-normalized unsigned SCALAR accessors",
+                ));
             }
             let index_count = primitive
                 .indices()
@@ -196,7 +234,7 @@ pub fn import_glb(
                     .base_color_factor(),
             });
         }
-        mesh_ids.push(ids);
+        mesh_ids.push(Arc::<[MeshId]>::from(ids));
     }
     let nodes = doc
         .nodes()
@@ -206,7 +244,7 @@ pub fn import_glb(
             children: node.children().map(|child| NodeId(child.index())).collect(),
             meshes: node
                 .mesh()
-                .map_or_else(Vec::new, |mesh| mesh_ids[mesh.index()].clone()),
+                .map_or_else(|| Arc::from([]), |mesh| mesh_ids[mesh.index()].clone()),
         })
         .collect();
     let scene = doc
@@ -410,5 +448,56 @@ mod tests {
         let mut json = json_doc();
         json["accessors"][0]["count"] = json!(9999);
         assert!(load(&json).is_err());
+    }
+    #[test]
+    fn transparent_materials_are_explicitly_unsupported_until_alpha_rendering_exists() {
+        for mode in ["BLEND", "MASK"] {
+            let mut json = json_doc();
+            json["materials"][0]["alphaMode"] = json!(mode);
+            assert!(matches!(
+                load(&json),
+                Err(AssetError {
+                    code: ErrorCode::Unsupported,
+                    ..
+                })
+            ));
+        }
+    }
+    #[test]
+    fn malformed_position_reference_and_index_layout_are_errors_not_panics() {
+        let mut bad = json_doc();
+        bad["meshes"][0]["primitives"][0]["attributes"]["POSITION"] = json!(999);
+        assert!(load(&bad).is_err());
+        for (kind, dimensions) in [(5126, "SCALAR"), (5122, "SCALAR"), (5123, "VEC2")] {
+            let mut bad = json_doc();
+            bad["accessors"][1]["componentType"] = json!(kind);
+            bad["accessors"][1]["type"] = json!(dimensions);
+            assert!(load(&bad).is_err());
+        }
+        let mut bad = json_doc();
+        bad["accessors"][0]["type"] = json!("VEC4");
+        assert!(load(&bad).is_err());
+    }
+    #[test]
+    fn repeated_mesh_nodes_share_primitive_ids_and_snapshot_refuses_draw_expansion() {
+        let mut json = json_doc();
+        json["nodes"] = json!([{"mesh":0}, {"mesh":0}]);
+        json["scenes"][0]["nodes"] = json!([0, 1]);
+        let document = load(&json).unwrap();
+        assert!(Arc::ptr_eq(
+            &document.nodes()[0].meshes,
+            &document.nodes()[1].meshes
+        ));
+        let limits = ImportLimits {
+            draws: 1,
+            ..Default::default()
+        };
+        assert!(matches!(
+            document.snapshot(limits, &Cancellation::default()),
+            Err(AssetError {
+                code: ErrorCode::ResourceLimit,
+                ..
+            })
+        ));
     }
 }

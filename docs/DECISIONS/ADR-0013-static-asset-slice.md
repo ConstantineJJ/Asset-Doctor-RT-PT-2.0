@@ -25,10 +25,17 @@ is separately budgeted; it is replaceable by shared GPU geometry/instance data
 later. No premature renderer/backend/event-bus abstractions.
 
 Admission defaults: source 192 MiB, JSON chunk 16 MiB, decoded geometry 512 MiB,
-snapshot/GPU geometry 512 MiB, nodes 50,000. These are initial operational caps,
+snapshot/GPU geometry 512 MiB, nodes 50,000,
+with a separate 100,000 snapshot draw/instance cap. Source mesh primitive-ID lists
+are shared via immutable Arc slices and validated once per distinct list; repeated
+node instances cannot cause a Cartesian-product ID allocation/admission scan.
+These are initial operational caps,
 not claims of whole-process RAM/VRAM limits. Account for source + decoded + snapshot
 retention; parser metadata/allocator overhead and GPU depth targets are additional.
 Checked arithmetic, cancellation and finite/range validation precede publication.
+Preflight primitive accessor references before gltf-json validation; typed readers
+require explicit position/index component/dimension checks. A third-party parser
+unwind becomes a structured import error so the worker can process another file.
 
 Desktop worker imports one request at a time; a newer request cancels and replaces
 the queued request. Results carry tickets. GPU upload creates a complete candidate

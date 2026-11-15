@@ -61,6 +61,7 @@ pub struct ImportLimits {
     pub decoded_bytes: usize,
     pub snapshot_bytes: usize,
     pub nodes: usize,
+    pub draws: usize,
 }
 impl Default for ImportLimits {
     fn default() -> Self {
@@ -70,6 +71,7 @@ impl Default for ImportLimits {
             decoded_bytes: 512 << 20,
             snapshot_bytes: 512 << 20,
             nodes: 50_000,
+            draws: 100_000,
         }
     }
 }
@@ -90,7 +92,7 @@ pub struct Node {
     pub name: String,
     pub local: [[f32; 4]; 4],
     pub children: Vec<NodeId>,
-    pub meshes: Vec<MeshId>,
+    pub meshes: Arc<[MeshId]>,
 }
 pub struct DocumentParts {
     pub id: DocumentId,
@@ -179,7 +181,24 @@ impl AssetDocument {
                 "Asset has no valid scene roots",
             ));
         }
+        // Source instances share primitive IDs. Validate each retained slice once
+        // rather than multiplying primitive checks by the number of instances.
+        let mut checked_mesh_lists = std::collections::HashSet::new();
         for node in &parts.nodes {
+            cancel.check()?;
+            if checked_mesh_lists.insert((node.meshes.as_ptr(), node.meshes.len())) {
+                for (i, id) in node.meshes.iter().enumerate() {
+                    if i % 4096 == 0 {
+                        cancel.check()?;
+                    }
+                    if id.0 >= parts.meshes.len() {
+                        return Err(AssetError::new(
+                            ErrorCode::InvalidScene,
+                            "Invalid node mesh reference",
+                        ));
+                    }
+                }
+            }
             let matrix = glam::Mat4::from_cols_array_2d(&node.local);
             if !matrix.is_finite()
                 || node.local[0][3] != 0.0
@@ -187,7 +206,6 @@ impl AssetDocument {
                 || node.local[2][3] != 0.0
                 || node.local[3][3] != 1.0
                 || node.children.iter().any(|id| id.0 >= parts.nodes.len())
-                || node.meshes.iter().any(|id| id.0 >= parts.meshes.len())
             {
                 return Err(AssetError::new(
                     ErrorCode::InvalidScene,
@@ -246,7 +264,13 @@ impl AssetDocument {
                     "World transform overflow",
                 ));
             }
-            for mesh_id in &node.meshes {
+            for mesh_id in node.meshes.iter() {
+                if instances.len() >= limits.draws {
+                    return Err(AssetError::new(
+                        ErrorCode::ResourceLimit,
+                        "Scene exceeds draw/instance budget",
+                    ));
+                }
                 let mesh = &self.parts.meshes[mesh_id.0];
                 vertices = vertices.checked_add(mesh.positions.len()).ok_or_else(|| {
                     AssetError::new(ErrorCode::ResourceLimit, "Snapshot vertex count overflow")
@@ -364,13 +388,13 @@ mod tests {
                     name: "parent".into(),
                     local: Mat4::from_translation(glam::vec3(5., 0., 0.)).to_cols_array_2d(),
                     children: vec![NodeId(1)],
-                    meshes: vec![],
+                    meshes: Arc::from([]),
                 },
                 Node {
                     name: "mesh".into(),
                     local: Mat4::from_scale(glam::vec3(-2., 2., 2.)).to_cols_array_2d(),
                     children: vec![],
-                    meshes: vec![MeshId(0)],
+                    meshes: Arc::from([MeshId(0)]),
                 },
             ],
             roots: vec![NodeId(0)],
