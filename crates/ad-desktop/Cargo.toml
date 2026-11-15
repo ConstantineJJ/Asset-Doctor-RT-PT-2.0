@@ -13,9 +13,12 @@ ad-render-vulkan = { path = "../ad-render-vulkan", version = "=0.1.0" }
 winit = { version = "=0.30.13", default-features = false, features = ["rwh_06"] }
 png = "=0.18.1"
 raw-window-handle = "=0.6.2"
+ad-document = { path = "../ad-document", version = "=0.1.0" }
+ad-formats = { path = "../ad-formats", version = "=0.1.0" }
+glam = { version = "=0.34.3", default-features = false, features = ["std"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "=0.52.0", features = ["Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "=0.52.0", features = ["Win32_UI_WindowsAndMessaging", "Win32_UI_Controls_Dialogs"] }
 
 [build-dependencies]
 winresource = "=0.1.34"

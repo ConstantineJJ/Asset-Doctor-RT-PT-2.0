@@ -1,12 +1,18 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod camera;
+mod imports;
 mod native;
 
+use ad_document::{DocumentId, ErrorCode};
 use ad_render_vulkan::{
     SurfaceSize,
     context::GpuResult,
     renderer::{FrameResult, Renderer},
 };
+use camera::Camera;
+use imports::{Imports, PreparedAsset};
+use std::path::PathBuf;
 use std::{
     io::Cursor,
     sync::Arc,
@@ -18,6 +24,10 @@ use winit::{
     event::WindowEvent,
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     window::{Icon, Window, WindowId},
+};
+use winit::{
+    event::{ElementState, MouseButton, MouseScrollDelta},
+    keyboard::{KeyCode, ModifiersState, PhysicalKey},
 };
 
 fn icon() -> GpuResult<Icon> {
@@ -63,6 +73,18 @@ struct App {
     close_requested: bool,
     suspended: bool,
     closed: bool,
+    imports: Imports,
+    importing: bool,
+    current: Option<PreparedAsset>,
+    camera: Camera,
+    mouse: Option<MouseButton>,
+    cursor: Option<(f64, f64)>,
+    modifiers: ModifiersState,
+    initial_path: Option<PathBuf>,
+    smoke_import: bool,
+    smoke_bad: Option<PathBuf>,
+    expected_tag: Option<(DocumentId, u64)>,
+    failed_replacement_preserved: bool,
 }
 
 impl App {
@@ -71,9 +93,11 @@ impl App {
             return;
         }
         self.closed = true;
+        self.imports.cancel();
         if let Some(renderer) = self.renderer.take() {
             let context = renderer.context();
             let frames = renderer.frames;
+            let mesh_frames = renderer.mesh_frames;
             drop(renderer); // Retire ALL Vulkan objects while native window is alive.
             let errors = context.validation_errors();
             eprintln!(
@@ -83,6 +107,15 @@ impl App {
             if errors > 0 {
                 self.error
                     .get_or_insert(format!("{errors} Vulkan validation errors"));
+            }
+            if self.smoke.is_some()
+                && self.error.is_none()
+                && self.smoke_import
+                && (self.current.is_none()
+                    || !self.failed_replacement_preserved
+                    || mesh_frames < 15)
+            {
+                self.error = Some("Import/rejected-replacement smoke did not complete".into());
             }
             if self.smoke.is_some() && self.error.is_none() {
                 if !self.saw_resize
@@ -95,6 +128,11 @@ impl App {
                         "Native smoke did not observe every required lifecycle transition".into(),
                     );
                 } else {
+                    eprintln!(
+                        "asset_smoke imported={} mesh_frames={mesh_frames} rejected_replacement_preserved={}",
+                        self.current.is_some(),
+                        self.failed_replacement_preserved
+                    );
                     eprintln!(
                         "SMOKE_PASS frames={frames} resize=true minimize=true restore=true close_requested=true validation_enabled={} validation_errors=0",
                         context.validation
@@ -114,7 +152,7 @@ impl App {
         let window = Arc::new(
             event_loop.create_window(
                 Window::default_attributes()
-                    .with_title("Asset Doctor RT-PT 2.0 | Vulkan clear-frame prototype")
+                    .with_title("Asset Doctor RT-PT 2.0 | Static GLB viewer prototype")
                     .with_inner_size(PhysicalSize::new(1200, 760))
                     .with_min_inner_size(PhysicalSize::new(320, 240))
                     .with_window_icon(Some(icon()?)),
@@ -138,8 +176,108 @@ impl App {
         Ok(())
     }
 
+    fn start_import(&mut self, path: PathBuf) {
+        let ticket = self.imports.request(path);
+        self.importing = true;
+        eprintln!("import_started ticket={ticket}");
+        if let Some(window) = self.window.as_ref() {
+            window.set_title("Asset Doctor RT-PT 2.0 — Loading GLB… | Esc: cancel");
+        }
+    }
+    fn title(&self) {
+        if let Some(window) = self.window.as_ref() {
+            let title = if let Some(asset) = self.current.as_ref() {
+                format!(
+                    "Asset Doctor RT-PT 2.0 — {} | {} vertices · {} triangles | Ctrl+O: open · F: fit · H: help",
+                    asset.document.name(),
+                    asset.snapshot.positions.len(),
+                    asset.snapshot.indices.len() / 3
+                )
+            } else {
+                "Asset Doctor RT-PT 2.0 — Ctrl+O: open GLB · Drop GLB into window · H: help".into()
+            };
+            window.set_title(&title);
+        }
+    }
+    fn poll_import(&mut self) -> GpuResult<()> {
+        let Some(completion) = self.imports.poll() else {
+            return Ok(());
+        };
+        if completion.ticket != self.imports.ticket() {
+            return Ok(());
+        }
+        self.importing = false;
+        match completion.result {
+            Ok(asset) => {
+                if let Err(error) = self
+                    .renderer
+                    .as_mut()
+                    .ok_or("No renderer for imported asset")?
+                    .set_scene(&asset.snapshot)
+                {
+                    if self.smoke.is_some() {
+                        return Err(error);
+                    }
+                    native::show_error(&format!(
+                        "Cannot display model: {error}. The previous model is retained."
+                    ));
+                    self.title();
+                    return Ok(());
+                }
+                self.camera.fit(asset.snapshot.bounds);
+                self.current = Some(asset);
+                eprintln!("import_published ticket={}", completion.ticket);
+            }
+            Err(error) => {
+                eprintln!(
+                    "import_failed ticket={} code={:?}",
+                    completion.ticket, error.code
+                );
+                if let Some(expected) = self.expected_tag {
+                    let actual = self.renderer.as_ref().and_then(Renderer::scene_tag);
+                    if actual != Some(expected)
+                        || self
+                            .current
+                            .as_ref()
+                            .is_none_or(|asset| asset.document.id() != expected.0)
+                    {
+                        return Err("Failed import replaced the previous document/GPU scene".into());
+                    }
+                    self.failed_replacement_preserved = true;
+                    eprintln!("rejected_replacement_preserved document={}", expected.0.0);
+                } else if self.smoke_import {
+                    return Err(error.into());
+                } else if error.code != ErrorCode::Cancelled {
+                    native::show_error(&error.to_string());
+                }
+            }
+        }
+        self.title();
+        Ok(())
+    }
+    fn choose_model(&mut self) {
+        if let Some(window) = self.window.as_ref() {
+            match native::choose_model(window) {
+                Ok(Some(path)) => self.start_import(path),
+                Ok(None) => (),
+                Err(error) => native::show_error(&error.to_string()),
+            }
+        }
+    }
+
     fn tick(&mut self, event_loop: &ActiveEventLoop) -> GpuResult<()> {
         if self.closed {
+            return Ok(());
+        }
+        self.poll_import()?;
+        if self.smoke_import
+            && matches!(self.smoke, Some(SmokeStage::Initial))
+            && self.current.is_some()
+            && !self.importing
+            && let Some(path) = self.smoke_bad.take()
+        {
+            self.expected_tag = self.renderer.as_ref().and_then(Renderer::scene_tag);
+            self.start_import(path);
             return Ok(());
         }
         let Some(window) = self.window.as_ref() else {
@@ -170,13 +308,27 @@ impl App {
                 eprintln!("native_restored frames={}", renderer.frames);
             }
         }
-        if let Some(stage) = self.smoke.as_mut() {
+        if self.smoke_import
+            && (self.current.is_none() || self.importing || !self.failed_replacement_preserved)
+        {
+            if self.started.elapsed() > Duration::from_secs(20) {
+                return Err("Import smoke timed out".into());
+            }
+        } else if let Some(stage) = self.smoke.as_mut() {
             if self.started.elapsed() > Duration::from_secs(20) {
                 return Err(format!("Native smoke timed out at {stage:?}").into());
             }
-            let frames = renderer.frames;
+            let frames = if self.smoke_import {
+                renderer.mesh_frames
+            } else {
+                renderer.frames
+            };
             match stage {
                 SmokeStage::Initial if frames >= 5 => {
+                    self.camera.orbit(40., -20.);
+                    self.camera.pan(10., 5., window.inner_size().height as f32);
+                    self.camera.zoom(1.);
+                    eprintln!("camera_smoke orbit=true pan=true zoom=true");
                     let _ = window.request_inner_size(PhysicalSize::new(960, 600));
                     *stage = SmokeStage::Resizing(frames);
                     eprintln!("smoke_request_resize");
@@ -189,7 +341,7 @@ impl App {
                 SmokeStage::Minimizing(at)
                     if self.saw_minimized && at.elapsed() > Duration::from_millis(500) =>
                 {
-                    if self.minimized_frame_baseline != Some(frames) {
+                    if self.minimized_frame_baseline != Some(renderer.frames) {
                         return Err("Frames were submitted while minimized".into());
                     }
                     window.set_minimized(false);
@@ -221,10 +373,92 @@ impl ApplicationHandler for App {
         {
             self.fail(event_loop, error);
         }
+        if self.renderer.is_some() {
+            if let Some(path) = self.initial_path.take() {
+                self.start_import(path);
+            } else {
+                self.title();
+            }
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         let result: GpuResult<()> = match event {
+            WindowEvent::Focused(false) => {
+                self.mouse = None;
+                self.cursor = None;
+                self.modifiers = ModifiersState::default();
+                Ok(())
+            }
+            WindowEvent::DroppedFile(path) => {
+                self.start_import(path);
+                Ok(())
+            }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers.state();
+                Ok(())
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed && !event.repeat =>
+            {
+                match event.physical_key {
+                    PhysicalKey::Code(KeyCode::KeyO) if self.modifiers.control_key() => {
+                        self.choose_model()
+                    }
+                    PhysicalKey::Code(KeyCode::KeyF) => {
+                        if let Some(asset) = self.current.as_ref() {
+                            self.camera.fit(asset.snapshot.bounds);
+                        }
+                    }
+                    PhysicalKey::Code(KeyCode::Escape) => {
+                        self.imports.cancel();
+                        self.importing = false;
+                        self.title();
+                    }
+                    PhysicalKey::Code(KeyCode::KeyH) => native::show_help(
+                        "Controls: Ctrl+O — open static GLB; drag a GLB into the window.\nLeft drag: orbit. Right/middle drag: pan. Wheel: zoom. F: fit. Esc: cancel import.\nThis version shows triangle geometry and base colors. Textures, PBR, rig and animation are still planned.",
+                    ),
+                    _ => (),
+                }
+                Ok(())
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                if state == ElementState::Pressed {
+                    self.mouse = Some(button);
+                } else if self.mouse == Some(button) {
+                    self.mouse = None;
+                }
+                Ok(())
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                if let Some((x, y)) = self.cursor {
+                    let dx = (position.x - x) as f32;
+                    let dy = (position.y - y) as f32;
+                    match self.mouse {
+                        Some(MouseButton::Left) => self.camera.orbit(dx, dy),
+                        Some(MouseButton::Right | MouseButton::Middle) => self.camera.pan(
+                            dx,
+                            dy,
+                            self.window.as_ref().map_or(1, |w| w.inner_size().height) as f32,
+                        ),
+                        _ => (),
+                    }
+                }
+                self.cursor = Some((position.x, position.y));
+                Ok(())
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.cursor = None;
+                Ok(())
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let steps = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y,
+                    MouseScrollDelta::PixelDelta(p) => p.y as f32 / 80.0,
+                };
+                self.camera.zoom(steps);
+                Ok(())
+            }
             WindowEvent::CloseRequested => {
                 self.close_requested = true;
                 eprintln!("native_close_requested");
@@ -251,6 +485,17 @@ impl ApplicationHandler for App {
                         .is_some_and(|window| window.is_minimized() != Some(true)) =>
             {
                 if let Some(renderer) = self.renderer.as_mut() {
+                    let size = self
+                        .window
+                        .as_ref()
+                        .expect("Renderer has a window")
+                        .inner_size();
+                    if let Err(error) =
+                        renderer.set_view_projection(self.camera.matrix(size.width, size.height))
+                    {
+                        self.fail(event_loop, error);
+                        return;
+                    }
                     renderer.draw().and_then(|result| {
                         if result == FrameResult::Recreate {
                             let size = self
@@ -290,15 +535,37 @@ impl ApplicationHandler for App {
 fn run() -> GpuResult<()> {
     let mut validation = false;
     let mut smoke = false;
-    for arg in std::env::args().skip(1) {
+    let mut initial_path = None;
+    let mut smoke_import = false;
+    let mut smoke_bad = None;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
         match arg.as_str() {
             "--require-validation" => validation = true,
             "--smoke" => {
                 smoke = true;
                 validation = true;
             }
+            "--open" => {
+                initial_path = Some(PathBuf::from(args.next().ok_or("--open needs a GLB path")?))
+            }
+            "--smoke-import" => {
+                initial_path = Some(PathBuf::from(
+                    args.next().ok_or("--smoke-import needs a GLB path")?,
+                ));
+                smoke_import = true;
+                smoke = true;
+                validation = true;
+            }
+            "--smoke-bad" => {
+                smoke_bad = Some(PathBuf::from(
+                    args.next().ok_or("--smoke-bad needs a damaged GLB path")?,
+                ))
+            }
             "--help" => {
-                println!("AssetDoctorRTPT [--require-validation] [--smoke]");
+                println!(
+                    "AssetDoctorRTPT [--require-validation] [--open model.glb] [--smoke] [--smoke-import model.glb --smoke-bad bad.glb]"
+                );
                 return Ok(());
             }
             _ => return Err(format!("Unknown argument: {arg}").into()),
@@ -320,6 +587,18 @@ fn run() -> GpuResult<()> {
         close_requested: false,
         suspended: false,
         closed: false,
+        imports: Imports::new(),
+        importing: false,
+        current: None,
+        camera: Camera::default(),
+        mouse: None,
+        cursor: None,
+        modifiers: ModifiersState::default(),
+        initial_path,
+        smoke_import,
+        smoke_bad,
+        expected_tag: None,
+        failed_replacement_preserved: false,
     };
     event_loop.run_app(&mut app)?;
     if let Some(error) = app.error {
@@ -331,7 +610,7 @@ fn run() -> GpuResult<()> {
 fn main() {
     if let Err(error) = run() {
         eprintln!("Asset Doctor startup/runtime error: {error}");
-        if !std::env::args().any(|arg| arg == "--smoke") {
+        if !std::env::args().any(|arg| matches!(arg.as_str(), "--smoke" | "--smoke-import")) {
             native::show_error(&error.to_string());
         }
         std::process::exit(1);
