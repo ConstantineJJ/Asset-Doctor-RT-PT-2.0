@@ -31,6 +31,12 @@ buffers/draw ranges, never the source document. Formats/document import no UI
 or GPU crates. See ADR-0013 for the implemented static subset.
 Add a crate only when its independent boundary is implemented and justified.
 
+ADR-0015 adds shared independent image/sampler data to the document's renderable
+subset. Formats decode admitted in-memory PNG/JPEG resources; snapshots share
+pixels across instances and carry UV/linear-color arrays. Vulkan owns image/mip,
+sampler and descriptor resources only. Candidate upload is transactional and never
+changes document bytes. Base-color sampling is presentation state, not an edit.
+
 The owner's advisory v0.1 proposal was reviewed in
 ARCHITECTURE_PROPOSAL_REVIEW.md. Session history and revision-keyed findings are
 application/derived state, not fields that every saved asset must embed. Compare

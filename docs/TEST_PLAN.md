@@ -55,3 +55,13 @@ empty/import/rejected-replacement/lifecycle runs passed with validation enabled,
 0 errors; final import run requested synchronization validation as documented.
 Physical UI interaction, visual acceptance, accessibility and monitor transitions
 remain separate checks. See VIEWER_UI_REPORT_2026-11-15.md.
+
+## Base-color textures — bounded integration completed
+
+ADR-0015 adds PNG/JPEG, selected UVs, linear COLOR_0, OPAQUE/MASK and resource
+admission. Total workspace tests:36. Authored Color_Checker shares one image
+across two samplers; malformed/oversized image fixtures fail without replacement.
+Native static/color/Birch0 import/lifecycle checks passed with 0 validation errors.
+Color smoke is tools/import-smoke.ps1 -Scene color -SynchronizationValidation.
+Image orientation/visual color/mask appearance, blend/culling/PBR, fault injection
+and peak memory remain separate unverified checks. See BASE_COLOR_REPORT.

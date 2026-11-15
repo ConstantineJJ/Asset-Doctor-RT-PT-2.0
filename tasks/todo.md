@@ -22,7 +22,13 @@
 - [x] C1: Vulkan egui paint integration, texture lifetime and physical scene rectangle; no UI/GPU dependencies in domain/formats.
 - [x] C2: Open/Fit/hidden-at-start tree/read-only node details/summary/loading/cancel/help; headless layout/input/zoom/deep-tree tests.
 - [x] C3: Windows release build, 30 tests, lint/dependency checks and authorized native UI/import/lifecycle smoke PASS. Evidence/limits in VIEWER_UI_REPORT_2026-11-15.md.
-- [ ] C4: Owner review of new UI; native panel clicks/keyboard traversal/accessibility/multi-monitor DPI and large-tree profile. Permanent backend comparison in ADR-0004 remains open.
-- [ ] Next raster increment: relevant normal/material/texture audit and contracts, then bounded PBR support with fixtures/resource checks.
+- [x] C4a: Owner reports shell working; Birch0/Adventur screenshots show active tree, selected-node details and summary. Keep as owner evidence.
+- [ ] C4b: Keyboard/accessibility/multi-monitor DPI and large-tree profile; permanent backend comparison in ADR-0004 remains open.
+- [x] D0: Relevant base-color/UV/COLOR/image audit and independent contracts, ADR-0015.
+- [x] D1: Shared image/sampler data, bounded PNG/JPEG decoder, UV/colors/MASK and immutable source; malformed/budget/recovery tests.
+- [x] D2: Vulkan SRGB images/mips/samplers/descriptors and transactional upload; source colors/textures sampled with a presentation toggle.
+- [x] D3: 36 tests, fmt/clippy/dependency checks/Windows release build; static/color/Birch0 native import/failure/lifecycle checks, 0 validation errors.
+- [ ] D4: Owner visual acceptance of base colors/UV orientation/masks; fault injection/peak memory/performance remain open.
+- [ ] Next raster increment: authored normals and bounded PBR material/lighting contracts before implementation.
 - [ ] Later: PBR, diagnostics, Heal, manual rig/animation, unified Compare, verified export and installer.
 - [ ] Later: RT → PT → Mixamo rights check/autorig/retargeting.

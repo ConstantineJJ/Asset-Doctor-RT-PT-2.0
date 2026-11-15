@@ -2,7 +2,7 @@
 
 **Asset Doctor RT-PT 2.0** is a native Windows application in development for diagnosing, repairing, editing, and preparing 3D assets. The project is being built **from scratch** in Rust, with a Vulkan-based GPU renderer designed to run on local hardware.
 
-> **Status:** Native viewer shell with Open/Fit controls, a scene tree and file/geometry summary, rendered through Vulkan. Static GLB viewing, background loading and orbit/pan/zoom work. Editing, PBR/textures, rig/animation, RT and PT remain planned. This is an engineering prototype.
+> **Status:** Native Vulkan GLB viewer with Open/Fit, scene tree, summary and embedded PNG/JPEG base-color textures, vertex colors and alpha cutouts. Editing, PBR lighting/other material maps, rig/animation, RT and PT remain planned. This is an engineering prototype.
 
 ## Planned Features
 
@@ -58,13 +58,18 @@ use [Twin_Cubes.glb](tests/fixtures/Twin_Cubes.glb).
   Optional panels hide in compact windows. Help includes embedded font notices.
 - Loading failure/cancellation retains the previous model. Sources are read only.
 - This increment supports opaque static triangles and embedded BIN geometry.
-  It displays base colors with face lighting, without textures or PBR. External
-  resources, compressed geometry, sparse accessors, transparency, skins, animations
+  It displays base-color factors × linear vertex colors × embedded PNG/JPEG maps
+  with face lighting and OPAQUE/MASK coverage. **Базовые текстуры** in Summary
+  toggles image sampling. PBR lighting and other material maps are not rendered.
+  External resources, referenced data-URI images, compressed geometry/images,
+  texture-transform extensions, sparse accessors, alpha BLEND, skins, animations
   and morph targets are explicitly rejected. See the [compatibility and verification
   report](docs/STATIC_VIEWER_REPORT_2026-11-15.md) for exact scope.
 
 The [viewer UI report](docs/VIEWER_UI_REPORT_2026-11-15.md) records current native
 smoke results, headless input/layout tests and remaining visual/accessibility checks.
+The [base-color report](docs/BASE_COLOR_REPORT_2026-11-15.md) adds image admission,
+sampler/mipmap behavior and current textured-asset evidence.
 
 ## Build on Windows
 
@@ -92,6 +97,7 @@ environment. Its explicit array preserves Cargo's argument separator:
 .\tools\smoke.ps1
 .\tools\import-smoke.ps1
 .\tools\import-smoke.ps1 -SynchronizationValidation
+.\tools\import-smoke.ps1 -Scene color -SynchronizationValidation
 ```
 
 The separate probe prints actual GPU/API/heap/queue/extension availability. It does not
