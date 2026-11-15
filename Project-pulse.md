@@ -1,5 +1,11 @@
 # Project pulse
 
+## 2026-11-15 — Normal texture/tangent data increment
+
+- Owner continued with Mini-bus6x screenshot showing active MR switch; this is evidence for that displayed MR example, not normal-map acceptance. Relevant read-only behavior audit and ADR-0018 define bounded normal preview; no legacy code reused.
+- Import preserves normalTexture/selected UV/finite scale and authored F32VEC4 tangents with ±1W. Snapshot applies worldlinear/Gram-Schmidt/determinant sign to tangents against inverse-transpose normals, keeping source intact; missing normals or unusable/singular frames use a sentinel. New streams make80bytes/vertex+indices; images reuse existing linear admission/cache.
+- Tangent mirror/nonuniform test failed then passed.53workspace tests and clippy PASS, including source/W/scale/layout/cap guards, shared MR/normal image and independent UV2. Project-authored fixtures cover authored/derived/mirrored/degenerate/no-normal cases and bad normal-only PNG. Source-only CPU review found no blocker. GPU/UI follows; derivative fallback is explicitly not MikkTSpace. No native launch/new dependency/push at this step.
+
 ## 2026-11-15 — Metallic/roughness map rendering
 
 - Vulkan now samples linear UNORM MR maps independently of SRGB base color, multiplies material factors by B/G and ignores R/A. Each channel uses its declared UV stream/sampler; two compatible descriptor sets share source texture identity while format uploads remain separate. White fallbacks retain MR-only and factor-only material behavior.128-byte push layout unchanged. Session-only MR switch is independent of base-texture sampling and survives lighting reset; default view remains unchanged.

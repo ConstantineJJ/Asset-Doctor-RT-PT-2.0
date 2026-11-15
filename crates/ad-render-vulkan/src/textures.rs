@@ -627,6 +627,8 @@ mod tests {
             metallic_roughness: [1.; 2],
             color_texture: color,
             metallic_roughness_texture: mr,
+            normal_texture: None,
+            normal_scale: 1.,
             alpha_cutoff: None,
         };
         let plan = TexturePlan::new(&[

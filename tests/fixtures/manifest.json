@@ -18,6 +18,12 @@
     "origin": "Project-authored numeric MR/UV/PNG data; no external content"
   },
   {
+    "file": "Bad_Normal_Image.glb",
+    "bytes": 55496,
+    "sha256": "1d27679f2b9ba32b5eba88f85dff34f978688d1e274eba54e423e5fdbe95fa0b",
+    "origin": "Project-authored numeric normal/tangent/UV/PNG data; no external content"
+  },
+  {
     "file": "Bad_Truncated.glb",
     "bytes": 1097,
     "sha256": "bfbc145672afb86c56c7acd8e6fc970594fa4b8d9fc83166406d0c63bc1f2756",
@@ -40,6 +46,12 @@
     "bytes": 36640,
     "sha256": "1d887c1d91641276c6bff2c4e063b55271f0472099b2aea5b686c39e800fe93f",
     "origin": "Project-authored numeric MR/UV/PNG data; no external content"
+  },
+  {
+    "file": "Normal_Checker.glb",
+    "bytes": 55648,
+    "sha256": "2c87c070c2b16211415aec979669c7ee8d32926349846aae9d90eccc1da58eb3",
+    "origin": "Project-authored numeric normal/tangent/UV/PNG data; no external content"
   },
   {
     "file": "Pbr_Factors.glb",

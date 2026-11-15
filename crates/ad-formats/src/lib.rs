@@ -201,6 +201,33 @@ pub fn import_glb(
                 return Err(budget());
             }
             let reader = primitive.reader(|_| Some(bin));
+            let mut tangents = None;
+            if let Some(accessor) = primitive.get(&gltf::Semantic::Tangents) {
+                if accessor.data_type() != gltf::accessor::DataType::F32
+                    || accessor.dimensions() != gltf::accessor::Dimensions::Vec4
+                    || accessor.normalized()
+                    || accessor.count() != position.count()
+                {
+                    return Err(invalid(
+                        "Tangents must use matching non-normalized F32 VEC4 accessors",
+                    ));
+                }
+                let mut values = Vec::new();
+                values
+                    .try_reserve_exact(position.count())
+                    .map_err(|_| budget())?;
+                for (i, value) in reader
+                    .read_tangents()
+                    .ok_or_else(|| invalid("Cannot read tangents"))?
+                    .enumerate()
+                {
+                    if i % 4096 == 0 {
+                        cancel.check()?;
+                    }
+                    values.push(value);
+                }
+                tangents = Some(values);
+            }
             let mut normals = None;
             if let Some(accessor) = primitive.get(&gltf::Semantic::Normals) {
                 if accessor.data_type() != gltf::accessor::DataType::F32
@@ -236,21 +263,31 @@ pub fn import_glb(
                 .material()
                 .pbr_metallic_roughness()
                 .metallic_roughness_texture();
-            let mut uv_sets = [None, None];
-            for (info, output) in [&color_texture, &mr_texture].into_iter().zip(&mut uv_sets) {
-                if let Some(info) = info {
-                    let accessor = primitive
-                        .get(&gltf::Semantic::TexCoords(info.tex_coord()))
-                        .ok_or_else(|| {
-                            invalid("Material texture needs its declared TEXCOORD attribute")
-                        })?;
+            let normal_info = primitive.material().normal_texture();
+            let normal_scale = normal_info.as_ref().map_or(1., |info| info.scale());
+            let mut uv_sets = [None, None, None];
+            for (set, output) in [
+                color_texture.as_ref().map(|i| i.tex_coord()),
+                mr_texture.as_ref().map(|i| i.tex_coord()),
+                normal_info.as_ref().map(|i| i.tex_coord()),
+            ]
+            .into_iter()
+            .zip(&mut uv_sets)
+            {
+                if let Some(set) = set {
+                    let accessor =
+                        primitive
+                            .get(&gltf::Semantic::TexCoords(set))
+                            .ok_or_else(|| {
+                                invalid("Material texture needs its declared TEXCOORD attribute")
+                            })?;
                     color::validate_attribute(accessor, position.count(), false)?;
                     let mut values = Vec::new();
                     values
                         .try_reserve_exact(position.count())
                         .map_err(|_| budget())?;
                     for (i, uv) in reader
-                        .read_tex_coords(info.tex_coord())
+                        .read_tex_coords(set)
                         .ok_or_else(|| invalid("Cannot read texture coordinates"))?
                         .into_f32()
                         .enumerate()
@@ -263,7 +300,7 @@ pub fn import_glb(
                     *output = Some(values);
                 }
             }
-            let [uvs, metallic_roughness_uvs] = uv_sets;
+            let [uvs, metallic_roughness_uvs, normal_uvs] = uv_sets;
             let mut colors = None;
             if let Some(accessor) = primitive.get(&gltf::Semantic::Colors(0)) {
                 color::validate_attribute(accessor, position.count(), true)?;
@@ -290,6 +327,17 @@ pub fn import_glb(
                 })
                 .transpose()?;
             let metallic_roughness_texture = mr_texture
+                .map(|info| {
+                    material_images.load(
+                        info.texture(),
+                        TextureEncoding::Linear,
+                        bin,
+                        limits,
+                        cancel,
+                    )
+                })
+                .transpose()?;
+            let normal_texture = normal_info
                 .map(|info| {
                     material_images.load(
                         info.texture(),
@@ -335,6 +383,10 @@ pub fn import_glb(
             meshes.push(MeshPrimitive {
                 positions,
                 normals,
+                tangents,
+                normal_texture,
+                normal_uvs,
+                normal_scale,
                 metallic_roughness: [
                     primitive
                         .material()
@@ -377,15 +429,15 @@ pub fn import_glb(
         .ok_or_else(|| invalid("GLB has no scene"))?;
     let roots = scene.nodes().map(|node| NodeId(node.index())).collect();
     let mut notes = vec!["Обе стороны граней видимы. PBR использует параметры и карты металла/шероховатости без окружения и теней.".into()];
+    if doc.materials().any(|m| m.normal_texture().is_some()) {
+        notes.push("Карты нормалей используют авторские касательные, иначе UV-основу по производным. Это приближение без гарантии совпадения с MikkTSpace на швах.".into());
+    }
     if doc.materials().any(|m| {
-        m.normal_texture().is_some()
-            || m.occlusion_texture().is_some()
+        m.occlusion_texture().is_some()
             || m.emissive_texture().is_some()
             || m.emissive_factor() != [0.; 3]
     }) {
-        notes.push(
-            "Карты нормалей, окклюзии и свечение сохранены в источнике, но не отображаются.".into(),
-        );
+        notes.push("Карты окклюзии и свечение сохранены в источнике, но не отображаются.".into());
     }
     if doc.scenes().len() > 1 {
         notes.push("Отображается только основная/первая сцена.".into());
@@ -459,6 +511,81 @@ mod tests {
             ImportLimits::default(),
             &Cancellation::default(),
         )
+    }
+    #[test]
+    fn normal_texture_shares_linear_mr_image_and_preserves_tangent_uv_scale_contract() {
+        let source: Arc<[u8]> =
+            Arc::from(include_bytes!("../../../tests/fixtures/Normal_Checker.glb").as_slice());
+        let doc = import_glb(
+            source.clone(),
+            "normals".into(),
+            DocumentId(1),
+            ImportLimits::default(),
+            &Cancellation::default(),
+        )
+        .unwrap();
+        let scene = doc
+            .snapshot(ImportLimits::default(), &Cancellation::default())
+            .unwrap();
+        assert!(Arc::ptr_eq(doc.source(), &source));
+        assert_eq!(
+            (
+                doc.texture_stats().images,
+                doc.texture_stats().sampled_images,
+                doc.texture_stats().mip_bytes
+            ),
+            (1, 1, 20)
+        );
+        assert_eq!(scene.normal_uvs[0], [1., 1.]);
+        assert_ne!(scene.normal_uvs[0], scene.metallic_roughness_uvs[0]);
+        assert_eq!(scene.tangents[0], [0., 0., -1., 1.]);
+        assert_eq!(scene.fallback_tangent_vertices, 561 * 3);
+        assert_eq!(scene.tangents[561], [0.; 4]);
+        assert_eq!(scene.tangents[561 * 3], [0.; 4]);
+        assert_eq!(
+            scene
+                .draws
+                .iter()
+                .map(|d| d.normal_scale)
+                .collect::<Vec<_>>(),
+            [1., 0.5, 0., -1.]
+        );
+        assert!(Arc::ptr_eq(
+            scene.draws[0].normal_texture.as_ref().unwrap(),
+            scene.draws[0].metallic_roughness_texture.as_ref().unwrap()
+        ));
+        assert!(doc.notes().iter().any(|n| n.contains("MikkTSpace")));
+    }
+    #[test]
+    fn malformed_normal_images_tangents_and_missing_normal_uvs_are_rejected() {
+        assert!(matches!(
+            import_glb(
+                Arc::from(
+                    include_bytes!("../../../tests/fixtures/Bad_Normal_Image.glb").as_slice()
+                ),
+                "bad normal".into(),
+                DocumentId(1),
+                ImportLimits::default(),
+                &Cancellation::default()
+            ),
+            Err(AssetError {
+                code: ErrorCode::InvalidFormat,
+                ..
+            })
+        ));
+        let mut json = json_doc();
+        for index in [0, 1, 999] {
+            json["meshes"][0]["primitives"][0]["attributes"]["TANGENT"] = json!(index);
+            assert!(load(&json).is_err());
+        }
+        json["meshes"][0]["primitives"][0]["attributes"]
+            .as_object_mut()
+            .unwrap()
+            .remove("TANGENT");
+        json["images"] = json!([{"bufferView":0,"mimeType":"image/png"}]);
+        json["textures"] = json!([{"source":0}]);
+        json["materials"][0]["normalTexture"] = json!({"index":0,"texCoord":2});
+        assert!(load(&json).err().unwrap().message.contains("TEXCOORD"));
     }
     #[test]
     fn authored_normals_and_material_factors_survive_import_and_bad_layouts_are_refused() {
@@ -606,7 +733,7 @@ mod tests {
         let mut json = json_doc();
         json["images"] = json!([{"bufferView":0,"mimeType":"image/png"}]);
         json["textures"] = json!([{"source":0}]);
-        json["materials"][0]["normalTexture"] = json!({"index":0});
+        json["materials"][0]["occlusionTexture"] = json!({"index":0});
         // Ignored maps are not decoded or treated as a base-color map.
         let doc = load(&json).unwrap();
         assert_eq!(doc.texture_stats().images, 0);

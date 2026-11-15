@@ -95,6 +95,10 @@ pub struct MeshId(pub usize);
 pub struct MeshPrimitive {
     pub positions: Vec<[f32; 3]>,
     pub normals: Option<Vec<[f32; 3]>>,
+    pub tangents: Option<Vec<[f32; 4]>>,
+    pub normal_texture: Option<Arc<Texture>>,
+    pub normal_uvs: Option<Vec<[f32; 2]>>,
+    pub normal_scale: f32,
     pub metallic_roughness: [f32; 2],
     pub indices: Vec<u32>,
     pub base_color: [f32; 4],
@@ -137,6 +141,8 @@ pub struct DrawRange {
     pub metallic_roughness: [f32; 2],
     pub color_texture: Option<Arc<Texture>>,
     pub metallic_roughness_texture: Option<Arc<Texture>>,
+    pub normal_texture: Option<Arc<Texture>>,
+    pub normal_scale: f32,
     pub alpha_cutoff: Option<f32>,
 }
 pub struct GeometrySnapshot {
@@ -144,6 +150,9 @@ pub struct GeometrySnapshot {
     pub revision: u64,
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
+    pub tangents: Vec<[f32; 4]>,
+    pub normal_uvs: Vec<[f32; 2]>,
+    pub fallback_tangent_vertices: usize,
     pub fallback_normal_vertices: usize,
     pub uvs: Vec<[f32; 2]>,
     pub metallic_roughness_uvs: Vec<[f32; 2]>,
@@ -170,6 +179,23 @@ impl AssetDocument {
         let mut textures = TextureAdmission::default();
         for mesh in &parts.meshes {
             cancel.check()?;
+            if !mesh.normal_scale.is_finite()
+                || mesh.tangents.as_ref().is_some_and(|t| {
+                    t.len() != mesh.positions.len()
+                        || t.iter().any(|v| {
+                            v.iter().any(|x| !x.is_finite()) || (v[3] != -1. && v[3] != 1.)
+                        })
+                })
+                || mesh.normal_uvs.as_ref().is_some_and(|uv| {
+                    uv.len() != mesh.positions.len() || uv.iter().flatten().any(|v| !v.is_finite())
+                })
+                || (mesh.normal_texture.is_some() && mesh.normal_uvs.is_none())
+            {
+                return Err(AssetError::new(
+                    ErrorCode::InvalidGeometry,
+                    "Invalid tangent/normal-texture attributes",
+                ));
+            }
             if mesh.normals.as_ref().is_some_and(|normals| {
                 normals.len() != mesh.positions.len()
                     || normals.iter().flatten().any(|v| !v.is_finite())
@@ -187,6 +213,9 @@ impl AssetDocument {
                 textures.admit(texture, TextureEncoding::Srgb, limits)?;
             }
             if let Some(texture) = &mesh.metallic_roughness_texture {
+                textures.admit(texture, TextureEncoding::Linear, limits)?;
+            }
+            if let Some(texture) = &mesh.normal_texture {
                 textures.admit(texture, TextureEncoding::Linear, limits)?;
             }
             if mesh.metallic_roughness_uvs.as_ref().is_some_and(|uv| {
@@ -384,6 +413,9 @@ impl AssetDocument {
             revision: 0,
             positions: Vec::new(),
             normals: Vec::new(),
+            tangents: Vec::new(),
+            normal_uvs: Vec::new(),
+            fallback_tangent_vertices: 0,
             fallback_normal_vertices: 0,
             uvs: Vec::new(),
             metallic_roughness_uvs: Vec::new(),
@@ -400,6 +432,12 @@ impl AssetDocument {
         })?;
         result.normals.try_reserve_exact(vertices).map_err(|_| {
             AssetError::new(ErrorCode::ResourceLimit, "Cannot allocate scene normals")
+        })?;
+        result.tangents.try_reserve_exact(vertices).map_err(|_| {
+            AssetError::new(ErrorCode::ResourceLimit, "Cannot allocate scene tangents")
+        })?;
+        result.normal_uvs.try_reserve_exact(vertices).map_err(|_| {
+            AssetError::new(ErrorCode::ResourceLimit, "Cannot allocate normal-map UVs")
         })?;
         result
             .uvs
@@ -429,6 +467,7 @@ impl AssetDocument {
         for (mesh_id, world) in instances {
             let mesh = &self.parts.meshes[mesh_id.0];
             let normal_matrix = normals::normal_matrix(world);
+            let tangent_matrix = normals::tangent_matrix(world);
             let offset = result.positions.len() as u32;
             for (i, point) in mesh.positions.iter().enumerate() {
                 if i % 4096 == 0 {
@@ -447,6 +486,15 @@ impl AssetDocument {
                 });
                 result.fallback_normal_vertices += usize::from(normal == [0.; 3]);
                 result.normals.push(normal);
+                let tangent = mesh.tangents.as_ref().map_or([0.; 4], |values| {
+                    normals::transform_tangent(tangent_matrix, normal, values[i])
+                });
+                result.fallback_tangent_vertices +=
+                    usize::from(mesh.normal_texture.is_some() && tangent == [0.; 4]);
+                result.tangents.push(tangent);
+                result
+                    .normal_uvs
+                    .push(mesh.normal_uvs.as_ref().map_or([0.; 2], |uv| uv[i]));
                 result
                     .uvs
                     .push(mesh.uvs.as_ref().map_or([0.; 2], |uv| uv[i]));
@@ -466,6 +514,8 @@ impl AssetDocument {
                 metallic_roughness: mesh.metallic_roughness,
                 color_texture: mesh.color_texture.clone(),
                 metallic_roughness_texture: mesh.metallic_roughness_texture.clone(),
+                normal_texture: mesh.normal_texture.clone(),
+                normal_scale: mesh.normal_scale,
                 alpha_cutoff: mesh.alpha_cutoff,
             });
             for (i, &index) in mesh.indices.iter().enumerate() {
@@ -487,7 +537,7 @@ impl AssetDocument {
 
 pub fn geometry_bytes(vertices: usize, indices: usize) -> AssetResult<usize> {
     vertices
-        .checked_mul(56)
+        .checked_mul(80)
         .and_then(|value| {
             indices
                 .checked_mul(4)
@@ -508,6 +558,10 @@ mod tests {
             meshes: vec![MeshPrimitive {
                 positions: vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [99999., 0., 0.]],
                 normals: None,
+                tangents: None,
+                normal_texture: None,
+                normal_uvs: None,
+                normal_scale: 1.,
                 metallic_roughness: [1.; 2],
                 indices: vec![0, 1, 2],
                 base_color: [1.; 4],
@@ -583,7 +637,7 @@ mod tests {
             .unwrap();
         assert_eq!(snapshot.normals, [[0.; 3]; 4]);
         assert_eq!(snapshot.fallback_normal_vertices, 4);
-        assert_eq!(geometry_bytes(4, 3).unwrap(), 236);
+        assert_eq!(geometry_bytes(4, 3).unwrap(), 332);
         for bad in [f32::NAN, -0.1, 1.1] {
             let mut data = parts();
             data.meshes[0].metallic_roughness[0] = bad;
@@ -592,6 +646,62 @@ mod tests {
                     .is_err()
             );
         }
+    }
+    #[test]
+    fn normal_map_snapshot_keeps_source_tangent_and_scale_and_refuses_bad_streams() {
+        let mut data = parts();
+        data.meshes[0].normals = Some(vec![[0., 0., 1.]; 4]);
+        data.meshes[0].tangents = Some(vec![[1., 0., 0., 1.]; 4]);
+        data.meshes[0].normal_uvs = Some(vec![[0.; 2]; 4]);
+        data.meshes[0].normal_scale = -2.;
+        data.meshes[0].normal_texture = Some(Arc::new(Texture {
+            image: Arc::new(TextureImage {
+                width: 1,
+                height: 1,
+                rgba: Arc::from([128, 128, 255, 0]),
+            }),
+            sampler: TextureSampler::default(),
+        }));
+        let doc =
+            AssetDocument::new(data, ImportLimits::default(), &Cancellation::default()).unwrap();
+        let snapshot = doc
+            .snapshot(ImportLimits::default(), &Cancellation::default())
+            .unwrap();
+        assert_eq!(
+            doc.parts.meshes[0].tangents.as_ref().unwrap()[0],
+            [1., 0., 0., 1.]
+        );
+        assert_eq!(snapshot.tangents[0], [-1., 0., 0., -1.]);
+        assert_eq!(snapshot.draws[0].normal_scale, -2.);
+        assert_eq!(snapshot.fallback_tangent_vertices, 0);
+        assert!(
+            doc.snapshot(
+                ImportLimits {
+                    snapshot_bytes: 331,
+                    ..Default::default()
+                },
+                &Cancellation::default()
+            )
+            .is_err()
+        );
+        for bad_w in [0., 2., f32::NAN] {
+            let mut data = parts();
+            data.meshes[0].tangents = Some(vec![[1., 0., 0., bad_w]; 4]);
+            assert!(
+                AssetDocument::new(data, ImportLimits::default(), &Cancellation::default())
+                    .is_err()
+            );
+        }
+        let mut data = parts();
+        data.meshes[0].normal_scale = f32::INFINITY;
+        assert!(
+            AssetDocument::new(data, ImportLimits::default(), &Cancellation::default()).is_err()
+        );
+        let mut data = parts();
+        data.meshes[0].normal_uvs = Some(vec![[0.; 2]; 3]);
+        assert!(
+            AssetDocument::new(data, ImportLimits::default(), &Cancellation::default()).is_err()
+        );
     }
     #[test]
     fn invalid_indices_are_refused_before_any_snapshot() {
