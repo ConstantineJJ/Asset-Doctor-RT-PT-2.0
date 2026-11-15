@@ -2,6 +2,8 @@
 Legacy HEAD `17ca3549767aac78bf4ad51fa1c254c90dd15113`, branch `work/import-limit-20261115`, dirty `clean`.
 
 Source observation only; no Legacy code/tests/GUI executed. All native scenarios UNVERIFIED.
+The per-row new-product labels below are the initial inventory snapshot; current
+implementation progress is maintained in docs/FEATURE_PARITY_MATRIX.csv and reports.
 
 ## IMP-01 — Open self-contained GLB/glTF
 

@@ -43,3 +43,15 @@ remain separate. See parity registry for individual acceptance scenarios.
 - Native picker, camera visual inspection and acceptance are recorded separately
   in STATIC_VIEWER_REPORT_2026-11-15.md. A smoke matrix exercise alone is not mouse
   event verification. No export/roundtrip or full legacy compatibility is claimed.
+
+## Native viewer UI shell — bounded integration completed
+
+ADR-0014 adds headless egui layout/input/action tests, a 10,000-level hierarchy
+projection check and physical viewport/DPI clipping tests. Workspace total: 30.
+UI hit-test ownership and zoom regressions were RED before their fixes. Font
+texture deltas are consumed before drawing and deletion waits for frame retirement.
+Default app smoke now exercises the UI paint path alongside geometry. Release
+empty/import/rejected-replacement/lifecycle runs passed with validation enabled,
+0 errors; final import run requested synchronization validation as documented.
+Physical UI interaction, visual acceptance, accessibility and monitor transitions
+remain separate checks. See VIEWER_UI_REPORT_2026-11-15.md.

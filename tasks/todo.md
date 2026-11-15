@@ -16,6 +16,13 @@
 - [x] B2: Depth-tested Vulkan mesh raster and transactional scene upload.
 - [x] B3: Native picker/drop, background import, latest-result guard and orbit/pan/zoom/fit.
 - [x] B4: Raster integration native valid import, failed replacement, camera matrix and lifecycle smoke PASS; compatibility/limitations in STATIC_VIEWER_REPORT_2026-11-15.md. This run predates final review guards.
-- [ ] B5: Repeat final native import/input/lifecycle verification after review guards; owner reclaimed desktop, no more window launches this turn. Picker commit/drop/manual pan/zoom/fit still need UI acceptance.
+- [x] B5a: Owner reported existing viewer functions/error handling working; screenshots show static models up to 1,568,489 triangles. Record as owner evidence, not automated GPU/peak-memory proof.
+- [x] B5b: With renewed permission, repeat import/rejected-replacement/lifecycle smoke through the new UI path; 0 validation errors. New physical UI acceptance is tracked in C4.
+- [x] C0: Relevant read-only tree/summary/open/input audit and bounded UI contract (SLICE_02_VIEWER_UI_AUDIT, ADR-0014).
+- [x] C1: Vulkan egui paint integration, texture lifetime and physical scene rectangle; no UI/GPU dependencies in domain/formats.
+- [x] C2: Open/Fit/hidden-at-start tree/read-only node details/summary/loading/cancel/help; headless layout/input/zoom/deep-tree tests.
+- [x] C3: Windows release build, 30 tests, lint/dependency checks and authorized native UI/import/lifecycle smoke PASS. Evidence/limits in VIEWER_UI_REPORT_2026-11-15.md.
+- [ ] C4: Owner review of new UI; native panel clicks/keyboard traversal/accessibility/multi-monitor DPI and large-tree profile. Permanent backend comparison in ADR-0004 remains open.
+- [ ] Next raster increment: relevant normal/material/texture audit and contracts, then bounded PBR support with fixtures/resource checks.
 - [ ] Later: PBR, diagnostics, Heal, manual rig/animation, unified Compare, verified export and installer.
 - [ ] Later: RT → PT → Mixamo rights check/autorig/retargeting.
