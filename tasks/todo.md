@@ -11,5 +11,10 @@
 - [x] A4: Native window/clear/icon slice: debug and release smoke, 15 presents + resize/minimize/restore/real WM_CLOSE, 0 validation errors with normal RTSS enabled. CUA inspection/maximize/Alt+F4 also passed. See native report/ADR-0012.
 - [ ] Gate: Close audit mapping/native behavior gaps and decide ADR-0002/4/5/6/7 before product logic.
 - [ ] Next product slice: GLB import → independent document → Vulkan raster view with a synthetic licensed fixture, cancellation/resource admission and roundtrip checks.
+- [x] B0: Review static-import behavior and decide bounded contracts (SLICE_01_IMPORT_AUDIT, ADR-0013). Broader parity gate remains open.
+- [ ] B1: Independent document/snapshot and bounded GLB parser with failure/cancel/source-preservation tests.
+- [ ] B2: Depth-tested Vulkan mesh raster and transactional scene upload.
+- [ ] B3: Native picker/drop, background import, latest-result guard and orbit/pan/zoom/fit.
+- [ ] B4: Native valid import, failed replacement, camera and lifecycle smoke; document actual compatibility and limitations.
 - [ ] Later: PBR, diagnostics, Heal, manual rig/animation, unified Compare, verified export and installer.
 - [ ] Later: RT → PT → Mixamo rights check/autorig/retargeting.

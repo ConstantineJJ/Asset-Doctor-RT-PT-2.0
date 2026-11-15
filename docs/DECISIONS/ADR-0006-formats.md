@@ -1,6 +1,6 @@
 # ADR-0006 — GLB/glTF strategy
 
-Status: OPEN; parser/encoder not selected or installed.
+Status: Static GLB parser selected in ADR-0013 (gltf 1.4.1); encoder/extensions/export remain OPEN.
 
 Choose maintained licensed parser/validator rather than implementing compression.
 Read GLB and embedded glTF first. External resource grants, Draco/Meshopt/KTX2

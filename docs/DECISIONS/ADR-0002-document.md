@@ -1,6 +1,6 @@
 # ADR-0002 — Document and source fidelity
 
-Status: PROPOSED; gate before import/edit implementation.
+Status: ACCEPTED for immutable static-import subset in ADR-0013; editing/skin/clip/history schema remains proposed.
 
 Use a renderer-independent document with stable IDs, monotonic revisions and
 versioned schema. Preserve source bytes/provenance plus explicit supported decoded
