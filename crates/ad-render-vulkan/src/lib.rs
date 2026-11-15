@@ -1,6 +1,11 @@
 //! Isolated GPU experiment. No asset/document ownership or product editing.
 
 pub mod context;
+mod gpu;
+pub mod presentation;
+pub mod renderer;
+mod swapchain;
+pub use gpu::SurfaceTarget;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct SurfaceSize {

@@ -25,6 +25,8 @@ jobs:
         run: cargo build --workspace --release --locked
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-msvc-gpu-probe
-          path: target/release/ad-render-vulkan.exe
+          name: windows-msvc-foundation
+          path: |
+            target/release/ad-render-vulkan.exe
+            target/release/AssetDoctorRTPT.exe
       # Hosted build agents do not certify Vulkan presentation or installed UI.

@@ -1,16 +1,20 @@
 param([string[]]$Command)
 $ErrorActionPreference='Stop'
 $repo=Split-Path $PSScriptRoot -Parent
-$localTools=Join-Path (Split-Path $repo -Parent) '.toolchain'
-if (Test-Path (Join-Path $localTools 'cargo\bin\cargo.exe')) {
-    $env:CARGO_HOME=Join-Path $localTools 'cargo'
-    $env:RUSTUP_HOME=Join-Path $localTools 'rustup'
-    $env:PATH="$env:CARGO_HOME\bin;$env:PATH"
-    # The portable GNU compiler is an experiment fallback. CI uses MSVC.
-    $env:RUSTUP_TOOLCHAIN='stable-x86_64-pc-windows-gnu'
-    $gnuBin=Join-Path $localTools 'rustup\toolchains\stable-x86_64-pc-windows-gnu\lib\rustlib\x86_64-pc-windows-gnu\bin\self-contained'
-    $env:PATH="$gnuBin;$env:PATH"
-    $env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=Join-Path $gnuBin 'x86_64-w64-mingw32-gcc.exe'
-}
+$names=@('PATH','CARGO_HOME','RUSTUP_HOME','RUSTUP_TOOLCHAIN')
+$previous=@{}
+foreach ($name in $names) { $previous[$name]=[Environment]::GetEnvironmentVariable($name,'Process') }
+$cargoExitCode=1
 Push-Location $repo
-try { & cargo @Command; exit $LASTEXITCODE } finally { Pop-Location }
+try {
+    # Use the installed MSVC toolchain and preserve the caller's environment.
+    Remove-Item Env:RUSTUP_TOOLCHAIN,Env:CARGO_HOME,Env:RUSTUP_HOME -ErrorAction SilentlyContinue
+    $cargoBin=Join-Path $env:USERPROFILE '.cargo\bin'
+    $env:PATH="$cargoBin;"+[Environment]::GetEnvironmentVariable('Path','Machine')+';'+[Environment]::GetEnvironmentVariable('Path','User')+';'+$previous['PATH']
+    & (Join-Path $cargoBin 'cargo.exe') @Command
+    $cargoExitCode=$LASTEXITCODE
+} finally {
+    Pop-Location
+    foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name,$previous[$name],'Process') }
+}
+exit $cargoExitCode

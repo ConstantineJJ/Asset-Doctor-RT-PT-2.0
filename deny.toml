@@ -15,6 +15,9 @@ ignore = true
 [bans]
 multiple-versions = "deny"
 wildcards = "deny"
+skip = [
+    { crate = "miniz_oxide@0.8.9", reason = "png 0.18.1 uses miniz 0.8 directly; its flate2 1.1.11 dependency uses 0.9. Both are upstream constraints, not duplicate domain abstractions. Recheck with next png update." },
+]
 
 [sources]
 unknown-registry = "deny"
