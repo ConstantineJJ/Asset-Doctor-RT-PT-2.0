@@ -227,6 +227,9 @@ impl AssetDocument {
     pub fn nodes(&self) -> &[Node] {
         &self.parts.nodes
     }
+    pub fn roots(&self) -> &[NodeId] {
+        &self.parts.roots
+    }
     pub fn notes(&self) -> &[String] {
         &self.parts.notes
     }

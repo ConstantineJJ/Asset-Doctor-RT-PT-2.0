@@ -12,6 +12,7 @@ pub(crate) struct Swapchain {
     pub finished: Vec<vk::Semaphore>,
     pub pipeline: Option<MeshPipeline>,
     pub encode_srgb: bool,
+    pub format: vk::Format,
     depth: Option<DepthTarget>,
     views: Vec<vk::ImageView>,
     gpu: Arc<Gpu>,
@@ -61,6 +62,7 @@ impl Swapchain {
                 framebuffers: vec![],
                 finished: vec![],
                 pipeline: None,
+                format: format.format,
                 encode_srgb: !matches!(
                     format.format,
                     vk::Format::B8G8R8A8_SRGB | vk::Format::R8G8B8A8_SRGB

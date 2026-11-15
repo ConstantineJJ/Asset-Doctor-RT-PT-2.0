@@ -6,9 +6,9 @@
 | ash | 0.38.0+1.3.281 | MIT OR Apache-2.0 | Experimental thin Vulkan bindings; isolated GPU boundary allows replacement |
 | libloading | 0.8.9 locked transitive | ISC | ash dynamic loader; replace through ash feature/loader boundary |
 | ash-window | 0.13.0 | MIT OR Apache-2.0 | Surface bridge using native raw handles; replace inside renderer surface owner |
-| raw-window-handle | 0.6.2 | MIT OR Apache-2.0 OR Zlib | Borrowed window/display contract; no UI types enter renderer |
+| raw-window-handle | 0.6.2 | MIT OR Apache-2.0 OR Zlib | Borrowed window/display contract; no winit event/widget types enter renderer |
 | winit | 0.30.13, rwh_06 only | Apache-2.0 | Native event loop/window experiment; separate desktop crate boundary permits replacement |
-| png | 0.18.1 | MIT OR Apache-2.0 | Decode compile-time owner window icon; no user asset parser yet |
+| png | 0.18.1 | MIT OR Apache-2.0 | Decode compile-time owner window icon; no user image decoding |
 | winresource | 0.1.34, build only | MIT | Embed EXE icon/version through Windows SDK resource compiler |
 | windows-sys / windows-targets / MSVC import libs | 0.52.0 / 0.52.6 | MIT OR Apache-2.0 | Desktop-only OS close smoke and error message; same version as winit |
 | cargo-deny | 0.20.2, development tool | MIT OR Apache-2.0 | License/advisory/source/duplicate gates; not an application runtime dependency |
@@ -17,16 +17,22 @@
 | serde_json | 1.0.150, direct use in tests only; parser transitive | MIT OR Apache-2.0 | Synthetic GLB metadata fixture construction; gltf owns production metadata parsing |
 | naga / naga-types | 30.0.2, BUILD only | MIT OR Apache-2.0 | Authored GLSL to embedded SPIR-V, glsl-in/spv-out only; replace build.rs compiler without changing runtime renderer |
 | foldhash / pp-rs / unicode-ident | 0.2.0 / 0.2.1 / 1.0.27, transitive build tools | Zlib / BSD-3-Clause / (MIT OR Apache-2.0) AND Unicode-3.0 | Shader/compiler data structures, GLSL preprocessor, proc-macro identifiers; source license notices reviewed, retain attribution when packaging |
+| egui / egui-winit | 0.36.2 exact; defaults disabled except egui default_fonts | MIT OR Apache-2.0 | Native widget/input experiment; desktop owns controls/context, renderer accepts paint data only. No eframe/wgpu/clipboard/URL-opening integration. Replace at UiFrame boundary |
+| egui-ash-renderer | 0.13.0 exact, default allocator | MIT | Maintained ash 0.38 painter for egui 0.36. Updates font textures/buffers after frame waits and records into supplied command buffer. Replace inside Vulkan UI overlay |
+| epaint_default_fonts | 0.36.2 | (MIT OR Apache-2.0) AND OFL-1.1 AND Ubuntu-font-1.0 | Unchanged bundled Ubuntu/Hack/Noto/emoji fonts for Cyrillic UI. Font copyright and full upstream notices preserved in assets/font-licenses.txt and embedded in Help |
+| epaint/emath/ecolor; glifo/harfrust/skrifa/read-fonts; vello_cpu/common | 0.36.2; 0.2.0/0.12.0/0.44.0/0.41.0; 0.1.0 | MIT OR Apache-2.0 (full resolved inventory in Cargo.lock) | UI tessellation/text shaping/rasterization dependencies, no second GPU backend. Actual per-library runtime footprint unprofiled |
 
 The initial GNU-only libloading 0.8.8 constraint was removed after MSVC readiness;
 0.8.9 now builds and passes checks. Cargo.lock is the full transitive inventory,
 including target-only packages not compiled into Windows. Runtime dependency
 code/byte footprint has not been profiled yet.
 
-GLB parsing is selected for the static subset (ADR-0013); PBR and the final UI
-library remain undecided. Naga adds build dependencies, not a runtime GPU backend.
-Current release desktop EXE is 1,679,872 bytes; this is an aggregate executable
-measurement, not per-library profiling or total runtime memory.
+GLB parsing is selected for the static subset (ADR-0013); the egui viewer shell
+experiment is accepted in ADR-0014. Permanent UI-backend evaluation in ADR-0004
+and PBR remain open. Naga adds build dependencies, not a runtime GPU backend.
+The UI graph adds 44 resolved packages (including target-only entries). Release
+desktop EXE grew from 1,679,872 to 7,024,128 bytes including bundled fonts/notices;
+this is an aggregate measurement, not per-library profiling or total runtime RAM.
 Evaluate actual footprint,
 platform behavior, licenses and advisories before adding each. No old npm/Tauri
 dependency graph is imported. Product license remains undecided by the owner.
@@ -40,7 +46,9 @@ its current flate2 dependency requires miniz 0.9.1; syn 2.0.119 required by
 gltf-derive/zerocopy-derive while serde_derive/thiserror-impl use syn 3.0.10.
 The latter are build-time proc macros. Review again on upstream updates.
 The allowlist now also includes reviewed permissive Zlib, BSD-3-Clause and
-Unicode-3.0 licenses needed by the compiler graph. No advisory exclusions or
+Unicode-3.0 licenses needed by the compiler graph, and OFL-1.1/Ubuntu-font-1.0
+for unchanged embedded fonts. Font license texts/copyright were reviewed and
+preserved; fonts retain their own licenses. No advisory exclusions or
 global duplicate relaxation. Binary redistribution notices remain a packaging
 requirement before public release. Current license/advisory PASS is
 not a future vulnerability guarantee or a license for the application itself.

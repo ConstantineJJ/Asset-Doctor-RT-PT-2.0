@@ -1,3 +1,4 @@
+use crate::ui::{Overlay, UiFrame, ViewportRect};
 use crate::{
     SurfaceSize,
     context::{Context, GpuResult},
@@ -27,6 +28,7 @@ pub struct Renderer {
     presented: vk::Fence,
     presentation_pending: bool,
     scene: Option<GpuScene>,
+    overlay: Option<Overlay>,
     view_projection: [[f32; 4]; 4],
     pub frames: u64,
     pub mesh_frames: u64,
@@ -50,6 +52,7 @@ impl Renderer {
             presented: vk::Fence::null(),
             presentation_pending: false,
             scene: None,
+            overlay: None,
             view_projection: [
                 [1., 0., 0., 0.],
                 [0., 1., 0., 0.],
@@ -138,12 +141,30 @@ impl Renderer {
         self.swapchain = None;
         if size.drawable() {
             self.swapchain = Swapchain::new(self.gpu.clone(), size)?;
+            if let (Some(overlay), Some(chain)) = (&self.overlay, &self.swapchain)
+                && overlay.format != chain.format
+            {
+                return Err(
+                    "Surface format changed; restart the viewer to rebuild UI color resources"
+                        .into(),
+                );
+            }
         }
         self.recreations += 1;
         Ok(())
     }
 
     pub fn draw(&mut self) -> GpuResult<FrameResult> {
+        self.draw_frame(None)
+    }
+    pub fn draw_ui(&mut self, frame: &mut UiFrame) -> GpuResult<FrameResult> {
+        self.draw_frame(Some(frame))
+    }
+    pub fn drawable(&self) -> bool {
+        self.swapchain.is_some()
+    }
+
+    fn draw_frame(&mut self, mut ui: Option<&mut UiFrame>) -> GpuResult<FrameResult> {
         let Some(chain) = self.swapchain.as_ref() else {
             return Ok(FrameResult::Suspended);
         };
@@ -157,6 +178,20 @@ impl Renderer {
                 device.wait_for_fences(&[self.presented], true, u64::MAX)?;
                 device.reset_fences(&[self.presented])?;
                 self.presentation_pending = false;
+            }
+            if let Some(frame) = ui.as_deref_mut() {
+                if self.overlay.is_none() {
+                    self.overlay = Some(Overlay::new(
+                        self.gpu.clone(),
+                        chain.pass,
+                        chain.format,
+                        !chain.encode_srgb,
+                    )?);
+                }
+                self.overlay
+                    .as_mut()
+                    .expect("UI painter initialized")
+                    .update(frame, self.pool)?;
             }
             let (image, suboptimal) = match chain.loader.acquire_next_image(
                 chain.handle,
@@ -200,7 +235,22 @@ impl Renderer {
                     .clear_values(&clear),
                 vk::SubpassContents::INLINE,
             );
-            if let Some(scene) = self.scene.as_ref() {
+            let scene_rect = if let Some(frame) = ui.as_deref() {
+                frame.scene.and_then(|r| {
+                    r.clipped(&SurfaceSize {
+                        width: chain.extent.width,
+                        height: chain.extent.height,
+                    })
+                })
+            } else {
+                Some(ViewportRect {
+                    x: 0,
+                    y: 0,
+                    width: chain.extent.width,
+                    height: chain.extent.height,
+                })
+            };
+            if let (Some(scene), Some(rect)) = (self.scene.as_ref(), scene_rect) {
                 let pipeline = chain
                     .pipeline
                     .as_ref()
@@ -214,15 +264,28 @@ impl Renderer {
                     self.command,
                     0,
                     &[vk::Viewport {
-                        x: 0.0,
-                        y: 0.0,
-                        width: chain.extent.width as f32,
-                        height: chain.extent.height as f32,
+                        x: rect.x as f32,
+                        y: rect.y as f32,
+                        width: rect.width as f32,
+                        height: rect.height as f32,
                         min_depth: 0.0,
                         max_depth: 1.0,
                     }],
                 );
-                device.cmd_set_scissor(self.command, 0, &[area]);
+                device.cmd_set_scissor(
+                    self.command,
+                    0,
+                    &[vk::Rect2D {
+                        offset: vk::Offset2D {
+                            x: rect.x as i32,
+                            y: rect.y as i32,
+                        },
+                        extent: vk::Extent2D {
+                            width: rect.width,
+                            height: rect.height,
+                        },
+                    }],
+                );
                 device.cmd_bind_vertex_buffers(self.command, 0, &[scene.vertices.handle], &[0]);
                 device.cmd_bind_index_buffer(
                     self.command,
@@ -257,7 +320,7 @@ impl Renderer {
                         0,
                     );
                 }
-            } else {
+            } else if ui.is_none() {
                 // Visible clear marker only until a real scene has been imported.
                 let span = chain.extent.width.min(chain.extent.height) / 4;
                 let thickness = (span / 4).max(1);
@@ -302,6 +365,12 @@ impl Renderer {
                         },
                     })];
                 device.cmd_clear_attachments(self.command, &mark, &rects);
+            }
+            if let Some(frame) = ui {
+                self.overlay
+                    .as_mut()
+                    .expect("UI painter initialized")
+                    .draw(self.command, chain.extent, frame)?;
             }
             device.cmd_end_render_pass(self.command);
             device.end_command_buffer(self.command)?;
@@ -356,6 +425,7 @@ impl Drop for Renderer {
         if let Err(error) = self.wait_idle() {
             eprintln!("GPU shutdown wait: {error}");
         }
+        self.overlay = None;
         self.swapchain = None;
         self.scene = None;
         // SAFETY: All queued work and presentation payloads were retired above;

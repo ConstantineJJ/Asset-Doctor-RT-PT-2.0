@@ -3,6 +3,8 @@
 mod camera;
 mod imports;
 mod native;
+mod ui_model;
+mod viewer_ui;
 
 use ad_document::{DocumentId, ErrorCode};
 use ad_render_vulkan::{
@@ -85,6 +87,7 @@ struct App {
     smoke_bad: Option<PathBuf>,
     expected_tag: Option<(DocumentId, u64)>,
     failed_replacement_preserved: bool,
+    ui: viewer_ui::ViewerUi,
 }
 
 impl App {
@@ -172,6 +175,8 @@ impl App {
             size.width, size.height
         );
         self.window = Some(window);
+        self.ui
+            .attach(self.window.as_ref().expect("Window created"));
         self.renderer = Some(renderer);
         Ok(())
     }
@@ -179,6 +184,7 @@ impl App {
     fn start_import(&mut self, path: PathBuf) {
         let ticket = self.imports.request(path);
         self.importing = true;
+        self.ui.error = None;
         eprintln!("import_started ticket={ticket}");
         if let Some(window) = self.window.as_ref() {
             window.set_title("Asset Doctor RT-PT 2.0 — Loading GLB… | Esc: cancel");
@@ -225,6 +231,9 @@ impl App {
                     return Ok(());
                 }
                 self.camera.fit(asset.snapshot.bounds);
+                self.ui.tree.replace(&asset.document);
+                self.ui.status = format!("Открыт {}", asset.document.name());
+                self.ui.error = None;
                 self.current = Some(asset);
                 eprintln!("import_published ticket={}", completion.ticket);
             }
@@ -248,6 +257,9 @@ impl App {
                 } else if self.smoke_import {
                     return Err(error.into());
                 } else if error.code != ErrorCode::Cancelled {
+                    self.ui.error = Some(error.to_string().chars().take(512).collect());
+                    self.ui.status = "Загрузка не выполнена; предыдущая модель сохранена".into();
+                    self.title();
                     native::show_error(&error.to_string());
                 }
             }
@@ -263,6 +275,49 @@ impl App {
                 Err(error) => native::show_error(&error.to_string()),
             }
         }
+    }
+
+    fn cancel_import(&mut self) {
+        self.imports.cancel();
+        self.importing = false;
+        self.ui.status = "Загрузка отменена".into();
+        self.title();
+    }
+
+    fn redraw(&mut self) -> GpuResult<()> {
+        let Some(window) = self.window.clone() else {
+            return Ok(());
+        };
+        if self.renderer.as_ref().is_none_or(|r| !r.drawable()) {
+            return Ok(());
+        }
+        let (mut frame, actions) = self
+            .ui
+            .frame(&window, self.current.as_ref(), self.importing);
+        if actions.cancel {
+            self.cancel_import();
+        }
+        if actions.fit
+            && let Some(asset) = &self.current
+        {
+            self.camera.fit(asset.snapshot.bounds);
+        }
+        let renderer = self.renderer.as_mut().expect("Drawable renderer checked");
+        let (width, height) = frame.scene.map_or((1, 1), |r| (r.width, r.height));
+        renderer.set_view_projection(self.camera.matrix(width, height))?;
+        let result = renderer.draw_ui(&mut frame)?;
+        if result == FrameResult::Recreate {
+            let size = window.inner_size();
+            renderer.recreate(SurfaceSize {
+                width: size.width,
+                height: size.height,
+            })?;
+        }
+        // Open native dialogs only after the acquired image has been submitted.
+        if actions.open {
+            self.choose_model();
+        }
+        Ok(())
     }
 
     fn tick(&mut self, event_loop: &ActiveEventLoop) -> GpuResult<()> {
@@ -383,6 +438,10 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        let consumed = self
+            .window
+            .as_ref()
+            .is_some_and(|window| self.ui.on_event(window, &event));
         let result: GpuResult<()> = match event {
             WindowEvent::Focused(false) => {
                 self.mouse = None;
@@ -399,7 +458,12 @@ impl ApplicationHandler for App {
                 Ok(())
             }
             WindowEvent::KeyboardInput { event, .. }
-                if event.state == ElementState::Pressed && !event.repeat =>
+                if event.state == ElementState::Pressed
+                    && !event.repeat
+                    && (!self.ui.context.text_edit_focused()
+                        || event.physical_key == PhysicalKey::Code(KeyCode::Escape)
+                        || (event.physical_key == PhysicalKey::Code(KeyCode::KeyO)
+                            && self.modifiers.control_key())) =>
             {
                 match event.physical_key {
                     PhysicalKey::Code(KeyCode::KeyO) if self.modifiers.control_key() => {
@@ -411,19 +475,19 @@ impl ApplicationHandler for App {
                         }
                     }
                     PhysicalKey::Code(KeyCode::Escape) => {
-                        self.imports.cancel();
-                        self.importing = false;
-                        self.title();
+                        self.ui.dismiss_help();
+                        if self.importing {
+                            self.cancel_import();
+                        }
                     }
-                    PhysicalKey::Code(KeyCode::KeyH) => native::show_help(
-                        "Controls: Ctrl+O — open static GLB; drag a GLB into the window.\nLeft drag: orbit. Right/middle drag: pan. Wheel: zoom. F: fit. Esc: cancel import.\nThis version shows triangle geometry and base colors. Textures, PBR, rig and animation are still planned.",
-                    ),
+                    PhysicalKey::Code(KeyCode::KeyH) => self.ui.help(),
                     _ => (),
                 }
                 Ok(())
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                if state == ElementState::Pressed {
+                let inside = self.cursor.is_some_and(|(x, y)| self.ui.camera_at(x, y));
+                if state == ElementState::Pressed && !consumed && inside {
                     self.mouse = Some(button);
                 } else if self.mouse == Some(button) {
                     self.mouse = None;
@@ -436,11 +500,9 @@ impl ApplicationHandler for App {
                     let dy = (position.y - y) as f32;
                     match self.mouse {
                         Some(MouseButton::Left) => self.camera.orbit(dx, dy),
-                        Some(MouseButton::Right | MouseButton::Middle) => self.camera.pan(
-                            dx,
-                            dy,
-                            self.window.as_ref().map_or(1, |w| w.inner_size().height) as f32,
-                        ),
+                        Some(MouseButton::Right | MouseButton::Middle) => {
+                            self.camera.pan(dx, dy, self.ui.camera_height())
+                        }
                         _ => (),
                     }
                 }
@@ -456,7 +518,10 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(p) => p.y as f32 / 80.0,
                 };
-                self.camera.zoom(steps);
+                let inside = self.cursor.is_some_and(|(x, y)| self.ui.camera_at(x, y));
+                if !consumed && inside {
+                    self.camera.zoom(steps);
+                }
                 Ok(())
             }
             WindowEvent::CloseRequested => {
@@ -484,35 +549,7 @@ impl ApplicationHandler for App {
                         .as_ref()
                         .is_some_and(|window| window.is_minimized() != Some(true)) =>
             {
-                if let Some(renderer) = self.renderer.as_mut() {
-                    let size = self
-                        .window
-                        .as_ref()
-                        .expect("Renderer has a window")
-                        .inner_size();
-                    if let Err(error) =
-                        renderer.set_view_projection(self.camera.matrix(size.width, size.height))
-                    {
-                        self.fail(event_loop, error);
-                        return;
-                    }
-                    renderer.draw().and_then(|result| {
-                        if result == FrameResult::Recreate {
-                            let size = self
-                                .window
-                                .as_ref()
-                                .expect("Renderer has a live window")
-                                .inner_size();
-                            renderer.recreate(SurfaceSize {
-                                width: size.width,
-                                height: size.height,
-                            })?;
-                        }
-                        Ok(())
-                    })
-                } else {
-                    Ok(())
-                }
+                self.redraw()
             }
             _ => Ok(()),
         };
@@ -599,6 +636,7 @@ fn run() -> GpuResult<()> {
         smoke_bad,
         expected_tag: None,
         failed_replacement_preserved: false,
+        ui: viewer_ui::ViewerUi::default(),
     };
     event_loop.run_app(&mut app)?;
     if let Some(error) = app.error {

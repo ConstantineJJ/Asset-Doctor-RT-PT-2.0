@@ -70,17 +70,12 @@ pub fn request_close(_window: &Window) -> GpuResult<()> {
 }
 
 pub fn show_error(message: &str) {
-    show_message(message, true);
+    show_message(message);
 }
-pub fn show_help(message: &str) {
-    show_message(message, false);
-}
-fn show_message(message: &str, error: bool) {
+fn show_message(message: &str) {
     #[cfg(windows)]
     {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MessageBoxW,
-        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
         let text: Vec<u16> = message.encode_utf16().chain(Some(0)).collect();
         let title: Vec<u16> = "Asset Doctor RT-PT 2.0"
             .encode_utf16()
@@ -88,17 +83,7 @@ fn show_message(message: &str, error: bool) {
             .collect();
         // SAFETY: NUL-terminated UTF-16 buffers live for the modal call.
         unsafe {
-            MessageBoxW(
-                0,
-                text.as_ptr(),
-                title.as_ptr(),
-                MB_OK
-                    | if error {
-                        MB_ICONERROR
-                    } else {
-                        MB_ICONINFORMATION
-                    },
-            );
+            MessageBoxW(0, text.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR);
         }
     }
 }

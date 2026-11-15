@@ -8,6 +8,7 @@ pub mod renderer;
 mod resources;
 mod scene;
 mod swapchain;
+pub mod ui;
 pub use gpu::SurfaceTarget;
 
 #[derive(Debug, PartialEq, Eq)]
