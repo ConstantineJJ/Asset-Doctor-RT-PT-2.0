@@ -41,8 +41,8 @@ animation autoplay, distinct floors and independent environment toggle.
 
 ## Current implementation
 
-Four independent crates now implement immutable static document data, bounded GLB
-formats, ash Vulkan presentation and a native viewer shell. Embedded PNG/JPEG
+Five independent crates now implement immutable static document data, bounded GLB
+formats, ash Vulkan presentation, source analysis and a native viewer shell. Embedded PNG/JPEG
 base-color maps, selected UVs, linear vertex colors and OPAQUE/MASK rendering are
 implemented in ADR-0015. ADR-0016 adds authored normal preservation and optional
 direct PBR with metallic/roughness factors, exposure and approximate fill. ADR-0017

@@ -19,8 +19,9 @@ flowchart TD
 
 The diagram is a logical target, not all existing crates. Present workspace has
 ad-document (immutable domain data/snapshot), ad-formats (bounded GLB parsing),
-ad-render-vulkan (GPU lifetime/presentation/geometry) and ad-desktop (window,
-input/camera, native dialogs and one bounded import worker).
+ad-render-vulkan (GPU lifetime/presentation/geometry), ad-analysis (read-only
+source geometry findings) and ad-desktop (window, input/camera, native dialogs
+and one bounded import worker).
 Renderer accepts raw-handle targets retained by Arc; it does not import winit.
 Desktop prepares egui paint primitives/texture deltas and a physical scene rectangle;
 Vulkan's replaceable UI painter consumes that frame in the same submission as
