@@ -12,7 +12,7 @@
 | winresource | 0.1.34, build only | MIT | Embed EXE icon/version through Windows SDK resource compiler |
 | windows-sys / windows-targets / MSVC import libs | 0.52.0 / 0.52.6 | MIT OR Apache-2.0 | Desktop-only OS close smoke and error message; same version as winit |
 | cargo-deny | 0.20.2, development tool | MIT OR Apache-2.0 | License/advisory/source/duplicate gates; not an application runtime dependency |
-| glam | 0.34.3, std only | MIT OR Apache-2.0 | Document transforms and desktop camera math; public geometry stays plain arrays, replace at these boundaries |
+| glam | 0.34.3, std; f64 in document | MIT OR Apache-2.0 | Document transforms, double-precision inverse-transpose normals and desktop camera math; public geometry stays plain arrays, replace at these boundaries |
 | gltf / gltf-json / gltf-derive | 1.4.1, default features disabled | MIT OR Apache-2.0 | Maintained GLB container/schema/accessor validation; utils/names/extras only, no image/import/network helpers; replace inside ad-formats |
 | serde_json | 1.0.150, direct use in tests only; parser transitive | MIT OR Apache-2.0 | Synthetic GLB metadata fixture construction; gltf owns production metadata parsing |
 | naga / naga-types | 30.0.2, BUILD only | MIT OR Apache-2.0 | Authored GLSL to embedded SPIR-V, glsl-in/spv-out only; replace build.rs compiler without changing runtime renderer |

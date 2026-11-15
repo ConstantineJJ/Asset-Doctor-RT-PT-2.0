@@ -1,5 +1,6 @@
 //! Renderer-independent immutable asset data and revision-tagged snapshots.
 mod color;
+mod normals;
 pub use color::*;
 use std::{
     fmt,
@@ -93,6 +94,8 @@ pub struct MeshId(pub usize);
 
 pub struct MeshPrimitive {
     pub positions: Vec<[f32; 3]>,
+    pub normals: Option<Vec<[f32; 3]>>,
+    pub metallic_roughness: [f32; 2],
     pub indices: Vec<u32>,
     pub base_color: [f32; 4],
     pub uvs: Option<Vec<[f32; 2]>>,
@@ -129,6 +132,7 @@ pub struct DrawRange {
     pub index_start: u32,
     pub index_count: u32,
     pub base_color: [f32; 4],
+    pub metallic_roughness: [f32; 2],
     pub color_texture: Option<Arc<ColorTexture>>,
     pub alpha_cutoff: Option<f32>,
 }
@@ -136,6 +140,8 @@ pub struct GeometrySnapshot {
     pub document_id: DocumentId,
     pub revision: u64,
     pub positions: Vec<[f32; 3]>,
+    pub normals: Vec<[f32; 3]>,
+    pub fallback_normal_vertices: usize,
     pub uvs: Vec<[f32; 2]>,
     pub colors: Vec<[f32; 4]>,
     pub indices: Vec<u32>,
@@ -160,6 +166,19 @@ impl AssetDocument {
         let mut textures = TextureAdmission::default();
         for mesh in &parts.meshes {
             cancel.check()?;
+            if mesh.normals.as_ref().is_some_and(|normals| {
+                normals.len() != mesh.positions.len()
+                    || normals.iter().flatten().any(|v| !v.is_finite())
+            }) || mesh
+                .metallic_roughness
+                .iter()
+                .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+            {
+                return Err(AssetError::new(
+                    ErrorCode::InvalidGeometry,
+                    "Invalid normals or metallic/roughness factors",
+                ));
+            }
             if let Some(texture) = &mesh.color_texture {
                 textures.admit(texture, limits)?;
             }
@@ -347,6 +366,8 @@ impl AssetDocument {
             document_id: self.id(),
             revision: 0,
             positions: Vec::new(),
+            normals: Vec::new(),
+            fallback_normal_vertices: 0,
             uvs: Vec::new(),
             colors: Vec::new(),
             indices: Vec::new(),
@@ -358,6 +379,9 @@ impl AssetDocument {
         };
         result.positions.try_reserve_exact(vertices).map_err(|_| {
             AssetError::new(ErrorCode::ResourceLimit, "Cannot allocate scene vertices")
+        })?;
+        result.normals.try_reserve_exact(vertices).map_err(|_| {
+            AssetError::new(ErrorCode::ResourceLimit, "Cannot allocate scene normals")
         })?;
         result
             .uvs
@@ -377,6 +401,7 @@ impl AssetDocument {
             })?;
         for (mesh_id, world) in instances {
             let mesh = &self.parts.meshes[mesh_id.0];
+            let normal_matrix = normals::normal_matrix(world);
             let offset = result.positions.len() as u32;
             for (i, point) in mesh.positions.iter().enumerate() {
                 if i % 4096 == 0 {
@@ -390,6 +415,11 @@ impl AssetDocument {
                     ));
                 }
                 result.positions.push(position.to_array());
+                let normal = mesh.normals.as_ref().map_or([0.; 3], |values| {
+                    normals::transform_normal(normal_matrix, values[i])
+                });
+                result.fallback_normal_vertices += usize::from(normal == [0.; 3]);
+                result.normals.push(normal);
                 result
                     .uvs
                     .push(mesh.uvs.as_ref().map_or([0.; 2], |uv| uv[i]));
@@ -401,6 +431,7 @@ impl AssetDocument {
                 index_start: result.indices.len() as u32,
                 index_count: mesh.indices.len() as u32,
                 base_color: mesh.base_color,
+                metallic_roughness: mesh.metallic_roughness,
                 color_texture: mesh.color_texture.clone(),
                 alpha_cutoff: mesh.alpha_cutoff,
             });
@@ -423,7 +454,7 @@ impl AssetDocument {
 
 pub fn geometry_bytes(vertices: usize, indices: usize) -> AssetResult<usize> {
     vertices
-        .checked_mul(36)
+        .checked_mul(48)
         .and_then(|value| {
             indices
                 .checked_mul(4)
@@ -443,6 +474,8 @@ mod tests {
             source: Arc::from([1, 2, 3, 4]),
             meshes: vec![MeshPrimitive {
                 positions: vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [99999., 0., 0.]],
+                normals: None,
+                metallic_roughness: [1.; 2],
                 indices: vec![0, 1, 2],
                 base_color: [1.; 4],
                 uvs: None,
@@ -485,6 +518,45 @@ mod tests {
         );
         assert_eq!(snapshot.document_id, DocumentId(7));
         assert_eq!(snapshot.revision, 0);
+    }
+    #[test]
+    fn snapshot_derives_normals_without_repairing_source_and_counts_fallbacks() {
+        let mut data = parts();
+        data.meshes[0].normals = Some(vec![[1., 1., 1.]; 4]);
+        data.meshes[0].metallic_roughness = [0.25, 0.];
+        data.nodes[1].local = Mat4::from_scale(glam::vec3(-2., 1., 0.5)).to_cols_array_2d();
+        let doc =
+            AssetDocument::new(data, ImportLimits::default(), &Cancellation::default()).unwrap();
+        let snapshot = doc
+            .snapshot(ImportLimits::default(), &Cancellation::default())
+            .unwrap();
+        assert_eq!(doc.parts.meshes[0].normals.as_ref().unwrap()[0], [1.; 3]);
+        assert_eq!(snapshot.draws[0].metallic_roughness, [0.25, 0.]);
+        assert!(
+            (glam::Vec3::from_array(snapshot.normals[0]) - glam::vec3(-0.5, 1., 2.).normalize())
+                .length()
+                < 1e-6
+        );
+        assert_eq!(snapshot.fallback_normal_vertices, 0);
+        let mut data = parts();
+        data.meshes[0].normals = Some(vec![[0., 1., 0.]; 4]);
+        data.nodes[1].local = Mat4::from_scale(glam::vec3(1., 0., 1.)).to_cols_array_2d();
+        let doc =
+            AssetDocument::new(data, ImportLimits::default(), &Cancellation::default()).unwrap();
+        let snapshot = doc
+            .snapshot(ImportLimits::default(), &Cancellation::default())
+            .unwrap();
+        assert_eq!(snapshot.normals, [[0.; 3]; 4]);
+        assert_eq!(snapshot.fallback_normal_vertices, 4);
+        assert_eq!(geometry_bytes(4, 3).unwrap(), 204);
+        for bad in [f32::NAN, -0.1, 1.1] {
+            let mut data = parts();
+            data.meshes[0].metallic_roughness[0] = bad;
+            assert!(
+                AssetDocument::new(data, ImportLimits::default(), &Cancellation::default())
+                    .is_err()
+            );
+        }
     }
     #[test]
     fn invalid_indices_are_refused_before_any_snapshot() {

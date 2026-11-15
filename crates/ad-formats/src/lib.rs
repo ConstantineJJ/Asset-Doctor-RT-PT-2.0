@@ -201,6 +201,33 @@ pub fn import_glb(
                 return Err(budget());
             }
             let reader = primitive.reader(|_| Some(bin));
+            let mut normals = None;
+            if let Some(accessor) = primitive.get(&gltf::Semantic::Normals) {
+                if accessor.data_type() != gltf::accessor::DataType::F32
+                    || accessor.dimensions() != gltf::accessor::Dimensions::Vec3
+                    || accessor.normalized()
+                    || accessor.count() != position.count()
+                {
+                    return Err(invalid(
+                        "Normals must use matching non-normalized F32 VEC3 accessors",
+                    ));
+                }
+                let mut values = Vec::new();
+                values
+                    .try_reserve_exact(position.count())
+                    .map_err(|_| budget())?;
+                for (i, value) in reader
+                    .read_normals()
+                    .ok_or_else(|| invalid("Cannot read normals"))?
+                    .enumerate()
+                {
+                    if i % 4096 == 0 {
+                        cancel.check()?;
+                    }
+                    values.push(value);
+                }
+                normals = Some(values);
+            }
             let color_texture = primitive
                 .material()
                 .pbr_metallic_roughness()
@@ -287,6 +314,17 @@ pub fn import_glb(
             ids.push(MeshId(meshes.len()));
             meshes.push(MeshPrimitive {
                 positions,
+                normals,
+                metallic_roughness: [
+                    primitive
+                        .material()
+                        .pbr_metallic_roughness()
+                        .metallic_factor(),
+                    primitive
+                        .material()
+                        .pbr_metallic_roughness()
+                        .roughness_factor(),
+                ],
                 indices,
                 base_color: primitive
                     .material()
@@ -316,8 +354,18 @@ pub fn import_glb(
         .or_else(|| doc.scenes().next())
         .ok_or_else(|| invalid("GLB has no scene"))?;
     let roots = scene.nodes().map(|node| NodeId(node.index())).collect();
-    let mut notes =
-        vec!["Base-color texture/vertex-color view; PBR lighting and other material maps are not displayed yet".into()];
+    let mut notes = vec!["Two-sided preview; optional direct PBR uses metallic/roughness factors only, without environment lighting or shadows".into()];
+    if doc.materials().any(|m| {
+        m.pbr_metallic_roughness()
+            .metallic_roughness_texture()
+            .is_some()
+            || m.normal_texture().is_some()
+            || m.occlusion_texture().is_some()
+            || m.emissive_texture().is_some()
+            || m.emissive_factor() != [0.; 3]
+    }) {
+        notes.push("Metallic/roughness, normal, occlusion and emissive maps/emission are retained in source but not displayed".into());
+    }
     if doc.scenes().len() > 1 {
         notes.push("Only the default/first scene is displayed".into());
     }
@@ -390,6 +438,30 @@ mod tests {
             ImportLimits::default(),
             &Cancellation::default(),
         )
+    }
+    #[test]
+    fn authored_normals_and_material_factors_survive_import_and_bad_layouts_are_refused() {
+        let mut json = json_doc();
+        json["meshes"][0]["primitives"][0]["attributes"]["NORMAL"] = json!(0);
+        json["materials"][0]["pbrMetallicRoughness"]["metallicFactor"] = json!(0.2);
+        json["materials"][0]["pbrMetallicRoughness"]["roughnessFactor"] = json!(0.7);
+        let doc = load(&json).unwrap();
+        let snapshot = doc
+            .snapshot(ImportLimits::default(), &Cancellation::default())
+            .unwrap();
+        assert_eq!(snapshot.normals, [[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]]);
+        assert_eq!(snapshot.fallback_normal_vertices, 1);
+        assert_eq!(snapshot.draws[0].metallic_roughness, [0.2, 0.7]);
+        for bad_index in [1, 999] {
+            json["meshes"][0]["primitives"][0]["attributes"]["NORMAL"] = json!(bad_index);
+            assert!(load(&json).is_err());
+        }
+        let scene = load(&json_doc())
+            .unwrap()
+            .snapshot(ImportLimits::default(), &Cancellation::default())
+            .unwrap();
+        assert_eq!(scene.draws[0].metallic_roughness, [1.; 2]);
+        assert_eq!(scene.fallback_normal_vertices, scene.positions.len());
     }
     #[test]
     fn embedded_color_fixture_decodes_once_and_preserves_linear_attributes_and_source() {

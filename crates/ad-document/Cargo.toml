@@ -5,7 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-glam = { version = "=0.34.3", default-features = false, features = ["std"] }
+glam = { version = "=0.34.3", default-features = false, features = ["std", "f64"] }
 
 [lints]
 workspace = true

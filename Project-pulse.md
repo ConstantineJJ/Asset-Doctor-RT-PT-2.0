@@ -1,5 +1,11 @@
 # Project pulse
 
+## 2026-11-15 — Authored normal and material data increment
+
+- Owner reported PASS with two textured car screenshots. This confirms those base-color examples; broad UV/mask/material acceptance remains separate.
+- Bounded normal/direct-PBR contracts and read-only behavior audit recorded in ADR-0016/SLICE_04. Import preserves optional F32 NORMAL and metallic/roughness factors. Snapshot derives inverse-transpose normals in double precision; absent/zero/singular normals use an explicit geometric fallback sentinel. No source repair. Geometry admission now48 bytes/vertex+indices.
+- Focused nonuniform/mirrored/singular/tiny-scale normal test failed before implementation, then passed.39 workspace tests PASS, including source preservation, malformed normals/factors and fallback counts. GPU/UI PBR integration follows; current default base-color view unchanged. No native window launched at this data step; no push.
+
 ## 2026-11-15 — Embedded base-color texture and vertex-color rendering
 
 - Owner reported the shell working; supplied Birch0/Adventur screenshots show tree, summary and selected-node details. Recorded as owner evidence; keyboard/accessibility/monitor/performance acceptance remains open. Relevant base-color audit/ADR-0015 accepted; no old code/architecture carried over.
