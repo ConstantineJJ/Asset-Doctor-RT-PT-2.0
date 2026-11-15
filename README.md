@@ -2,7 +2,7 @@
 
 **Asset Doctor RT-PT 2.0** is a native Windows application in development for diagnosing, repairing, editing, and preparing 3D assets. The project is being built **from scratch** in Rust, with a Vulkan-based GPU renderer designed to run on local hardware.
 
-> **Status:** Native Vulkan GLB viewer with Open/Fit, scene tree, summary and optional direct PBR with color/MR/normal/occlusion/emission maps and authored normals/tangents. Editing, environment, rig/animation, RT and PT remain planned. This is an engineering prototype.
+> **Status:** Native Vulkan GLB viewer with Open/Fit, scene tree, summary and optional direct PBR with color/MR/normal/occlusion/emission maps and authored normals/tangents. Read-only source geometry diagnostics are available. Editing, environment, rig/animation, RT and PT remain planned. This is an engineering prototype.
 
 ## Planned Features
 
@@ -54,6 +54,10 @@ use [Twin_Cubes.glb](tests/fixtures/Twin_Cubes.glb).
 - **F**: frame the model; **Esc**: cancel loading; **H**: controls and compatibility.
 - **Дерево** opens the initially hidden scene list. Selecting a node shows its
   read-only details; geometry highlighting/editing is not implemented yet.
+- **Диагностика** opens a read-only report with counts and up to16 source vertex/triangle
+  index samples per finding. It checks zero-area and oriented duplicate triangles,
+  unused vertices, missing and zero normals. Each source primitive is counted once,
+  including inactive data. This is a bounded first subset, with no health score or repair.
 - **Сводка** shows source size, document nodes, expanded display counts and bounds.
   Optional panels hide in compact windows. Help includes embedded font notices.
 - Loading failure/cancellation retains the previous model. Sources are read only.
@@ -97,6 +101,9 @@ independent UVs, shared linear MR/AO storage and actual fill/direct-light compar
 The [emission report](docs/EMISSION_REPORT_2026-11-15.md) records core material emission,
 strict image admission, shared SRGB resources and lights-off visual checks.
 
+The [geometry diagnostics report](docs/GEOMETRY_DIAGNOSTICS_REPORT_2026-11-15.md)
+records exact source rules, resource/cancellation limits and native evidence.
+
 ## Build on Windows
 
 Install MSVC C++ Build Tools with Windows SDK, Rust MSVC stable and LunarG Vulkan
@@ -133,6 +140,7 @@ environment. Its explicit array preserves Cargo's argument separator:
 .\tools\import-smoke.ps1 -Scene ao -Pbr -NoAoMaps -SynchronizationValidation
 .\tools\import-smoke.ps1 -Scene emission -Pbr -SynchronizationValidation
 .\tools\import-smoke.ps1 -Scene emission -Pbr -NoEmission -SynchronizationValidation
+.\tools\import-smoke.ps1 -Scene geometry -Pbr -SynchronizationValidation
 ```
 
 The separate probe prints actual GPU/API/heap/queue/extension availability. It does not

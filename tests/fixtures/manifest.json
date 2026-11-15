@@ -6,16 +6,16 @@
     "origin": "Project-authored numeric occlusion/UV/PNG data; no external content"
   },
   {
-    "file": "Bad_Accessor.glb",
-    "bytes": 1104,
-    "sha256": "771d135ca03d7e6751171aaca4f7cf87fe04271e1d3242b925ea9c76be4c331b",
-    "origin": "Project-authored numeric test geometry and PNG; no external content"
-  },
-  {
     "file": "Bad_AO_Image.glb",
     "bytes": 41616,
     "sha256": "02ddcc72f1836eb58755e6126742b565e216b25a46ca48d159d324ba7f2ca9df",
     "origin": "Project-authored numeric occlusion/UV/PNG data; no external content"
+  },
+  {
+    "file": "Bad_Accessor.glb",
+    "bytes": 1104,
+    "sha256": "771d135ca03d7e6751171aaca4f7cf87fe04271e1d3242b925ea9c76be4c331b",
+    "origin": "Project-authored numeric test geometry and PNG; no external content"
   },
   {
     "file": "Bad_Emission_Image.glb",
@@ -58,6 +58,12 @@
     "bytes": 41996,
     "sha256": "34dc709091920a49cd6c34ee9afa7b6f8d347ce0cac0bea4914fb081797e8e7f",
     "origin": "Project-authored numeric emission/UV/PNG data; no external content"
+  },
+  {
+    "file": "Geometry_Findings.glb",
+    "bytes": 1176,
+    "sha256": "850d0b62178179c330975ee9a1db5da0aca231a9daa74f7610ea5ee1334d07f3",
+    "origin": "Project-authored numeric geometry/indices/normals; no external content"
   },
   {
     "file": "Huge_Image_Header.glb",

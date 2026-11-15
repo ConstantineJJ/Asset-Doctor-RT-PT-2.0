@@ -50,11 +50,13 @@ adds linear metallic/roughness maps with independent UV selection and color-spac
 aware image sharing/admission. ADR-0018 adds normal maps with source tangent/scale
 preservation and explicit non-Mikk fallback. ADR-0019 adds linear source occlusion
 only to approximate fill. ADR-0020 separates frame/material bindings and ADR-0021
-adds core emission with SRGB maps. Final workspace has64 tests; native static/textured/PBR/MR/normal/AO import,
+adds core emission with SRGB maps. ADR-0022 adds bounded source geometry findings in independent ad-analysis.
+Final workspace has72 tests; native static/textured/PBR/MR/normal/AO import,
 rejected replacement and resize/minimize/restore/close smoke pass with validation.
-Full UI/parity, repair, rig/animation, export, Mikk fidelity,
+Read-only diagnostics currently cover five source geometry rules only.
+Full UI/parity, topology/UV/material/profile diagnostics, repair, rig/animation, export, Mikk fidelity,
 environment/shadows and RT/PT remain open. Current evidence and limits are in
-EMISSION_REPORT_2026-11-15.md. Development/self-verification continues
+GEOMETRY_DIAGNOSTICS_REPORT_2026-11-15.md. Development/self-verification continues
 autonomously under the owner's instruction, without per-increment owner acceptance.
 Application name includes 2.0; engineering package starts at 0.1.0 to avoid
 confusing this new prototype with Legacy 2.0.14 or a released product.

@@ -12,6 +12,7 @@ use std::{
 pub struct PreparedAsset {
     pub document: AssetDocument,
     pub snapshot: Arc<GeometrySnapshot>,
+    pub diagnostics: AssetResult<ad_analysis::Report>,
 }
 pub struct Completion {
     pub ticket: u64,
@@ -127,6 +128,12 @@ impl Drop for Imports {
     }
 }
 fn prepare(request: &Request) -> AssetResult<PreparedAsset> {
+    prepare_with_analysis_limits(request, ad_analysis::Limits::default())
+}
+fn prepare_with_analysis_limits(
+    request: &Request,
+    analysis_limits: ad_analysis::Limits,
+) -> AssetResult<PreparedAsset> {
     let limits = ImportLimits::default();
     request.cancel.check()?;
     let io = |error: std::io::Error| {
@@ -179,7 +186,26 @@ fn prepare(request: &Request) -> AssetResult<PreparedAsset> {
         &request.cancel,
     )?;
     let snapshot = Arc::new(document.snapshot(limits, &request.cancel)?);
-    Ok(PreparedAsset { document, snapshot })
+    let started = std::time::Instant::now();
+    let diagnostics = ad_analysis::analyze(&document, analysis_limits, &request.cancel);
+    request.cancel.check()?;
+    match &diagnostics {
+        Ok(report) => eprintln!(
+            "analysis_complete document={} revision={} primitives={} triangles={} findings={} elapsed_ms={}",
+            report.document_id.0,
+            report.revision,
+            report.primitives,
+            report.triangles,
+            report.findings.len(),
+            started.elapsed().as_millis()
+        ),
+        Err(error) => eprintln!("analysis_incomplete code={:?}", error.code),
+    }
+    Ok(PreparedAsset {
+        document,
+        snapshot,
+        diagnostics,
+    })
 }
 
 #[cfg(test)]
@@ -220,6 +246,9 @@ mod tests {
         let asset = result.result.unwrap();
         assert_eq!(&**asset.document.source(), original);
         assert_eq!(asset.snapshot.indices.len() / 3, 24);
+        let report = asset.diagnostics.as_ref().unwrap();
+        assert!(report.matches(&asset.document));
+        assert_eq!((report.primitives, report.triangles), (2, 24));
         imports.request(fixture("Bad_Image.glb"));
         assert!(completion(&mut imports).result.is_err());
         imports.request(fixture("Color_Checker.glb"));
@@ -232,6 +261,42 @@ mod tests {
                 .images,
             1
         );
+    }
+    #[test]
+    fn authored_diagnostic_fixture_has_six_source_findings_and_eleven_displayed_triangles() {
+        let request = Request {
+            ticket: 1,
+            path: fixture("Geometry_Findings.glb"),
+            cancel: Cancellation::default(),
+        };
+        let asset = prepare(&request).unwrap();
+        let report = asset.diagnostics.unwrap();
+        assert_eq!(
+            (report.primitives, report.triangles, report.findings.len()),
+            (2, 6, 6)
+        );
+        assert_eq!(asset.snapshot.indices.len() / 3, 11);
+        assert_eq!(report.findings[0].samples, [3, 4]);
+        assert_eq!(report.findings[1].samples, [1]);
+        assert_eq!(report.findings[4].samples, [3, 4]);
+    }
+    #[test]
+    fn analysis_refusal_keeps_the_valid_viewable_asset_and_incomplete_status() {
+        let request = Request {
+            ticket: 1,
+            path: fixture("Twin_Cubes.glb"),
+            cancel: Cancellation::default(),
+        };
+        let asset = prepare_with_analysis_limits(
+            &request,
+            ad_analysis::Limits {
+                triangles: 0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(asset.snapshot.indices.len(), 72);
+        assert!(matches!(asset.diagnostics,Err(e) if e.code==ErrorCode::ResourceLimit));
     }
     #[test]
     fn cancellation_clears_pending_and_blocks_late_publication() {

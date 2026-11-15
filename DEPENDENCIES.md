@@ -57,4 +57,3 @@ preserved; fonts retain their own licenses. No advisory exclusions or
 global duplicate relaxation. Binary redistribution notices remain a packaging
 requirement before public release. Current license/advisory PASS is
 not a future vulnerability guarantee or a license for the application itself.
-

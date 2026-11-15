@@ -89,3 +89,10 @@ separate from viewport state. There is one scene inventory and one command histo
 
 Manual baseline rig/animation editing is distinct from late autorig/retargeting.
 No Mixamo content is bundled before its redistribution rights are established.
+
+ADR-0022 implements ad-analysis as a read-only dependent of ad-document. Findings
+refer to document-local source primitives and indices, tagged by ID/revision and
+algorithm. The bounded import worker computes them before publication; an analysis
+budget failure is retained as incomplete status alongside the viewable asset. UI
+never replaces stale/incomplete evidence with a healthy result. Current source
+checks use robust adaptive predicates and bounded sorting/samples, no renderer data.

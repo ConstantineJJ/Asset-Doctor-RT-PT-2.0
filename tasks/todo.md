@@ -58,6 +58,9 @@ per-increment owner acceptance is not a gate. Keep source/audit/verification lim
 - [x] J0: Core emission audit/ADR-0021; independent SRGB image/UV/factor admission,96byte vertex budget.
 - [x] J1: Fifth material channel in set1; additive-before-exposure contribution, independent toggle/reset,64tests and required Windows/dependency checks.
 - [x] J2: Native emission on/off/default, prior channel/lifecycle checks and heavy Vanguard;0validationerrors. Lights-off native visual showed factor0 dark, factor-only and textured emission; toggle off darkens all.
-- [ ] Next: bounded read-only geometry diagnostics contracts and source-backed findings; environment/shadows remain future raster work.
+- [x] K0: ADR-0022/slice09 audit, independent bounded source findings; robust adaptive area predicate fixes numerical review repro.
+- [x] K1: Tagged worker report/incomplete failure retention, read-only Diagnostics window, capped samples and virtual rows;72tests and required Windows/dependency checks.
+- [x] K2: Authored defect fixture source6/display11triangles and6findings; native scroll/footer/close checked. Heavy Vanguard1559826source triangles/0findings in77ms, lifecycle0errors.
+- [ ] Next: indexed edge incidence/boundary/non-manifold contracts with resource-aware per-check coverage; no automatic repair or healthy score. Environment/shadows remain future raster work.
 - [ ] Later: environment/shadows/full PBR, diagnostics, Heal, manual rig/animation, unified Compare, verified export and installer.
 - [ ] Later: RT → PT → Mixamo rights check/autorig/retargeting.

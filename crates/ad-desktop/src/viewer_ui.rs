@@ -23,6 +23,7 @@ pub struct ViewerUi {
     pub normal_maps: bool,
     pub ao_maps: bool,
     pub emission: bool,
+    show_diagnostics: bool,
     pub lighting: ViewLighting,
     help: bool,
     pub tree: SceneTree,
@@ -41,6 +42,8 @@ pub struct ViewerUi {
     ao_maps_rect: egui::Rect,
     #[cfg(test)]
     emission_rect: egui::Rect,
+    #[cfg(test)]
+    diagnostics_rect: egui::Rect,
 }
 impl Default for ViewerUi {
     fn default() -> Self {
@@ -62,6 +65,7 @@ impl Default for ViewerUi {
             normal_maps: true,
             ao_maps: true,
             emission: true,
+            show_diagnostics: false,
             lighting: ViewLighting::default(),
             help: false,
             tree: SceneTree::default(),
@@ -80,6 +84,8 @@ impl Default for ViewerUi {
             ao_maps_rect: egui::Rect::NOTHING,
             #[cfg(test)]
             emission_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            diagnostics_rect: egui::Rect::NOTHING,
         }
     }
 }
@@ -171,6 +177,7 @@ impl ViewerUi {
         let mut actions = Actions::default();
         let output=context.run_ui(raw,|root| {
             let width=root.max_rect().width();
+            let height=root.max_rect().height();
             egui::Panel::top("tools").exact_size(48.).resizable(false).show(root,|ui| {
                 ui.horizontal_centered(|ui| {
                     if width>=260. {ui.label(RichText::new("✚").size(23.).color(Color32::from_rgb(240,68,78)));}
@@ -185,6 +192,11 @@ impl ViewerUi {
                         ui.toggle_value(&mut self.show_summary,"Сводка");
                     }
                     if width>=330. {self.help|=ui.button("Справка").clicked();}
+                    if width>=680. {
+                        let _diagnostics=ui.toggle_value(&mut self.show_diagnostics,"Диагностика");
+                        #[cfg(test)]
+                        {self.diagnostics_rect=_diagnostics.rect;}
+                    }
                 });
             });
             egui::Panel::bottom("status").exact_size(if self.error.is_some(){64.}else{32.}).resizable(false).show(root,|ui| {
@@ -296,6 +308,7 @@ impl ViewerUi {
                     root.painter().text(center+egui::vec2(0.,22.),egui::Align2::CENTER_CENTER,"Ctrl+O или перетащите GLB в окно",egui::FontId::proportional(14.),Color32::from_rgb(154,164,181));
                 }
             }
+            crate::diagnostic_ui::show(&context,&mut self.show_diagnostics,asset,height);
             egui::Window::new("Справка").open(&mut self.help).resizable(true).show(&context,|ui| {
                 ui.label("Открыть: Ctrl+O или перетащить GLB в окно.");
                 ui.label("ЛКМ — вращение; ПКМ / средняя — перемещение; колесо — масштаб.");
@@ -401,7 +414,16 @@ mod tests {
                 )
                 .unwrap(),
         );
-        let asset = PreparedAsset { document, snapshot };
+        let diagnostics = ad_analysis::analyze(
+            &document,
+            ad_analysis::Limits::default(),
+            &ad_document::Cancellation::default(),
+        );
+        let asset = PreparedAsset {
+            document,
+            snapshot,
+            diagnostics,
+        };
         let (out, rect, _) = ui.layout(raw(1200., 1000.), Some(&asset), false);
         out.drop_without_applying_deltas();
         assert!(rect.width() > 100.);
@@ -547,6 +569,28 @@ mod tests {
             out.drop_without_applying_deltas();
         }
         assert!(!ui.emission && ui.ao_maps && ui.normal_maps && ui.mr_maps && ui.textures);
+    }
+    #[test]
+    fn diagnostics_button_opens_the_read_only_report_window() {
+        let mut ui = ViewerUi::default();
+        let (out, _, _) = ui.layout(raw(1200., 1000.), None, false);
+        out.drop_without_applying_deltas();
+        let pos = ui.diagnostics_rect.center();
+        for pressed in [true, false] {
+            let mut input = raw(1200., 1000.);
+            input.events = vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ];
+            let (out, _, _) = ui.layout(input, None, false);
+            out.drop_without_applying_deltas();
+        }
+        assert!(ui.show_diagnostics);
     }
     #[test]
     fn open_button_emits_one_action_on_release() {

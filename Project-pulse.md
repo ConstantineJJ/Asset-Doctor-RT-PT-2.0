@@ -1,5 +1,13 @@
 # Project pulse
 
+## 2026-11-15 — Read-only diagnostics in native viewer
+
+- Import worker computes tagged analysis over immutable document after snapshot, with existing latest-ticket/cancel publication guards. Analysis resource refusal retains valid model+explicit incomplete result; cancellation discards import. No UI-thread analysis or new worker. Summary/viewport geometry count distinction remains explicit.
+- Toolbar Diagnostics opens source-scoped report: codesG001..G005, severity/count/primitive and up to16typed source-index examples, omissions visible. Stale tag hidden. No repair/healthscore. Virtualized rows now fixed76logical points/alllabels truncate+hover; viewport-dependent scroll height keeps footer visible at800x540. Source review caught wrap risk, native check caught minimum row-height mismatch; both corrected and rechecked top/bottom scroll.
+-72workspace tests(5analysis/17desktop/14document/24formats/12renderer), fmt/clippy denied warnings, release Windows build and cargo-deny all gates PASS. Added known-defect numeric fixture:2source primitives/6triangles/6findings versus3instances/11displayed triangles. Headless actual Diagnostics click and analysis refusal/worker/source/cap/stale tests pass.
+- Native geometry and emission regression import/rejected replacement/lifecycle plus empty UI:0validationerrors. Final visual shows expected indices/counts, missing-normal information, zero-normal warning, scroll to last finding and always-visible scope/footer. Final app normal close3841frames/0errors, not benchmark. Capture session reset, all windows closed. Logs artifacts/diagnostic-ui-visual-fit.*, release-import-smoke*geometry*.*.
+- Heavy Vanguard852516vertices/1559826triangles:analysis_complete1primitive/0findings/77ms,4images223696208mipbytes; GPU/lifecycle/replacement0errors/sourceSHA256unchanged. This timing is one local analysis observation, no performance benchmark;0findings covers5rules only. Added robust1.2.0 license purpose in register, no policy exception. Source/Legacy/Arc-XRay unchanged; no push. Next: bounded edge incidence contracts and per-check coverage before further topology diagnostics.
+
 ## 2026-11-15 — Independent source geometry analysis core
 
 - ADR-0022/read-only slice09 audit define first5rules over each source primitive once, including inactive data: zero area, same-index oriented duplicate triangles, unused vertices, missing/zero normals. No source edits, welded topology/edges/components/UV/material/profile/repair claims. Report tagged document/revision/algorithm; capped16lowest source-index samples per finding.
