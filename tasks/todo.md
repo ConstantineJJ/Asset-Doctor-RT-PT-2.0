@@ -4,13 +4,14 @@ Owner authorizes autonomous development and runtime/visual/input verification;
 per-increment owner acceptance is not a gate. Keep source/audit/verification limits explicit.
 
 Full roadmap and all76function/request statuses:
-[MASTER_PLAN_AND_STATUS_RU.md](../docs/MASTER_PLAN_AND_STATUS_RU.md), code9a8e454.
+[MASTER_PLAN_AND_STATUS_RU.md](../docs/MASTER_PLAN_AND_STATUS_RU.md), code7fe1f05.
 
 - [x] UV-data: Preserve all declared source TEXCOORD_n (up to8), explicit material role IDs, integer/finite/count/binding validation and decoded admission;99tests and material native regressions PASS.
 - [x] UV-analysis: ADR-0025 G009/G010/G011, atomic multichannel result admission, checked/not-applicable/omitted coverage;113tests/native full/partial UI/limits/heavy-model regressions PASS. No full UV-quality/edit/repair claim. See UV_DIAGNOSTICS_REPORT_2026-11-16.md.
 - [ ] Next product milestone after UV: accepted command/history/static-export/first-Heal contracts and end-to-end preview→apply→verify→Undo→Save Copy→reimport. Full remaining scope is in master plan P1–P12.
 - [x] Command foundation: ADR-0026/source slice13; guarded explicit triangle-removal proposals, monotonic revisions, bounded linear Undo/Redo and origin/source/attribute preservation.133workspace tests and viewer native regressions PASS. Internal CPU API only; report COMMAND_HISTORY_REPORT_2026-11-16.md.
-- [ ] First user-facing Heal/export: close ADR-0027source mapping/eligibility/roundtrip/write and atomic desktop-publication contracts; implement full preview/apply/verify/Undo/Save Copy workflow. No repair button or writer exists yet.
+- [x] Static export/storage backend: ADR-0028/0029 and source slice14; source-primitive mapping, exact-copy/append-only index writer, bounded core metadata, independent reimport comparison, Windows new-path disk readback/no-replace publication and handle-bound cleanup.157tests and saved-copy/UV/normal/empty native regressions PASS. Report STATIC_EXPORT_REPORT_2026-11-16.md; no desktop controls added.
+- [ ] First user-facing Heal/export: close remaining ADR-0027 full-scope G002 planner/postcheck and atomic desktop-publication contracts; implement preview/apply/verify/Undo/Save Copy/dirty-close workflow. Internal writer/storage exist; native repair/Save controls do not.
 
 - [x] A1a: Initial source inventory: 66 functions/scenarios, all 10 REQ IDs, exact evidence and source hashes. Verify: tools/audit_legacy.py. Full semantic UI/native audit remains open below.
 - [ ] A1b: Map all 197 UI declaration sites; classify 110 state candidates; complete parameter/error/native workflow acceptance. See reference/LEGACY_GAP_REGISTER.md.
@@ -22,7 +23,7 @@ Full roadmap and all76function/request statuses:
 - [ ] A3c: Unavailable-loader, unsupported GPU/features and device-lost fault injection remain unverified.
 - [x] A4: Native window/clear/icon slice: debug and release smoke, 15 presents + resize/minimize/restore/real WM_CLOSE, 0 validation errors with normal RTSS enabled. CUA inspection/maximize/Alt+F4 also passed. See native report/ADR-0012.
 - [ ] Full audit/parity gate remains OPEN: scoped static/material/analysis audits and ADRs permit only their defined subsets; they do not complete all UI/settings/native mapping. Close operation/fidelity contracts and fixtures before Heal/Rig/Export.
-- [x] Static product slice: bounded GLB import → independent document → Vulkan raster view with authored synthetic fixtures, cancellation/resource admission. Export/roundtrip remains future work.
+- [x] Static product slice: bounded GLB import → independent document → Vulkan raster view with authored synthetic fixtures, cancellation/resource admission. Internal static index-only export/roundtrip now exists in ADR-0028; user-facing export remains future work.
 - [x] B0: Review static-import behavior and decide bounded contracts (SLICE_01_IMPORT_AUDIT, ADR-0013). Broader parity gate remains open.
 - [x] B1: Independent document/snapshot and bounded GLB parser with failure/cancel/source-preservation tests.
 - [x] B2: Depth-tested Vulkan mesh raster and transactional scene upload.
@@ -77,5 +78,5 @@ Full roadmap and all76function/request statuses:
 - [x] M1: Algorithm4/G008, bounded independent disjoint-set phase, deterministic counts/representatives, partial coverage/cancellation;94tests and Windows/dependency checks PASS.
 - [x] M2: Native components/partial-edge/edge/empty regression; Tire_Quartet and Vanguard source-preserving probes; full and partial8rule UI verified with0validationerrors.
 - [ ] Next: source UV-channel inventory and bounded diagnostic contracts. Current UV streams are selected per material role and must not be treated as a general TEXCOORD_0 inventory. Verified repair remains separate. Environment/shadows remain future raster work.
-- [ ] Later: environment/shadows/full PBR, diagnostics, Heal, manual rig/animation, unified Compare, verified export and installer.
+- [ ] Later: environment/shadows/full PBR, diagnostics, Heal, manual rig/animation, unified Compare, native verified export and installer.
 - [ ] Later: RT → PT → Mixamo rights check/autorig/retargeting.

@@ -18,10 +18,12 @@ flowchart TD
 ```
 
 The diagram is a logical target, not all existing crates. Present workspace has
-ad-document (immutable domain data/snapshot), ad-formats (bounded GLB parsing),
-ad-render-vulkan (GPU lifetime/presentation/geometry), ad-analysis (read-only
-source geometry findings) and ad-desktop (window, input/camera, native dialogs
-and one bounded import worker).
+ad-document (authoritative domain data/snapshot), ad-formats (bounded GLB import
+and verified static export), ad-render-vulkan (GPU lifetime/presentation/geometry),
+ad-analysis (read-only source geometry findings), ad-commands (bounded index history),
+ad-storage (Windows new-path verified file IO) and ad-desktop (window, input/camera,
+native dialogs and one bounded import worker). Commands/storage are internal APIs;
+desktop still owns a read-only viewer workflow.
 Renderer accepts raw-handle targets retained by Arc; it does not import winit.
 Desktop prepares egui paint primitives/texture deltas and a physical scene rectangle;
 Vulkan's replaceable UI painter consumes that frame in the same submission as
@@ -131,5 +133,15 @@ revision/origin and validated triangle-removal/exchange operations; history owns
 alternate index Vecs and state/cursor. All attributes/source/images remain shared
 without whole-document clones. Entry/payload admission precedes mutation; failed
 branches/no-ops retain redo. Read-only snapshots now carry current revision.
-This internal CPU boundary does not implement desktop edit publication, generic
-geometry/rig history or verified writer. Those contracts remain open in ADR-0027.
+This internal CPU boundary does not implement desktop edit publication or generic
+geometry/rig history. Full first-Heal publication remains open in ADR-0027.
+
+ADR-0028 adds pure static export inside formats: shared source preflight, stable
+source-primitive binding, append-only index storage and an independently reimported/
+compared VerifiedGlb. Unchanged bytes copy exactly; changed opaque metadata is
+refused. ADR-0029 adds ad-storage with a private saved receipt, same-directory
+exclusive staging, full disk readback and hard-link no-replace publication.
+Windows handle-bound deletion owns cleanup; publication is the commit point.
+Both proof and receipt retain origin/revision identity. Filesystem IO stays outside
+document, commands, analysis and renderer. No Save UI or saved-state clearing exists.
+See STATIC_EXPORT_REPORT_2026-11-16.md for tested subsets and memory/filesystem limits.

@@ -11,8 +11,10 @@ remaining acceptance criteria. It is the consolidated progress document.
 
 The internal CPU [command/history foundation](docs/COMMAND_HISTORY_REPORT_2026-11-16.md)
 now supports guarded explicit triangle removal and bounded Undo/Redo without
-copying all geometry. It is not connected to desktop edit controls or file export;
-the current application remains a read-only viewer.
+copying all geometry. The internal [static export/storage backend](docs/STATIC_EXPORT_REPORT_2026-11-16.md)
+now verifies changed GLB bytes by independent reimport and saves new Windows copies
+with disk readback and no replacement of existing files. These APIs are not yet
+connected to desktop editing/Save controls; the application remains a read-only viewer.
 
 ## Planned Features
 

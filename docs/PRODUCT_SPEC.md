@@ -63,15 +63,18 @@ decoded admission. Algorithm5 adds G009–G011 for missingUV0/exactUVarea/outsid
 atomic multichannel findings and checked/not-applicable/omitted coverage.
 ADR-0026adds internal ad-commands with explicit triangle-removal preparation,
 revision/origin guards, index ownership exchange and bounded Undo/Redo. Only
-fresh imports enter a new history session. No desktop edit controls, Heal planner
-or writer are implemented; ADR-0027records their remaining decisions.
-Current code9a8e454 has133tests;
+fresh imports enter a new history session. No desktop edit controls or Heal planner
+are implemented. ADR-0028/0029 add internal static index-only export with independent
+reimport/fidelity comparison and new-path Windows Save Copy with disk readback,
+private origin/revision guards and no replacement of existing files. Native Save,
+dirty-close and edit/GPU publication remain open in ADR-0027.
+Current code7fe1f05 has157tests;
 native static/textured/PBR/MR/normal/AO import,
 rejected replacement and resize/minimize/restore/close smoke pass with validation.
 Read-only diagnostics currently cover11source geometry/UVrules.
-Full UI/parity, further topology/UV/material/profile diagnostics, repair, rig/animation, export, Mikk fidelity,
+Full UI/parity, further topology/UV/material/profile diagnostics, repair, rig/animation, native export, Mikk fidelity,
 environment/shadows and RT/PT remain open. Current evidence and limits are in
-COMMAND_HISTORY_REPORT_2026-11-16.md and UV_DIAGNOSTICS_REPORT_2026-11-16.md.
+STATIC_EXPORT_REPORT_2026-11-16.md, COMMAND_HISTORY_REPORT_2026-11-16.md and UV_DIAGNOSTICS_REPORT_2026-11-16.md.
 Development/self-verification continues
 autonomously under the owner's instruction, without per-increment owner acceptance.
 Application name includes 2.0; engineering package starts at 0.1.0 to avoid
