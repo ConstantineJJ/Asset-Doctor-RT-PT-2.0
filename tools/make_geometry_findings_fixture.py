@@ -32,4 +32,4 @@ rows=json.loads((root/'manifest.json').read_text(encoding='utf-8'))
 rows=[row for row in rows if row['file']!='Geometry_Findings.glb']
 rows.append({'file':'Geometry_Findings.glb','bytes':len(payload),'sha256':hashlib.sha256(payload).hexdigest(),'origin':'Project-authored numeric geometry/indices/normals; no external content'})
 (root/'manifest.json').write_text(json.dumps(sorted(rows,key=lambda row:row['file']),indent=2)+'\n',encoding='utf-8')
-print('Generated Geometry_Findings: 2 source primitives/6 triangles/6 findings; 3 instances/11 displayed triangles')
+print('Generated Geometry_Findings: 2 source primitives/6 triangles; 3 instances/11 displayed triangles. Findings are verified by Rust analysis tests.')

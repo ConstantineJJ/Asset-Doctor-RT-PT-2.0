@@ -117,5 +117,9 @@ ADR-0025's data increment replaces authoritative per-material-role UV arrays wit
 up to8sorted source TEXCOORD_n channels and explicit role-selected channel IDs.
 Unselected channels are preserved and validated; decoded admission accounts for
 their storage before allocation. Snapshot/GPU still derives the five role streams
-at96bytes/vertex. The three proposed UV diagnostic rules are not implemented yet.
+at96bytes/vertex. Algorithm5 now executes G009/G010/G011 over this inventory with
+fixed8channel stack tallies, bounded typed evidence and atomic per-primitive/rule
+multichannel output. Coverage distinguishes checked/not-applicable/omitted scope;
+cooperative cancellation discards partial tallies. No UV working allocation scales
+with vertex/triangle count. Full UV quality/repair remains outside this subset.
 Current implemented/planned boundaries: MASTER_PLAN_AND_STATUS_RU.md.

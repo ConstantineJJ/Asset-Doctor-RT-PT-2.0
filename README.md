@@ -69,12 +69,17 @@ use [Twin_Cubes.glb](tests/fixtures/Twin_Cubes.glb).
   Per-rule coverage makes resource-limited checks explicit and retains completed
   findings. Each source primitive is counted once,
   including inactive data. This is a bounded first subset, with no health score or repair.
+  UV rules additionally report missing source UV0, exact zero UV area and source
+  vertices outside0…1in every declared channel. Outside values are information;
+  wrapping may be intentional. No channels means not-applicable for area/range,
+  distinguished from checked and omitted scope. See [UV report](docs/UV_DIAGNOSTICS_REPORT_2026-11-16.md).
 - **Сводка** shows source size, document nodes, expanded display counts and bounds.
   Optional panels hide in compact windows. Help includes embedded font notices.
 - Loading failure/cancellation retains the previous model. Sources are read only.
 - Source UV inventory retains up to8declared `TEXCOORD_n` channels per primitive,
   including channels unused by materials. Invalid unused UVs also refuse import;
-  material roles select explicit source channel IDs. UV diagnostic rules remain planned.
+  material roles select explicit source channel IDs. G009–G011 now diagnose this inventory;
+  UV editing, overlap/island/density checks and repair remain future work.
 - This increment supports opaque static triangles and embedded BIN geometry.
   It displays base-color factors × linear vertex colors × embedded PNG/JPEG maps
   with face lighting and OPAQUE/MASK coverage. **Базовые текстуры** in Summary

@@ -36,4 +36,4 @@ manifest=root/'manifest.json'
 rows=[r for r in json.loads(manifest.read_text(encoding='utf-8')) if r['file']!=path.name]
 rows.append({'file':path.name,'bytes':len(payload),'sha256':hashlib.sha256(payload).hexdigest(),'origin':'Project-authored numeric connected-component/index data; no external content'})
 manifest.write_text(json.dumps(sorted(rows,key=lambda r:r['file']),indent=2)+'\n',encoding='utf-8')
-print(f'Generated {path.name}:3source primitives/7triangles/8findings;4groups in primitive0;11displayed triangles')
+print(f'Generated {path.name}:3source primitives/7triangles;4groups in primitive0;11displayed triangles. Findings are verified by Rust analysis tests.')

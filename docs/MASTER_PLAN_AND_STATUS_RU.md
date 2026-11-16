@@ -2,7 +2,7 @@
 
 **Дата сверки:** 16 ноября 2026 года, Europe/Riga.
 
-**Проверяемая версия приложения:** `615cbff7b70aa41048636355510502b974c1a4e1`.
+**Проверяемая версия приложения:** `ff355f91acc4244a023feeecf7c66d33de6fb58f`.
 
 **Назначение документа:** единый план всего продукта, перечень уже работающих функций и оставшихся обязательств. Это снимок состояния указанного коммита; будущая реализация обновляет статусы здесь и в [матрице функций](FEATURE_PARITY_MATRIX.csv).
 
@@ -22,7 +22,7 @@
 2. [Вся исходная дорожная карта](#2-вся-исходная-дорожная-карта)
 3. [Что уже можно делать в программе](#3-что-уже-можно-делать-в-программе)
 4. [Границы форматов, материалов и ресурсов](#4-границы-форматов-материалов-и-ресурсов)
-5. [Диагностика: восемь выполненных и три запланированных проверки](#5-диагностика-восемь-выполненных-и-три-запланированных-проверки)
+5. [Диагностика: 11 реализованных проверок](#5-диагностика-11-реализованных-проверок)
 6. [Архитектура: реализованные и будущие части](#6-архитектура-реализованные-и-будущие-части)
 7. [Подробный оставшийся план и критерии готовности](#7-подробный-оставшийся-план-и-критерии-готовности)
 8. [Проверки и ограничения доказательств](#8-проверки-и-ограничения-доказательств)
@@ -63,7 +63,7 @@
 | **3. Первый нативный кадр Vulkan** | Выполнен в базовом объёме | Настоящее окно, иконка, устройство/swapchain, кадры, resize/minimize/restore/close, validation | Дополнительные сценарии отсутствующего loader/GPU и потери устройства входят в дальнейшую надёжность |
 | **4. Raster MVP** | Базовый просмотр работает | Геометрия, depth, камеры, авторские transforms, материалы, загрузка GPU-ресурсов и управление жизненным циклом | Измерения пиков/кадров, fault injection, расширенная сцена/оверлеи и регрессии на разных устройствах |
 | **5. glTF + PBR** | Частично | Статический GLB/BIN, иерархия, UV, normals/tangents, PNG/JPEG, base color/MR/normal/AO/emission, OPAQUE/MASK, предварительный direct PBR | JSON glTF, согласованные расширения/сжатие, skin/animation/morph, BLEND, double-sided/culling parity, HDR/IBL, тени, точная визуальная калибровка |
-| **6. Product core и native UX** | Частично | Независимый неизменяемый документ, фоновые задачи, отмена/stale guards, дерево/сводка, восемь read-only диагностик | Команды редактирования, Undo/Redo, настройки/проекты/recovery, полный набор диагностик, лампы/gizmo/окружение/полы и развитый UI |
+| **6. Product core и native UX** | Частично | Независимый неизменяемый документ, фоновые задачи, отмена/stale guards, дерево/сводка, 11 read-only диагностик | Команды редактирования, Undo/Redo, настройки/проекты/recovery, полный набор диагностик, лампы/gizmo/окружение/полы и развитый UI |
 | **7. Heal / ручной Rig / Export / auto-Compare / анимации** | Не реализован | Исходные требования каталогизированы; данные и проверки первых read-only функций создают основу | Все пользовательские операции данного этапа, их история, preview/verification и roundtrip |
 | **8. Качество raster-релиза Windows** | Не завершён | Локальные и CI-проверки, инженерный EXE, синтетические fixtures и первые нативные регрессии | Установщик/обновление/удаление, чистая машина, доступность/DPI, восстановление, профилирование и продуктовая приёмка |
 | **9. Hardware Ray Tracing** | Не начат | В probe ранее наблюдались имена RT-расширений GPU | Реальное включение features, BLAS/TLAS, эффект/режим, синхронизация, бюджеты, fallback и проверки |
@@ -89,9 +89,9 @@
 | Смотреть авторские цвета и текстуры | VIEW-01, этап 5 | Цвет материала × COLOR_0 × embedded base-color PNG/JPEG; отдельный переключатель текстур; OPAQUE/MASK |
 | Включить предварительный PBR | VIEW-01, VIEW-04 | Direct light, metallic/roughness factors/maps, normals, AO, emission; exposure/key/fill/reset — настройки просмотра |
 | Независимо переключать карты | Этап 5 | Base color, MR, normal, AO и emission; это не правка и не сохранение материала |
-| Получить восемь геометрических проверок | DIAG-03, DIAG-04, DIAG-10 | Коды, степень важности, количество и ограниченные примеры исходных индексов; подробности в §5 |
+| Получить 11 проверок геометрии и UV | DIAG-03, DIAG-04, DIAG-10 | Коды, степень важности, количество и ограниченные примеры исходных индексов; подробности в §5 |
 | Увидеть, что анализ частичный | SYS-05, диагностика | По каждому правилу видно проверенный/пропущенный объём; отказ по scratch/output не превращается в «модель исправна» |
-| Сохранить исходные UV-каналы в документе | Подготовка DIAG-04 | До восьми TEXCOORD_n на примитив, включая неиспользуемые; выбор канала материалом хранится явно. Общего редактора/просмотрщика UV пока нет |
+| Сохранить исходные UV-каналы в документе | Подготовка DIAG-04 | До восьми TEXCOORD_n на примитив, включая неиспользуемые; выбор канала материалом хранится явно. Проверки G009–G011 реализованы; общего редактора/просмотрщика UV пока нет |
 
 **Пока нельзя:** исправить или отредактировать модель, переместить её gizmo, править скелет/веса, проиграть анимацию, сравнить несколько документов, выполнить Undo/Redo редактирования, сохранить проект или экспортировать изменённый GLB. Эти функции остаются обязательствами плана.
 
@@ -105,7 +105,7 @@
 | JSON `.gltf` | Не поддерживается | Отдельный контракт самодостаточного glTF и политика ресурсов |
 | Внешние BIN/images/URLs | Отклоняются | Не открывать автоматически; новые способы доступа — отдельное решение |
 | PNG/JPEG material maps | Поддерживаются с лимитами | Дополнительные форматы только с decoder/resource/лицензионными проверками |
-| Source UV | F32 VEC2 или normalized U8/U16 VEC2; до восьми каналов | Диагностика UV и позднее инструменты по отдельному контракту |
+| Source UV | F32 VEC2 или normalized U8/U16 VEC2; до восьми каналов; G009–G011 | Расширенная диагностика UV и позднее инструменты по отдельному контракту |
 | Base color, vertex color, MR, normal, AO, emission | Поддерживаются перечисленные core-параметры и карты | Полная калибровка, дополнительные glTF material extensions |
 | Tangents | Авторские данные сохраняются; при отсутствии применяется производная UV-основа | Fallback не заявлен как эквивалент MikkTSpace; нужна проверка швов/зеркал |
 | Alpha | OPAQUE и MASK | BLEND, корректная сортировка и соответствие double-sided/culling |
@@ -138,9 +138,9 @@
 
 32 ГБ RAM и 16 ГБ VRAM не складываются в единый бюджет. Объём heap из probe не равен свободной памяти. Stage buffers, старый опубликованный ресурс, декодирование, история и будущие acceleration structures требуют замеров/отдельного учёта.
 
-## 5. Диагностика: восемь выполненных и три запланированных проверки
+## 5. Диагностика: 11 реализованных проверок
 
-Сейчас `ad-analysis` использует **algorithm version 4**. Проверки выполняются над исходными примитивами документа, включая неактивные, по одному разу. Экземпляры сцены не умножают findings. Преобразования просмотра не меняют исходные индексы или результат анализа.
+Сейчас `ad-analysis` использует **algorithm version 5**. Проверки выполняются над исходными примитивами документа, включая неактивные, по одному разу. Экземпляры сцены не умножают findings. Преобразования просмотра не меняют исходные индексы или результат анализа.
 
 | Код | Реализованная проверка | Существенная граница |
 |---|---|---|
@@ -157,15 +157,15 @@
 
 Отчёт содержит ID/revision/версию алгоритма, код/важность/count и типизированные примеры: вершины, треугольники, пары вершин рёбер, представители и размеры групп. При локальном ресурсном отказе сохраняются завершённые findings, а пропуски маркируются. Полная отмена задачи не публикует новый отчёт. Отсутствие findings не является health score или заключением о полной пригодности модели.
 
-**Следующий согласованный объём, но ещё не реализация:** [ADR-0025](DECISIONS/ADR-0025-source-uv-diagnostics.md).
+**UV-проверки также реализованы по контракту:** [ADR-0025](DECISIONS/ADR-0025-source-uv-diagnostics.md).
 
-| Планируемый код | Назначение | Статус |
+| Код | Назначение | Реализованный объём и граница |
 |---|---|---|
-| G009 | Отсутствует исходный UV0 | Не реализован; наличие UV выбранного материалом не заменяет UV0 |
-| G010 | Точно нулевая UV-площадь по каждому source-каналу | Не реализован; требуется atomic multichannel output, ограниченные примеры и coverage |
-| G011 | UV-вершины вне замкнутого квадрата 0…1 | Не реализован; будет информацией, поскольку repeat/mirroring могут использовать такие UV намеренно |
+| G009 | Отсутствует исходный UV0 | Информация, count 1 на source-примитив; канал материала не заменяет UV0 |
+| G010 | Точно нулевая UV-площадь по каждому source-каналу | Warning, robust predicate; channel output атомарен; повторные индексы исключены, нет epsilon для tiny maps |
+| G011 | UV-вершины вне замкнутого квадрата 0…1 | Информация по каждому каналу, включая unused vertices; повторение текстуры может быть намеренным |
 
-Сохранение всех каналов уже готово. Отдельная диагностика UV, перекрытия/острова/плотность, orientation, materials, skeleton, weights, animations и профили пригодности пока не выполнены.
+Все каналы сохраняются и проверяются в указанном объёме. Без каналов G010/G011 получают статус «неприменимо», а не «проверено без замечаний». Coverage различает проверенные, неприменимые и пропущенные примитивы. Перекрытия/острова/плотность UV, orientation, materials, skeleton, weights, animations и профили пригодности пока не выполнены.
 
 ## 6. Архитектура: реализованные и будущие части
 
@@ -174,7 +174,7 @@
 | document | `ad-document`: неизменяемый статический документ, исходные байты, ID/revision, source channels и snapshots | Полные материалы/skin/clip/editable data и инварианты операций |
 | formats | `ad-formats`: ограниченный GLB importer и валидация | Остальные варианты glTF, расширения, writer, roundtrip |
 | assets | CPU image/sampler identity, sharing и admission в документе/importer | Общий жизненный цикл ресурсов по мере появления реальной необходимости |
-| diagnostics | Независимый `ad-analysis`, восемь правил | Полный каталог диагностик, UV/materials/rig/animation/profiles |
+| diagnostics | Независимый `ad-analysis`, 11 правил | Полный каталог диагностик, расширенные UV/materials/rig/animation/profiles |
 | heal | Не реализован | План ремонта → preview → команда → verification → запись отчёта |
 | rig | Не реализован | Skeleton/skin/rest/pose/weights и ручные операции |
 | animation | Не реализован | Данные clips, вычисление позы, timeline/playback/editing |
@@ -201,7 +201,7 @@
 
 ### P2. UV и дальнейшая read-only диагностика
 
-- Реализовать G009–G011 поверх уже сохранённых source UV; показать N/A при отсутствии каналов и не терять предыдущие findings при отказе.
+- **Завершено:** G009–G011 поверх сохранённых source UV, N/A без каналов, атомарные многоканальные findings и сохранение предыдущих результатов при отказе; unit/native/full/partial UI проверки.
 - Затем отдельными частями добавить целостность/ориентацию/дальнейшую топологию, материалы/текстуры, transforms/performance и профили.
 - Дать фильтры, переход к дефекту/подсветку, rescan после изменения и экспорт диагностического отчёта.
 - После появления skin/animation — их валидаторы, не подменять их отклонением импорта.
@@ -312,16 +312,16 @@
 
 | Доказательство | Состояние и область |
 |---|---|
-| Workspace tests | 99 PASS: analysis 24, desktop 20, document 16, formats 27, renderer 12 |
+| Workspace tests | 113 PASS: analysis 35, desktop 23, document 16, formats 27, renderer 12 |
 | Форматирование/lint/build | fmt check, all-target clippy с запретом warnings, Windows MSVC release build PASS |
 | Зависимости | cargo-deny advisories/bans/licenses/sources PASS; в последнем UV-этапе новых зависимостей нет |
-| Native material regression | MR/normal/AO/emission: по 15 mesh frames, плохая замена сохраняет документ, resize/minimize/restore/close, 0 validation errors |
+| Native regression текущего UV-этапа | UV/2M-partial/normal/emission/components/empty: import и применимые replacement/lifecycle проверки, 0 validation errors; UV/full и partial UI проверены вручную через Computer Use |
 | Geometry/edge/component UI | В предшествующих отчётах есть нативные проверки полного/частичного результата, scroll/footer и примеров групп; это не новая проверка всех будущих инструментов |
 | Пользовательские примеры | В диалоге приняты несколько GLB/base-color/PBR-примеров; это свидетельство конкретных моделей и сборок, не всего parity |
 | Heavy-model наблюдения | В отчёте components: Tire 402 361 vertices / 702 558 triangles; Vanguard 852 516 / 1 559 826; оригинальные SHA не изменились |
-| GitHub | `main` опубликован до `615cbff`; [Windows CI run 43820389300](https://github.com/ConstantineJJ/Asset-Doctor-RT-PT-2.0/actions/runs/43820389300) проверен при составлении документа: completed/success. Это не hosted GPU acceptance |
+| GitHub | Для предыдущего кода `615cbff` [Windows CI run 43820389300](https://github.com/ConstantineJJ/Asset-Doctor-RT-PT-2.0/actions/runs/43820389300) завершён success. CI нового UV-кода проверяется отдельно; это не hosted GPU acceptance |
 
-Это результаты предшествующей реализации и её отчётов, сверенные с текущим кодом. При составлении этого документа продуктовый код не менялся, тесты и GPU-прогоны заново не запускались. Единичные timings тяжёлых моделей не являются benchmark; размер GLB не измеряет пик памяти. Синхронизационная validation запрашивалась переменной окружения, её фактическая настройка отдельно не подтверждалась.
+Таблица обновлена после UV-реализации и её проверок, а исторические отчёты сохраняют собственный scope. На текущем этапе Tire: 702 558 triangles / 147 ms / 2 findings; Vanguard: 1 559 826 / 338 ms / 3 findings, из них 32 zero-UV-area triangles. Оригинальные SHA не изменились, обе модели проходят import/rejected replacement/lifecycle с 0 validation errors. Единичные timings не являются benchmark; размер GLB не измеряет пик памяти. Синхронизационная validation запрашивалась переменной окружения, её фактическая настройка отдельно не подтверждалась. Подробности: [UV report](UV_DIAGNOSTICS_REPORT_2026-11-16.md).
 
 ### 8.2. Обязательная готовность каждой следующей функции
 
@@ -362,7 +362,7 @@
 - **E2** — [desktop/UI](../crates/ad-desktop/src/viewer_ui.rs), [camera](../crates/ad-desktop/src/camera.rs), [input/lifecycle](../crates/ad-desktop/src/main.rs), [UI report](VIEWER_UI_REPORT_2026-11-15.md).
 - **E3** — [document](../crates/ad-document/src/lib.rs), [UV data](../crates/ad-document/src/uv.rs), [import worker](../crates/ad-desktop/src/imports.rs).
 - **E4** — [material lighting](../crates/ad-render-vulkan/src/lighting.rs), [base color](BASE_COLOR_REPORT_2026-11-15.md), [PBR](DIRECT_PBR_REPORT_2026-11-15.md), [MR](MR_TEXTURE_REPORT_2026-11-15.md), [normal](NORMAL_TEXTURE_REPORT_2026-11-15.md), [AO](OCCLUSION_REPORT_2026-11-15.md), [emission](EMISSION_REPORT_2026-11-15.md).
-- **E5** — [analysis](../crates/ad-analysis/src/lib.rs), [coverage](../crates/ad-analysis/src/coverage.rs), [diagnostic UI](../crates/ad-desktop/src/diagnostic_ui.rs), [components report](COMPONENTS_REPORT_2026-11-16.md), [edge report](EDGE_DIAGNOSTICS_REPORT_2026-11-16.md).
+- **E5** — [analysis](../crates/ad-analysis/src/lib.rs), [coverage](../crates/ad-analysis/src/coverage.rs), [diagnostic UI](../crates/ad-desktop/src/diagnostic_ui.rs), [components report](COMPONENTS_REPORT_2026-11-16.md), [UV report](UV_DIAGNOSTICS_REPORT_2026-11-16.md), [edge report](EDGE_DIAGNOSTICS_REPORT_2026-11-16.md).
 - **E6** — [исходный каталог функций](../reference/LEGACY_FEATURE_CATALOG.md), [owner requirements](../reference/OWNER_REQUESTS_BACKLOG.md), [audit gaps](../reference/LEGACY_GAP_REGISTER.md), [product spec](PRODUCT_SPEC.md). Для незавершённых строк это источник обязательства, не доказательство наличия инструмента.
 - **E7** — [Vulkan foundation](NATIVE_FOUNDATION_REPORT_2026-11-15.md), [CI](../.github/workflows/ci.yml), [resource policy](RESOURCE_BUDGETS.md), [dependency register](../DEPENDENCIES.md).
 
@@ -400,7 +400,7 @@
 | DIAG-01 | Целостность буферов и skeleton references | Частично | Importer проверяет container/accessors/indices/finite data; это admission, а не полный integrity report | Полный набор findings, malformed skin/reference cases и rescan | E1,E3 |
 | DIAG-02 | Сводка геометрии, дерево, bounds | Частично | Counts/bounds статической сцены, nodes, source size, texture/mip сведения | Skinned и прочие новые типы данных, полная классификация/паритет сводки | E2,E3 |
 | DIAG-03 | Топология | Частично | G001–G003, G006–G008: площадь, oriented duplicates, unused vertices, рёбра/группы по индексам | Полный набор ориентации/связности/профильных проверок; нет welding или full-manifold заключения | E5 |
-| DIAG-04 | Normals и UV diagnostics | Частично | G004/G005 missing/zero normals; source UV inventory сохранён | G009–G011 ещё нет; нет общей orientation/UV-overlap/islands/density диагностики | E3,E5 |
+| DIAG-04 | Normals и UV diagnostics | Частично | G004/G005 missing/zero normals; source UV inventory и G009/G010/G011 по всем каналам; checked/N-A/omitted coverage | Общая orientation/UV-overlap/islands/density диагностика и инструменты пока не выполнены | E3,E5 |
 | DIAG-05 | Диагностика материалов/текстур | Не реализовано | Importer валидирует поддержанные карты/параметры, но отдельного диагностического инструмента нет | Findings о материалах/текстурах с evidence, профилями и rescan | E1,E6 |
 | DIAG-06 | Скелет и skin weights | Не реализовано | Skinned input отклоняется | Bones/bind/influences/sums/indices/unused bones и типизированный отчёт | E6 |
 | DIAG-07 | Диагностика анимации | Не реализовано | Animated input отклоняется | Tracks/keys/timestamps/duration/targets/root motion и профильные рекомендации | E6 |
@@ -458,7 +458,7 @@
 
 Следующая рекомендуемая последовательность без изменения общей цели:
 
-1. Завершить G009–G011 и их source/coverage/UI/native проверки по ADR-0025.
+1. **Завершено:** G009–G011 и source/coverage/UI/native проверки по ADR-0025; следующая работа начинается с пункта 2.
 2. Закрыть contracts и аудит первого безопасного edit/repair, общей истории и статического export. Не расширять бесконечно только просмотрщик, оставляя основные инструменты без движения.
 3. Довести минимальный сквозной сценарий: известный дефект → preview → apply → verification → Undo/Redo → Save Copy → fresh reimport. Только после него считать первый Heal перенесённым.
 4. Последовательно расширять diagnostics/Heal и поддержанные форматы; затем skin/manual Rig/animation, auto-Compare и полный UX согласно зависимостям P1–P9.

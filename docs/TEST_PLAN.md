@@ -1,5 +1,15 @@
 # Verification plan
 
+## Current UV diagnostic increment — 2026-11-16
+
+Codeff355f9:113workspace tests and Windows/native verification PASS within
+ADR-0025scope. Source UV0absence, per-channel exact area/range, explicit N-A,
+atomic output, partial results, typed samples and deterministic mid-scan cancel
+are covered. Full/partial compact UI, malformed unused-UV replacement, lifecycle
+and heavy source preservation verified. UV_DIAGNOSTICS_REPORT_2026-11-16.md records
+evidence and limits. Older numbered test counts below are historical increments.
+Remote CI through615cbff also passed; local GPU evidence remains separate.
+
 ## Bootstrap
 
 - Unit: 6 tests covering zero-size refusal, extent negotiation, image-count bounds

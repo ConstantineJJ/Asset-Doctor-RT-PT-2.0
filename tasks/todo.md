@@ -4,10 +4,10 @@ Owner authorizes autonomous development and runtime/visual/input verification;
 per-increment owner acceptance is not a gate. Keep source/audit/verification limits explicit.
 
 Full roadmap and all76function/request statuses:
-[MASTER_PLAN_AND_STATUS_RU.md](../docs/MASTER_PLAN_AND_STATUS_RU.md), code615cbff.
+[MASTER_PLAN_AND_STATUS_RU.md](../docs/MASTER_PLAN_AND_STATUS_RU.md), codeff355f9.
 
 - [x] UV-data: Preserve all declared source TEXCOORD_n (up to8), explicit material role IDs, integer/finite/count/binding validation and decoded admission;99tests and material native regressions PASS.
-- [ ] UV-analysis: Implement ADR-0025 G009/G010/G011, multichannel result admission, explicit not-applicable coverage and native UI/limits checks. Inventory alone is not UV diagnosis.
+- [x] UV-analysis: ADR-0025 G009/G010/G011, atomic multichannel result admission, checked/not-applicable/omitted coverage;113tests/native full/partial UI/limits/heavy-model regressions PASS. No full UV-quality/edit/repair claim. See UV_DIAGNOSTICS_REPORT_2026-11-16.md.
 - [ ] Next product milestone after UV: accepted command/history/static-export/first-Heal contracts and end-to-end preview→apply→verify→Undo→Save Copy→reimport. Full remaining scope is in master plan P1–P12.
 
 - [x] A1a: Initial source inventory: 66 functions/scenarios, all 10 REQ IDs, exact evidence and source hashes. Verify: tools/audit_legacy.py. Full semantic UI/native audit remains open below.

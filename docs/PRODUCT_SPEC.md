@@ -59,13 +59,15 @@ ADR-0023 adds indexed edge incidence and per-rule coverage, with algorithm3 type
 edge evidence. ADR-0024 adds vertex-index connected components and algorithm4
 typed component summaries. ADR-0025's data increment preserves all declared source
 UV channels (up to8), including unused ones, with explicit material role IDs and
-decoded admission. G009–G011 remain planned. Current code615cbff has99tests;
+decoded admission. Algorithm5 adds G009–G011 for missingUV0/exactUVarea/outside0..1,
+atomic multichannel findings and checked/not-applicable/omitted coverage.
+Current codeff355f9 has113tests;
 native static/textured/PBR/MR/normal/AO import,
 rejected replacement and resize/minimize/restore/close smoke pass with validation.
-Read-only diagnostics currently cover eight source geometry rules only.
-Full UI/parity, topology/UV/material/profile diagnostics, repair, rig/animation, export, Mikk fidelity,
+Read-only diagnostics currently cover11source geometry/UVrules.
+Full UI/parity, further topology/UV/material/profile diagnostics, repair, rig/animation, export, Mikk fidelity,
 environment/shadows and RT/PT remain open. Current evidence and limits are in
-COMPONENTS_REPORT_2026-11-16.md. Development/self-verification continues
+UV_DIAGNOSTICS_REPORT_2026-11-16.md. Development/self-verification continues
 autonomously under the owner's instruction, without per-increment owner acceptance.
 Application name includes 2.0; engineering package starts at 0.1.0 to avoid
 confusing this new prototype with Legacy 2.0.14 or a released product.
