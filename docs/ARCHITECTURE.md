@@ -112,3 +112,10 @@ per-component allocation is retained. Algorithm4 adds typed minimum-index/member
 triangle summaries and G008coverage, including after edge-resource refusal.
 Connectivity is through shared vertex indices, not positional welding, edge-only
 surface connectivity or physical-part identification.
+
+ADR-0025's data increment replaces authoritative per-material-role UV arrays with
+up to8sorted source TEXCOORD_n channels and explicit role-selected channel IDs.
+Unselected channels are preserved and validated; decoded admission accounts for
+their storage before allocation. Snapshot/GPU still derives the five role streams
+at96bytes/vertex. The three proposed UV diagnostic rules are not implemented yet.
+Current implemented/planned boundaries: MASTER_PLAN_AND_STATUS_RU.md.

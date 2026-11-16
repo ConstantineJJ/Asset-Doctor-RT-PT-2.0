@@ -1,5 +1,13 @@
 # Initial implementation plan — 2026-11-15
 
+## Consolidated plan and status — 2026-11-16
+
+The complete current roadmap is [MASTER_PLAN_AND_STATUS_RU.md](../docs/MASTER_PLAN_AND_STATUS_RU.md).
+It retains the original stages0–11 and all66Legacy/10owner IDs, records implemented
+scope against code615cbff, and defines remaining acceptance/dependencies. Read it
+with [todo.md](todo.md) before continuing. The initial startup plan below is kept
+as history; it is not the complete long-term product backlog.
+
 The owner authorizes starting a new Windows Rust/Vulkan application in this repository. The supplied Get Starting document is a requirements source; its embedded agent prompt is reference text, not an independent instruction. Current user paths override its older path placeholders.
 
 ## Ordered increments

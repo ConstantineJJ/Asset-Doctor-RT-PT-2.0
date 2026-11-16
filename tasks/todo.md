@@ -3,6 +3,13 @@
 Owner authorizes autonomous development and runtime/visual/input verification;
 per-increment owner acceptance is not a gate. Keep source/audit/verification limits explicit.
 
+Full roadmap and all76function/request statuses:
+[MASTER_PLAN_AND_STATUS_RU.md](../docs/MASTER_PLAN_AND_STATUS_RU.md), code615cbff.
+
+- [x] UV-data: Preserve all declared source TEXCOORD_n (up to8), explicit material role IDs, integer/finite/count/binding validation and decoded admission;99tests and material native regressions PASS.
+- [ ] UV-analysis: Implement ADR-0025 G009/G010/G011, multichannel result admission, explicit not-applicable coverage and native UI/limits checks. Inventory alone is not UV diagnosis.
+- [ ] Next product milestone after UV: accepted command/history/static-export/first-Heal contracts and end-to-end preview→apply→verify→Undo→Save Copy→reimport. Full remaining scope is in master plan P1–P12.
+
 - [x] A1a: Initial source inventory: 66 functions/scenarios, all 10 REQ IDs, exact evidence and source hashes. Verify: tools/audit_legacy.py. Full semantic UI/native audit remains open below.
 - [ ] A1b: Map all 197 UI declaration sites; classify 110 state candidates; complete parameter/error/native workflow acceptance. See reference/LEGACY_GAP_REGISTER.md.
 - [x] A2a: Independent workspace, icon assets, dependency register, Windows CI definition; portable GNU fmt/clippy/test/executable build passed.
@@ -12,7 +19,7 @@ per-increment owner acceptance is not a gate. Keep source/audit/verification lim
 - [x] A3b: Validation-enabled physical-device probe PASS with installed SDK layers.
 - [ ] A3c: Unavailable-loader, unsupported GPU/features and device-lost fault injection remain unverified.
 - [x] A4: Native window/clear/icon slice: debug and release smoke, 15 presents + resize/minimize/restore/real WM_CLOSE, 0 validation errors with normal RTSS enabled. CUA inspection/maximize/Alt+F4 also passed. See native report/ADR-0012.
-- [ ] Gate: Close audit mapping/native behavior gaps and decide ADR-0002/4/5/6/7 before product logic.
+- [ ] Full audit/parity gate remains OPEN: scoped static/material/analysis audits and ADRs permit only their defined subsets; they do not complete all UI/settings/native mapping. Close operation/fidelity contracts and fixtures before Heal/Rig/Export.
 - [x] Static product slice: bounded GLB import → independent document → Vulkan raster view with authored synthetic fixtures, cancellation/resource admission. Export/roundtrip remains future work.
 - [x] B0: Review static-import behavior and decide bounded contracts (SLICE_01_IMPORT_AUDIT, ADR-0013). Broader parity gate remains open.
 - [x] B1: Independent document/snapshot and bounded GLB parser with failure/cancel/source-preservation tests.

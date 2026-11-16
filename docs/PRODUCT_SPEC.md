@@ -6,6 +6,10 @@ Vulkan renders local GPU data. Source root: Main; parent: working area.
 
 ## Confirmed scope
 
+The consolidated original roadmap and current status of all76catalog/request
+rows are maintained in [MASTER_PLAN_AND_STATUS_RU.md](MASTER_PLAN_AND_STATUS_RU.md).
+It distinguishes working subsets, remaining functions and acceptance criteria.
+
 Carry user functions and useful behavior from Legacy, never its architecture or
 implementation. Legacy remains untouched. Its React/Three.js/Tauri code is not a
 dependency, scaffold, porting template or source of runtime types.
@@ -53,7 +57,10 @@ only to approximate fill. ADR-0020 separates frame/material bindings and ADR-002
 adds core emission with SRGB maps. ADR-0022 adds bounded source geometry findings in independent ad-analysis.
 ADR-0023 adds indexed edge incidence and per-rule coverage, with algorithm3 typed
 edge evidence. ADR-0024 adds vertex-index connected components and algorithm4
-typed component summaries. Final workspace has94 tests; native static/textured/PBR/MR/normal/AO import,
+typed component summaries. ADR-0025's data increment preserves all declared source
+UV channels (up to8), including unused ones, with explicit material role IDs and
+decoded admission. G009–G011 remain planned. Current code615cbff has99tests;
+native static/textured/PBR/MR/normal/AO import,
 rejected replacement and resize/minimize/restore/close smoke pass with validation.
 Read-only diagnostics currently cover eight source geometry rules only.
 Full UI/parity, topology/UV/material/profile diagnostics, repair, rig/animation, export, Mikk fidelity,

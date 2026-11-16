@@ -4,6 +4,11 @@
 
 > **Status:** Native Vulkan GLB viewer with Open/Fit, scene tree, summary and optional direct PBR with color/MR/normal/occlusion/emission maps and authored normals/tangents. Read-only source geometry diagnostics are available. Editing, environment, rig/animation, RT and PT remain planned. This is an engineering prototype.
 
+**Full plan and implementation status (Russian, 2026-11-16):**
+[MASTER_PLAN_AND_STATUS_RU.md](docs/MASTER_PLAN_AND_STATUS_RU.md) covers all original
+stages, all66Legacy scenarios, all10owner requirements, completed subsets and
+remaining acceptance criteria. It is the consolidated progress document.
+
 ## Planned Features
 
 - **3D Viewer:** GLB/glTF import, PBR materials, lighting, cameras, scene controls, and multi-model comparison.

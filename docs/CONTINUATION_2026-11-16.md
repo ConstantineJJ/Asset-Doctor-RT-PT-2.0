@@ -1,5 +1,11 @@
 # Development checkpoint — 2026-11-16
 
+> Historical checkpoint through2c12381. Superseded for continuation by
+> [MASTER_PLAN_AND_STATUS_RU.md](MASTER_PLAN_AND_STATUS_RU.md) and Project-pulse.
+> Later owner authorization requested full commit/push; main is published through
+>615cbff, source UV inventory is implemented and99tests passed. The older no-push,
+>94-test and next-UV-inventory statements below describe this checkpoint only.
+
 Owner authorizes autonomous development and computer use without manual acceptance.
 No push/release authorized. Models, Legacy and supplied Arc-XRay remain read-only.
 

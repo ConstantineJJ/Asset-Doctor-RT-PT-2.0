@@ -1,5 +1,11 @@
 # Project pulse
 
+## 2026-11-16 — Consolidated original roadmap and status
+
+- Owner requested a complete plan and an explicit account of which planned functions are implemented. Added docs/MASTER_PLAN_AND_STATUS_RU.md in Russian, anchored to code615cbff and the original Get Starting §§2.4/5–8: all12original stages,66Legacy scenarios,10owner requests, detailed remaining dependencies/acceptance, evidence/limits and near-term sequence. No product code changed or new runtime/tests claimed.
+- Synchronized all76parity rows with current implementation scope and remaining work; retained Legacy observations and acceptance text. Added dated Russian scope/evidence columns. Counts:4implemented-scoped,19partial,50not-started,3owner-changed UX rows. These are row classifications, not a completion percentage; admission validation/fallback/UV inventory are explicitly separated from full diagnostics/repair.
+- Linked the master plan from README/tasks/spec; corrected current test count to99, recorded UV data without claiming G009–G011, and labelled the old continuation checkpoint historical. Full audit gate stays open; Heal/Rig/Animation/Undo/Export/auto-Compare/settings/recovery/RT/PT remain in plan. Consistency checks PASS:12stages, all76unique IDs, exact CSV/Markdown status/scope/evidence match, preserved original observation/acceptance fields, all local links/anchors resolve, original Get Starting SHA unchanged, git diff check. No new feature development or repeated GPU/tests during this documentation request. Prior code615cbff Windows CI run43820389300 now verified success.
+
 ## 2026-11-16 — Source UV inventory and GitHub checkpoint
 
 - Owner explicitly requested all commits and a full push. Sent the accumulated38commits through2764632 to origin/main; GitHub Actions run43817721581 completed successfully. Publication does not certify hosted Vulkan presentation.
