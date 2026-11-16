@@ -54,6 +54,12 @@
     "origin": "Project-authored numeric test geometry and PNG; no external content"
   },
   {
+    "file": "Components_Checker.glb",
+    "bytes": 1704,
+    "sha256": "0894a055f96c6f4c2cb7d2a3617b66b065051c48705ecff1372a09b3237f694c",
+    "origin": "Project-authored numeric connected-component/index data; no external content"
+  },
+  {
     "file": "Edge_Topology.glb",
     "bytes": 3064,
     "sha256": "27c06870e0b24f453fb7d80aabebe546495fb06d45b47ecaccbfeea6ac819516",

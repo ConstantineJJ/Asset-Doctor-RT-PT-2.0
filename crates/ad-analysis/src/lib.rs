@@ -1,4 +1,5 @@
 //! Bounded read-only diagnostics over immutable source primitives, never GPU data.
+mod components;
 mod coverage;
 mod edges;
 use ad_document::{
@@ -9,16 +10,17 @@ pub use coverage::{Coverage, LimitReason};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(usize)]
 pub enum Code {
-    ZeroArea,
-    DuplicateTriangle,
-    UnusedVertex,
-    MissingNormals,
-    ZeroNormal,
-    BoundaryEdge,
-    HighIncidenceEdge,
+    ZeroArea = 0,
+    DuplicateTriangle = 1,
+    UnusedVertex = 2,
+    MissingNormals = 3,
+    ZeroNormal = 4,
+    BoundaryEdge = 5,
+    HighIncidenceEdge = 6,
+    DisconnectedComponents = 7,
 }
 impl Code {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::ZeroArea,
         Self::DuplicateTriangle,
         Self::UnusedVertex,
@@ -26,9 +28,10 @@ impl Code {
         Self::ZeroNormal,
         Self::BoundaryEdge,
         Self::HighIncidenceEdge,
+        Self::DisconnectedComponents,
     ];
 }
-pub const ALGORITHM_VERSION: u32 = 3;
+pub const ALGORITHM_VERSION: u32 = 4;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Severity {
     Information,
@@ -44,6 +47,13 @@ pub enum Element {
 pub enum Samples {
     Indices { element: Element, indices: Vec<u32> },
     Edges(Vec<[u32; 2]>),
+    Components(Vec<ComponentSample>),
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ComponentSample {
+    pub representative_vertex: u32,
+    pub vertices: u32,
+    pub triangles: u32,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub struct Finding {
@@ -60,7 +70,7 @@ pub struct Report {
     pub primitives: usize,
     pub triangles: usize,
     pub findings: Vec<Finding>,
-    pub coverage: [Coverage; 7],
+    pub coverage: [Coverage; 8],
 }
 impl Report {
     pub fn matches(&self, document: &AssetDocument) -> bool {
@@ -89,6 +99,10 @@ fn budget() -> AssetError {
         ErrorCode::ResourceLimit,
         "Geometry analysis exceeds its working/result budget",
     )
+}
+
+fn eligible_triangle(face: &[u32; 3]) -> bool {
+    face[0] != face[1] && face[0] != face[2] && face[1] != face[2]
 }
 
 #[derive(Default)]
@@ -243,6 +257,7 @@ pub fn analyze(
         }
     }
     edges::analyze(document, &mut report, limits, cancel)?;
+    components::analyze(document, &mut report, limits, cancel)?;
     cancel.check()?;
     Ok(report)
 }

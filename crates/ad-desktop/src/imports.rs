@@ -208,13 +208,22 @@ fn prepare_with_analysis_limits(
     }
     if let Ok(report) = &diagnostics {
         for c in &report.coverage {
+            let (entries, count) = report
+                .findings
+                .iter()
+                .filter(|f| f.code == c.code)
+                .fold((0usize, 0usize), |(entries, count), f| {
+                    (entries + 1, count + f.count)
+                });
             eprintln!(
-                "analysis_coverage rule=G{:03} completed_primitives={} omitted_primitives={} excluded_triangles={} reason={:?}",
+                "analysis_coverage rule=G{:03} completed_primitives={} omitted_primitives={} excluded_triangles={} reason={:?} retained_findings={} retained_count={}",
                 c.code as usize + 1,
                 c.completed_primitives,
                 c.omitted_primitives,
                 c.excluded_triangles,
-                c.reason
+                c.reason,
+                entries,
+                count
             );
         }
     }
@@ -327,7 +336,7 @@ mod tests {
         assert!(report.is_complete());
         assert_eq!(
             (report.primitives, report.triangles, report.findings.len()),
-            (7, 13, 16)
+            (7, 13, 17)
         );
         assert_eq!(asset.snapshot.indices.len() / 3, 16);
         let count = |code| {
@@ -347,6 +356,44 @@ mod tests {
         );
         assert_eq!(
             report.coverage[ad_analysis::Code::BoundaryEdge as usize].excluded_triangles,
+            1
+        );
+    }
+    #[test]
+    fn component_fixture_counts_source_groups_and_typed_sizes_without_instances() {
+        let request = Request {
+            ticket: 1,
+            path: fixture("Components_Checker.glb"),
+            cancel: Cancellation::default(),
+        };
+        let asset = prepare(&request).unwrap();
+        let report = asset.diagnostics.unwrap();
+        assert!(report.is_complete());
+        assert_eq!(
+            (report.primitives, report.triangles, report.findings.len()),
+            (3, 7, 8)
+        );
+        assert_eq!(asset.snapshot.indices.len() / 3, 11);
+        let f = report
+            .findings
+            .iter()
+            .find(|f| f.code == ad_analysis::Code::DisconnectedComponents)
+            .unwrap();
+        assert_eq!((f.mesh, f.count), (ad_document::MeshId(0), 4));
+        assert_eq!(
+            f.samples,
+            ad_analysis::Samples::Components(
+                (0..4)
+                    .map(|i| ad_analysis::ComponentSample {
+                        representative_vertex: i * 3,
+                        vertices: 3,
+                        triangles: 1
+                    })
+                    .collect()
+            )
+        );
+        assert_eq!(
+            report.coverage[ad_analysis::Code::DisconnectedComponents as usize].excluded_triangles,
             1
         );
     }

@@ -347,6 +347,11 @@ fn edge_scratch_and_result_refusals_preserve_earlier_core_results() {
             .any(|f| f.code == Code::MissingNormals)
     );
     assert!(report.coverage[..5].iter().all(Coverage::is_complete));
+    assert_eq!(
+        report.coverage[Code::DisconnectedComponents as usize].completed_primitives,
+        1
+    );
+    assert!(report.coverage[Code::DisconnectedComponents as usize].is_complete());
     for code in [Code::BoundaryEdge, Code::HighIncidenceEdge] {
         let c = &report.coverage[code as usize];
         assert_eq!(
@@ -475,4 +480,232 @@ fn all_repeated_index_faces_have_complete_empty_edge_results_with_exclusions() {
         assert_eq!(c.completed_primitives, 1);
         assert_eq!(c.excluded_triangles, 2);
     }
+}
+
+#[test]
+fn components_connect_through_a_vertex_but_never_through_coincident_positions() {
+    let points = vec![
+        [0., 0., 0.],
+        [1., 0., 0.],
+        [0., 1., 0.],
+        [1., 1., 0.],
+        [0., 0., 1.],
+        [0., 0., 0.],
+        [1., 0., 0.],
+        [0., 1., 0.],
+    ];
+    let doc = from_primitives(vec![primitive(
+        points,
+        false,
+        vec![0, 1, 2, 2, 3, 4, 5, 6, 7],
+    )]);
+    let report = analyze(&doc, Limits::default(), &Cancellation::default()).unwrap();
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.code == Code::DisconnectedComponents)
+        .unwrap();
+    assert_eq!(finding.severity, Severity::Information);
+    assert_eq!(finding.count, 2);
+    assert_eq!(
+        finding.samples,
+        Samples::Components(vec![
+            ComponentSample {
+                representative_vertex: 0,
+                vertices: 5,
+                triangles: 2
+            },
+            ComponentSample {
+                representative_vertex: 5,
+                vertices: 3,
+                triangles: 1
+            },
+        ])
+    );
+    assert!(report.is_complete());
+}
+
+#[test]
+fn component_budget_refusal_keeps_all_previous_rule_results() {
+    let points = (0..20).map(|i| [i as f32, 0., 0.]).collect();
+    let doc = from_primitives(vec![primitive(points, false, vec![0, 1, 2])]);
+    for (scratch, complete) in [(239, false), (240, true)] {
+        let report = analyze(
+            &doc,
+            Limits {
+                scratch_bytes: scratch,
+                ..Default::default()
+            },
+            &Cancellation::default(),
+        )
+        .unwrap();
+        assert_eq!(report.is_complete(), complete);
+        assert!(report.coverage[..7].iter().all(Coverage::is_complete));
+        let coverage = &report.coverage[Code::DisconnectedComponents as usize];
+        assert_eq!(
+            coverage.reason,
+            if complete {
+                None
+            } else {
+                Some(LimitReason::Scratch)
+            }
+        );
+        assert!(report.findings.iter().any(|f| f.code == Code::ZeroArea));
+        assert!(report.findings.iter().any(|f| f.code == Code::BoundaryEdge));
+    }
+}
+
+#[test]
+fn component_representatives_and_sizes_do_not_depend_on_union_root_or_face_order() {
+    let expected = Samples::Components(vec![
+        ComponentSample {
+            representative_vertex: 0,
+            vertices: 5,
+            triangles: 2,
+        },
+        ComponentSample {
+            representative_vertex: 2,
+            vertices: 3,
+            triangles: 1,
+        },
+    ]);
+    for indices in [
+        vec![3, 4, 5, 5, 1, 0, 6, 7, 2],
+        vec![6, 7, 2, 5, 1, 0, 3, 4, 5],
+    ] {
+        let doc = from_primitives(vec![primitive(
+            (0..8).map(|i| [i as f32, 0., 0.]).collect(),
+            false,
+            indices,
+        )]);
+        let report = analyze(&doc, Limits::default(), &Cancellation::default()).unwrap();
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.code == Code::DisconnectedComponents)
+            .unwrap();
+        assert_eq!(finding.samples, expected);
+    }
+}
+
+#[test]
+fn component_counts_ignore_unused_and_excluded_only_vertices_but_keep_collinear_faces() {
+    let points = (0..12).map(|i| [i as f32, 0., 0.]).collect();
+    let doc = from_primitives(vec![primitive(
+        points,
+        false,
+        vec![0, 1, 2, 1, 2, 0, 0, 2, 1, 3, 4, 5, 6, 6, 7],
+    )]);
+    let report = analyze(&doc, Limits::default(), &Cancellation::default()).unwrap();
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.code == Code::DisconnectedComponents)
+        .unwrap();
+    assert_eq!(finding.count, 2);
+    assert_eq!(
+        finding.samples,
+        Samples::Components(vec![
+            ComponentSample {
+                representative_vertex: 0,
+                vertices: 3,
+                triangles: 3
+            },
+            ComponentSample {
+                representative_vertex: 3,
+                vertices: 3,
+                triangles: 1
+            }
+        ])
+    );
+    assert_eq!(
+        report.coverage[Code::DisconnectedComponents as usize].excluded_triangles,
+        1
+    );
+    let unused = report
+        .findings
+        .iter()
+        .find(|f| f.code == Code::UnusedVertex)
+        .unwrap();
+    assert_eq!(unused.count, 4); //8..11;6/7 are source-referenced but not eligible components.
+}
+
+#[test]
+fn component_samples_are_bounded_and_result_refusal_preserves_earlier_findings() {
+    let points = (0..60).map(|i| [i as f32, 0., 0.]).collect();
+    let indices = (0..60).collect();
+    let doc = from_primitives(vec![primitive(points, false, indices)]);
+    let report = analyze(&doc, Limits::default(), &Cancellation::default()).unwrap();
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.code == Code::DisconnectedComponents)
+        .unwrap();
+    assert_eq!(finding.count, 20);
+    let Samples::Components(samples) = &finding.samples else {
+        panic!("Typed components expected")
+    };
+    assert_eq!(samples.len(), 16);
+    assert_eq!(samples[15].representative_vertex, 45);
+    // Zero-area, missing normals and boundaries precede G008; refuse only its result.
+    let partial = analyze(
+        &doc,
+        Limits {
+            findings: 3,
+            ..Default::default()
+        },
+        &Cancellation::default(),
+    )
+    .unwrap();
+    assert_eq!(partial.findings.len(), 3);
+    assert_eq!(
+        partial.coverage[Code::DisconnectedComponents as usize].reason,
+        Some(LimitReason::Findings)
+    );
+}
+
+#[test]
+fn components_keep_inactive_primitive_scope_and_do_not_multiply_instances() {
+    let mesh = || {
+        primitive(
+            (0..6).map(|i| [i as f32, 0., 0.]).collect(),
+            false,
+            vec![0, 1, 2, 3, 4, 5],
+        )
+    };
+    let doc = from_primitives(vec![mesh(), mesh()]);
+    let report = analyze(&doc, Limits::default(), &Cancellation::default()).unwrap();
+    let findings: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|f| f.code == Code::DisconnectedComponents)
+        .collect();
+    assert_eq!(findings.len(), 2);
+    assert_eq!((findings[0].mesh, findings[1].mesh), (MeshId(0), MeshId(1)));
+    assert!(findings.iter().all(|f| f.count == 2));
+}
+
+#[test]
+fn all_excluded_components_complete_without_allocating_a_forest() {
+    let doc = topology(&[&[0, 0, 1, 1, 1, 2]]);
+    let report = analyze(
+        &doc,
+        Limits {
+            scratch_bytes: 37,
+            ..Default::default()
+        },
+        &Cancellation::default(),
+    )
+    .unwrap();
+    assert!(report.is_complete());
+    assert_eq!(
+        report.coverage[Code::DisconnectedComponents as usize].excluded_triangles,
+        2
+    );
+    assert!(
+        !report
+            .findings
+            .iter()
+            .any(|f| f.code == Code::DisconnectedComponents)
+    );
 }

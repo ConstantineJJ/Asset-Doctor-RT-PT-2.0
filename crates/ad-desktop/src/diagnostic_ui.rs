@@ -9,7 +9,7 @@ pub fn show(
 ) {
     egui::Window::new("Диагностика геометрии").open(open).default_size([620.,420.]).show(context,|ui| {
                 ui.label("Исходные примитивы, включая неактивные; каждый проверен один раз. Экземпляры и преобразования просмотра не учитываются.");
-                ui.weak("Проверки: площадь, дубли, вершины, нормали и рёбра по индексам. Открытые края могут быть намеренными. Ремонт не выполняется.");
+                ui.weak("Проверки: площадь, дубли, вершины, нормали, рёбра и связность по индексам. Границы и группы могут быть намеренными. Ремонт не выполняется.");
                 ui.separator();
                 match asset.map(|a|(&a.document,&a.diagnostics)) {
                     None=>{ui.label("Откройте модель для анализа.");}
@@ -37,6 +37,7 @@ pub fn show(
                                         ad_analysis::Code::ZeroNormal=>("G005","Нулевые нормали"),
                                         ad_analysis::Code::BoundaryEdge=>("G006","Граничные рёбра · могут быть намеренными"),
                                         ad_analysis::Code::HighIncidenceEdge=>("G007","Рёбра с более чем двумя гранями"),
+                                        ad_analysis::Code::DisconnectedComponents=>("G008","Группы связности по индексам · могут быть намеренными"),
                                     };
                                     let severity=if finding.severity==ad_analysis::Severity::Information {"Сведения"} else {"Замечание"};
                                     let title=format!("{code} · {severity} · {label}");
@@ -46,6 +47,7 @@ pub fn show(
                                     let samples=match &finding.samples {
                                         ad_analysis::Samples::Indices {element,indices}=>format!("{}: {indices:?} (с нуля, до 16 примеров)",match element {ad_analysis::Element::Vertex=>"Вершины",ad_analysis::Element::Triangle=>"Треугольники"}),
                                         ad_analysis::Samples::Edges(pairs)=>format!("Рёбра: {} (пары вершин, с нуля)",pairs.iter().map(|p|format!("{}–{}",p[0],p[1])).collect::<Vec<_>>().join(", ")),
+                                        ad_analysis::Samples::Components(groups)=>format!("Группы: {}",groups.iter().map(|g|format!("v{} (вершин {}, граней {})",g.representative_vertex,g.vertices,g.triangles)).collect::<Vec<_>>().join("; ")),
                                     };
                                     ui.add(egui::Label::new(&samples).truncate()).on_hover_text(samples);
                                 }); });
@@ -55,7 +57,7 @@ pub fn show(
                     Some((_,Err(error)))=>{ui.colored_label(Color32::from_rgb(255,190,120),format!("Анализ не завершён: {}. Модель доступна для просмотра.",error.message));}
                     Some((_,Ok(_)))=>{ui.label("Результат анализа устарел и скрыт.");}
                 }
-                ui.separator();ui.weak("Рёбра сопоставлены только по индексам внутри примитива; совпадающие позиции не объединяются. Грани с повторными индексами исключены из проверки рёбер. Связность, ориентация оболочек, UV, материалы и скелет пока не проверяются.");
+                ui.separator();ui.weak("Рёбра и связность — по индексам внутри примитива, без склеивания позиций. Повторные индексы исключены. Общая вершина объединяет группы; это не число физических деталей. Ориентация, UV, материалы и скелет пока не проверяются.");
             });
 }
 

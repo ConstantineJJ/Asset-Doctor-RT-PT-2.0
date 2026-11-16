@@ -1,6 +1,6 @@
 use crate::{
     AssetDocument, AssetResult, Cancellation, Code, Finding, LimitReason, Limits, MeshId, Report,
-    Samples, Severity, budget,
+    Samples, Severity, budget, eligible_triangle,
 };
 
 #[repr(C)]
@@ -43,9 +43,6 @@ impl Tally {
         })
     }
 }
-fn eligible(face: &[u32; 3]) -> bool {
-    face[0] != face[1] && face[0] != face[2] && face[1] != face[2]
-}
 fn omit(report: &mut Report, mesh: MeshId, reason: LimitReason) {
     for code in EDGE_CODES {
         report.omit(code, mesh, reason);
@@ -73,7 +70,7 @@ pub(crate) fn analyze(
             if i % 1024 == 0 {
                 cancel.check()?;
             }
-            if eligible(face) {
+            if eligible_triangle(face) {
                 count += 1;
             } else {
                 excluded += 1;
@@ -96,7 +93,7 @@ pub(crate) fn analyze(
             if i % 1024 == 0 {
                 cancel.check()?;
             }
-            if !eligible(face) {
+            if !eligible_triangle(face) {
                 continue;
             }
             let [a, b, c] = *face;

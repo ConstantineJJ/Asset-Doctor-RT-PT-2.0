@@ -1,6 +1,6 @@
 param(
     [ValidateSet('debug','release')][string]$Configuration='release',
-    [ValidateSet('static','color','pbr','mr','normal','ao','emission','geometry','edges','edge-limit')][string]$Scene='static',
+    [ValidateSet('static','color','pbr','mr','normal','ao','emission','geometry','edges','edge-limit','components')][string]$Scene='static',
     [switch]$Pbr,
     [switch]$NoMrMaps,
     [switch]$NoNormalMaps,
@@ -12,7 +12,7 @@ $ErrorActionPreference='Stop'
 $repo=Split-Path $PSScriptRoot -Parent
 $exe=Join-Path $repo "target\$Configuration\AssetDoctorRTPT.exe"
 if (!(Test-Path -LiteralPath $exe)) { throw 'Build the desktop executable first.' }
-$good=Join-Path $repo $(switch($Scene) {'color' {'tests\fixtures\Color_Checker.glb'} 'pbr' {'tests\fixtures\Pbr_Factors.glb'} 'mr' {'tests\fixtures\MR_Checker.glb'} 'normal' {'tests\fixtures\Normal_Checker.glb'} 'ao' {'tests\fixtures\AO_Checker.glb'} 'emission' {'tests\fixtures\Emission_Checker.glb'} 'geometry' {'tests\fixtures\Geometry_Findings.glb'} 'edges' {'tests\fixtures\Edge_Topology.glb'} 'edge-limit' {'artifacts\Edge_Limit.glb'} default {'tests\fixtures\Twin_Cubes.glb'}})
+$good=Join-Path $repo $(switch($Scene) {'color' {'tests\fixtures\Color_Checker.glb'} 'pbr' {'tests\fixtures\Pbr_Factors.glb'} 'mr' {'tests\fixtures\MR_Checker.glb'} 'normal' {'tests\fixtures\Normal_Checker.glb'} 'ao' {'tests\fixtures\AO_Checker.glb'} 'emission' {'tests\fixtures\Emission_Checker.glb'} 'geometry' {'tests\fixtures\Geometry_Findings.glb'} 'edges' {'tests\fixtures\Edge_Topology.glb'} 'components' {'tests\fixtures\Components_Checker.glb'} 'edge-limit' {'artifacts\Edge_Limit.glb'} default {'tests\fixtures\Twin_Cubes.glb'}})
 $bad=Join-Path $repo $(switch($Scene) {'color' {'tests\fixtures\Bad_Image.glb'} 'mr' {'tests\fixtures\Bad_MR_Image.glb'} 'normal' {'tests\fixtures\Bad_Normal_Image.glb'} 'ao' {'tests\fixtures\Bad_AO_Image.glb'} 'emission' {'tests\fixtures\Bad_Emission_Image.glb'} default {'tests\fixtures\Bad_Truncated.glb'}})
 if ($Scene -eq 'edge-limit') {
     python (Join-Path $PSScriptRoot 'make_edge_fixtures.py') --large-refusal
@@ -28,7 +28,7 @@ if ($Scene -eq 'normal') {$suffix='-normal'+$suffix}
 if ($Scene -eq 'ao') {$suffix='-ao'+$suffix}
 if ($Scene -eq 'emission') {$suffix='-emission'+$suffix}
 if ($Scene -eq 'geometry') {$suffix='-geometry'+$suffix}
-if ($Scene -in @('edges','edge-limit')) {$suffix='-'+$Scene+$suffix}
+if ($Scene -in @('edges','edge-limit','components')) {$suffix='-'+$Scene+$suffix}
 if ($Pbr) {$suffix='-pbr'+$suffix}
 if ($NoMrMaps) {$suffix='-no-maps'+$suffix}
 if ($NoNormalMaps) {$suffix='-no-normal'+$suffix}
@@ -60,10 +60,12 @@ if (!$pass -or $log -notmatch 'asset_smoke imported=true mesh_frames=\d+ rejecte
 }
 $expectedAnalysis=if($Scene -eq 'edge-limit'){'partial'}else{'complete'}
 if ($log -notmatch "analysis_$expectedAnalysis document=1 revision=0 primitives=\d+ triangles=\d+ findings=\d+") {throw 'Missing expected diagnostic completion state.'}
-if ($Scene -eq 'edges' -and $log -notmatch 'analysis_complete document=1 revision=0 primitives=7 triangles=13 findings=16') {throw 'Unexpected known edge findings.'}
+if ($Scene -eq 'edges' -and $log -notmatch 'analysis_complete document=1 revision=0 primitives=7 triangles=13 findings=17') {throw 'Unexpected known edge findings.'}
+if ($Scene -eq 'components' -and $log -notmatch 'analysis_complete document=1 revision=0 primitives=3 triangles=7 findings=8') {throw 'Unexpected component findings.'}
+if ($Scene -eq 'components' -and $log -notmatch 'analysis_coverage rule=G008 completed_primitives=3 omitted_primitives=0 excluded_triangles=1 reason=None retained_findings=1 retained_count=4') {throw 'Missing source component count/coverage evidence.'}
 if ($Scene -eq 'edge-limit') {
     if ($log -notmatch 'analysis_partial document=1 revision=0 primitives=1 triangles=2000000 findings=3') {throw 'Missing preserved core findings after edge refusal.'}
-    foreach($rule in @('G001','G002','G003','G004','G005')) {
+    foreach($rule in @('G001','G002','G003','G004','G005','G008')) {
         if ($log -notmatch "analysis_coverage rule=$rule completed_primitives=1 omitted_primitives=0 excluded_triangles=0 reason=None") {throw "Core coverage lost: $rule"}
     }
     foreach($rule in @('G006','G007')) {
