@@ -1,5 +1,14 @@
 # Verification plan
 
+## CPU command/history foundation — 2026-11-16
+
+Code9a8e454:133workspace tests, fmt/clippy/release/dependency gates PASS. Exact
+index changes, monotonic revisions, stale/foreign origin guards, no-op/failed
+branch retention, byte/entry limits, pointer/source sharing, mid-copy cancellation
+and interleaved Undo/Redo verified. Existing viewer UV/normal/empty native
+regressions0validationerrors. This is not desktop edit/Heal/export acceptance.
+COMMAND_HISTORY_REPORT_2026-11-16.md records scope and next contracts.
+
 ## Current UV diagnostic increment — 2026-11-16
 
 Codeff355f9:113workspace tests and Windows/native verification PASS within

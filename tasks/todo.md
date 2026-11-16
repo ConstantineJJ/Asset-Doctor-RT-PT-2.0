@@ -4,11 +4,13 @@ Owner authorizes autonomous development and runtime/visual/input verification;
 per-increment owner acceptance is not a gate. Keep source/audit/verification limits explicit.
 
 Full roadmap and all76function/request statuses:
-[MASTER_PLAN_AND_STATUS_RU.md](../docs/MASTER_PLAN_AND_STATUS_RU.md), codeff355f9.
+[MASTER_PLAN_AND_STATUS_RU.md](../docs/MASTER_PLAN_AND_STATUS_RU.md), code9a8e454.
 
 - [x] UV-data: Preserve all declared source TEXCOORD_n (up to8), explicit material role IDs, integer/finite/count/binding validation and decoded admission;99tests and material native regressions PASS.
 - [x] UV-analysis: ADR-0025 G009/G010/G011, atomic multichannel result admission, checked/not-applicable/omitted coverage;113tests/native full/partial UI/limits/heavy-model regressions PASS. No full UV-quality/edit/repair claim. See UV_DIAGNOSTICS_REPORT_2026-11-16.md.
 - [ ] Next product milestone after UV: accepted command/history/static-export/first-Heal contracts and end-to-end preview→apply→verify→Undo→Save Copy→reimport. Full remaining scope is in master plan P1–P12.
+- [x] Command foundation: ADR-0026/source slice13; guarded explicit triangle-removal proposals, monotonic revisions, bounded linear Undo/Redo and origin/source/attribute preservation.133workspace tests and viewer native regressions PASS. Internal CPU API only; report COMMAND_HISTORY_REPORT_2026-11-16.md.
+- [ ] First user-facing Heal/export: close ADR-0027source mapping/eligibility/roundtrip/write and atomic desktop-publication contracts; implement full preview/apply/verify/Undo/Save Copy workflow. No repair button or writer exists yet.
 
 - [x] A1a: Initial source inventory: 66 functions/scenarios, all 10 REQ IDs, exact evidence and source hashes. Verify: tools/audit_legacy.py. Full semantic UI/native audit remains open below.
 - [ ] A1b: Map all 197 UI declaration sites; classify 110 state candidates; complete parameter/error/native workflow acceptance. See reference/LEGACY_GAP_REGISTER.md.

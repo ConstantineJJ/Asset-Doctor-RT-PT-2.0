@@ -123,3 +123,13 @@ multichannel output. Coverage distinguishes checked/not-applicable/omitted scope
 cooperative cancellation discards partial tallies. No UV working allocation scales
 with vertex/triangle count. Full UV quality/repair remains outside this subset.
 Current implemented/planned boundaries: MASTER_PLAN_AND_STATUS_RU.md.
+
+ADR-0026adds ad-commands as the application-side owner of one fresh-import document
+and bounded linear index-command history. Only ad-document is a runtime dependency;
+no graphics, OS/file IO or repair planner. The document owns private monotonic
+revision/origin and validated triangle-removal/exchange operations; history owns
+alternate index Vecs and state/cursor. All attributes/source/images remain shared
+without whole-document clones. Entry/payload admission precedes mutation; failed
+branches/no-ops retain redo. Read-only snapshots now carry current revision.
+This internal CPU boundary does not implement desktop edit publication, generic
+geometry/rig history or verified writer. Those contracts remain open in ADR-0027.

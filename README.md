@@ -2,12 +2,17 @@
 
 **Asset Doctor RT-PT 2.0** is a native Windows application in development for diagnosing, repairing, editing, and preparing 3D assets. The project is being built **from scratch** in Rust, with a Vulkan-based GPU renderer designed to run on local hardware.
 
-> **Status:** Native Vulkan GLB viewer with Open/Fit, scene tree, summary and optional direct PBR with color/MR/normal/occlusion/emission maps and authored normals/tangents. Read-only source geometry diagnostics are available. Editing, environment, rig/animation, RT and PT remain planned. This is an engineering prototype.
+> **Status:** Native Vulkan GLB viewer with Open/Fit, scene tree, summary and optional direct PBR with color/MR/normal/occlusion/emission maps and authored normals/tangents. Read-only source geometry/UV diagnostics are available. User-facing editing, environment, rig/animation, RT and PT remain planned. This is an engineering prototype.
 
 **Full plan and implementation status (Russian, 2026-11-16):**
 [MASTER_PLAN_AND_STATUS_RU.md](docs/MASTER_PLAN_AND_STATUS_RU.md) covers all original
 stages, all66Legacy scenarios, all10owner requirements, completed subsets and
 remaining acceptance criteria. It is the consolidated progress document.
+
+The internal CPU [command/history foundation](docs/COMMAND_HISTORY_REPORT_2026-11-16.md)
+now supports guarded explicit triangle removal and bounded Undo/Redo without
+copying all geometry. It is not connected to desktop edit controls or file export;
+the current application remains a read-only viewer.
 
 ## Planned Features
 

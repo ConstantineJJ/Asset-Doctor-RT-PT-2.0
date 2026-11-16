@@ -56,6 +56,8 @@ fn empty() -> AssetError {
 }
 
 impl Session {
+    /// Admits only a fresh revision-zero candidate and consumes it on failure.
+    /// Desktop must keep its current asset until candidate admission succeeds.
     pub fn new(
         document: AssetDocument,
         history_limits: HistoryLimits,

@@ -236,6 +236,8 @@ impl AssetDocument {
         })
     }
     /// Exchange an applied alternate buffer for Undo/Redo. No geometry allocation.
+    /// The caller must select the correct next history entry; the tag does not
+    /// enforce replay order. ad-commands::Session owns that ordered cursor.
     pub fn exchange_indices(
         &mut self,
         expected: DocumentTag,
