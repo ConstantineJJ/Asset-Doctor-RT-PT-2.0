@@ -67,6 +67,9 @@ use [Twin_Cubes.glb](tests/fixtures/Twin_Cubes.glb).
 - **Сводка** shows source size, document nodes, expanded display counts and bounds.
   Optional panels hide in compact windows. Help includes embedded font notices.
 - Loading failure/cancellation retains the previous model. Sources are read only.
+- Source UV inventory retains up to8declared `TEXCOORD_n` channels per primitive,
+  including channels unused by materials. Invalid unused UVs also refuse import;
+  material roles select explicit source channel IDs. UV diagnostic rules remain planned.
 - This increment supports opaque static triangles and embedded BIN geometry.
   It displays base-color factors × linear vertex colors × embedded PNG/JPEG maps
   with face lighting and OPAQUE/MASK coverage. **Базовые текстуры** in Summary

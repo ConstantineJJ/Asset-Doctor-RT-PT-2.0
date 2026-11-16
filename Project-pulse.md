@@ -1,5 +1,13 @@
 # Project pulse
 
+## 2026-11-16 — Source UV inventory and GitHub checkpoint
+
+- Owner explicitly requested all commits and a full push. Sent the accumulated38commits through2764632 to origin/main; GitHub Actions run43817721581 completed successfully. Publication does not certify hosted Vulkan presentation.
+- Accepted ADR-0025. Data increment preserves every declared TEXCOORD_n, including untextured/unselected channels, with explicit material role IDs. Sorted unique source channels are authoritative; snapshots derive the existing five role streams and retain the96byte GPU layout. Limit8channels per primitive; decoded admission adds8bytes per source vertex/channel before allocation. Malformed unused UVs now explicitly refuse import. No source wrapping/repair/export or new dependencies.
+-99workspace tests(24analysis/20desktop/16document/27formats/12renderer), fmt, all-target clippy warnings denied, Windows release build and cargo-deny PASS. Tests cover unselected source channels, normalized U8/U16 and source IDs, exact decoded budget, malformed unused values, channel overflow, document binding/order/count validation and original bytes. Independent source review found no blocker for the data increment.
+- Native MR/normal/AO/emission PBR regression runs each presented15mesh frames, retained the previous asset after invalid replacement, resized/minimized/restored/closed and reported0validationerrors. Requested child sync validation; effective setting not separately queried. Corrected the MR smoke oracle from1to2descriptor tuples: the authored fixture includes both base+MR and MR-only materials. All test windows closed, no capture/input session started. No pixel-calibration or heavy-model peak-memory claim.
+- G009–G011 and coverage/UI changes remain planned in ADR-0025; current report still contains8geometry rules. Next development increment is source UV diagnostics. Legacy/user models/Arc-XRay unchanged; build artifacts and local logs remain ignored.
+
 ## 2026-11-16 — Vertex-index connected components
 
 - Added accepted ADR-0024/slice11audit and algorithm4/G008 information for multiple vertex-index connected groups per source primitive. Shared-vertex joins count as connected; positions, primitives and instances are not welded. Repeated-index triangles excluded/count retained; unused/excluded-only vertices are not components. No physical-part count, tiny-component heuristic or repair inference.

@@ -1,8 +1,10 @@
 //! Self-contained file format boundary. No OS dialogs, network or Vulkan.
 mod color;
+mod uv;
 use ad_document::{
     AssetDocument, AssetError, AssetResult, Cancellation, DocumentId, DocumentParts, ErrorCode,
-    ImportLimits, MeshId, MeshPrimitive, Node, NodeId, TextureEncoding, geometry_bytes,
+    ImportLimits, MeshId, MeshPrimitive, Node, NodeId, TextureEncoding, UvBindings, geometry_bytes,
+    source_uv_bytes,
 };
 use std::sync::Arc;
 
@@ -194,8 +196,14 @@ pub fn import_glb(
             let index_count = primitive
                 .indices()
                 .map_or(position.count(), |indices| indices.count());
+            let uv_count = primitive
+                .attributes()
+                .filter(|(semantic, _)| matches!(semantic, gltf::Semantic::TexCoords(_)))
+                .count();
+            let uv_bytes = source_uv_bytes(position.count(), uv_count)?;
             decoded = decoded
                 .checked_add(geometry_bytes(position.count(), index_count)?)
+                .and_then(|v| v.checked_add(uv_bytes))
                 .ok_or_else(budget)?;
             if decoded > limits.decoded_bytes || position.count() > u32::MAX as usize {
                 return Err(budget());
@@ -269,50 +277,24 @@ pub fn import_glb(
             let occlusion_info = primitive.material().occlusion_texture();
             let occlusion_strength = occlusion_info.as_ref().map_or(1., |info| info.strength());
             let normal_scale = normal_info.as_ref().map_or(1., |info| info.scale());
-            let mut uv_sets = [None, None, None, None, None];
-            for (set, output) in [
-                color_texture.as_ref().map(|i| i.tex_coord()),
-                mr_texture.as_ref().map(|i| i.tex_coord()),
-                normal_info.as_ref().map(|i| i.tex_coord()),
-                occlusion_info.as_ref().map(|i| i.tex_coord()),
-                emissive_info.as_ref().map(|i| i.tex_coord()),
-            ]
-            .into_iter()
-            .zip(&mut uv_sets)
+            let uv_channels = uv::read_channels(&primitive, bin, position.count(), cancel)?;
+            let uv_bindings = UvBindings {
+                color: color_texture.as_ref().map(|i| i.tex_coord()),
+                metallic_roughness: mr_texture.as_ref().map(|i| i.tex_coord()),
+                normal: normal_info.as_ref().map(|i| i.tex_coord()),
+                occlusion: occlusion_info.as_ref().map(|i| i.tex_coord()),
+                emissive: emissive_info.as_ref().map(|i| i.tex_coord()),
+            };
+            if uv_bindings
+                .sets()
+                .into_iter()
+                .flatten()
+                .any(|set| !uv_channels.iter().any(|channel| channel.set == set))
             {
-                if let Some(set) = set {
-                    let accessor =
-                        primitive
-                            .get(&gltf::Semantic::TexCoords(set))
-                            .ok_or_else(|| {
-                                invalid("Material texture needs its declared TEXCOORD attribute")
-                            })?;
-                    color::validate_attribute(accessor, position.count(), false)?;
-                    let mut values = Vec::new();
-                    values
-                        .try_reserve_exact(position.count())
-                        .map_err(|_| budget())?;
-                    for (i, uv) in reader
-                        .read_tex_coords(set)
-                        .ok_or_else(|| invalid("Cannot read texture coordinates"))?
-                        .into_f32()
-                        .enumerate()
-                    {
-                        if i % 4096 == 0 {
-                            cancel.check()?;
-                        }
-                        values.push(uv);
-                    }
-                    *output = Some(values);
-                }
+                return Err(invalid(
+                    "Material texture needs its declared TEXCOORD attribute",
+                ));
             }
-            let [
-                uvs,
-                metallic_roughness_uvs,
-                normal_uvs,
-                occlusion_uvs,
-                emissive_uvs,
-            ] = uv_sets;
             let mut colors = None;
             if let Some(accessor) = primitive.get(&gltf::Semantic::Colors(0)) {
                 color::validate_attribute(accessor, position.count(), true)?;
@@ -413,14 +395,13 @@ pub fn import_glb(
                 normals,
                 tangents,
                 normal_texture,
-                normal_uvs,
                 normal_scale,
+                uv_channels,
+                uv_bindings,
                 occlusion_texture,
-                occlusion_uvs,
                 occlusion_strength,
                 emissive_factor,
                 emissive_texture,
-                emissive_uvs,
                 metallic_roughness: [
                     primitive
                         .material()
@@ -436,11 +417,9 @@ pub fn import_glb(
                     .material()
                     .pbr_metallic_roughness()
                     .base_color_factor(),
-                uvs,
                 colors,
                 color_texture,
                 metallic_roughness_texture,
-                metallic_roughness_uvs,
                 alpha_cutoff,
             });
         }

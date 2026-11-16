@@ -7,7 +7,7 @@ per-increment owner acceptance is not a gate. Keep source/audit/verification lim
 - [ ] A1b: Map all 197 UI declaration sites; classify 110 state candidates; complete parameter/error/native workflow acceptance. See reference/LEGACY_GAP_REGISTER.md.
 - [x] A2a: Independent workspace, icon assets, dependency register, Windows CI definition; portable GNU fmt/clippy/test/executable build passed.
 - [x] A2b: MSVC 1.100.0 toolchain verified after owner «Готово»; local cargo-deny license/advisory/source/bans PASS.
-- [ ] A2c: Execute remote CI after an explicit publication instruction; no push requested.
+- [x] A2c: Owner explicitly requested full commit/push; main through2764632 published and GitHub Actions run43817721581 completed successfully. Hosted CI does not verify Vulkan presentation.
 - [x] A3a: Vulkan capability probe ran on RTX 5060 Ti: loader/instance/physical devices/queues/extensions logged; clean exit.
 - [x] A3b: Validation-enabled physical-device probe PASS with installed SDK layers.
 - [ ] A3c: Unavailable-loader, unsupported GPU/features and device-lost fault injection remain unverified.

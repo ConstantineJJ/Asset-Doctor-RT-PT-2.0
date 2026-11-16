@@ -1,6 +1,7 @@
 //! Renderer-independent immutable asset data and revision-tagged snapshots.
 mod color;
 mod normals;
+mod uv;
 pub use color::*;
 use std::{
     fmt,
@@ -9,6 +10,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+pub use uv::{MAX_UV_CHANNELS, UvBindings, UvChannel, source_uv_bytes};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorCode {
@@ -93,26 +95,23 @@ pub struct NodeId(pub usize);
 pub struct MeshId(pub usize);
 
 pub struct MeshPrimitive {
+    pub uv_channels: Vec<UvChannel>,
+    pub uv_bindings: UvBindings,
     pub positions: Vec<[f32; 3]>,
     pub normals: Option<Vec<[f32; 3]>>,
     pub tangents: Option<Vec<[f32; 4]>>,
     pub normal_texture: Option<Arc<Texture>>,
-    pub normal_uvs: Option<Vec<[f32; 2]>>,
     pub normal_scale: f32,
     pub occlusion_texture: Option<Arc<Texture>>,
-    pub occlusion_uvs: Option<Vec<[f32; 2]>>,
     pub occlusion_strength: f32,
     pub emissive_factor: [f32; 3],
     pub emissive_texture: Option<Arc<Texture>>,
-    pub emissive_uvs: Option<Vec<[f32; 2]>>,
     pub metallic_roughness: [f32; 2],
     pub indices: Vec<u32>,
     pub base_color: [f32; 4],
-    pub uvs: Option<Vec<[f32; 2]>>,
     pub colors: Option<Vec<[f32; 4]>>,
     pub color_texture: Option<Arc<Texture>>,
     pub metallic_roughness_texture: Option<Arc<Texture>>,
-    pub metallic_roughness_uvs: Option<Vec<[f32; 2]>>,
     pub alpha_cutoff: Option<f32>,
 }
 pub struct Node {
@@ -191,14 +190,11 @@ impl AssetDocument {
         let mut textures = TextureAdmission::default();
         for mesh in &parts.meshes {
             cancel.check()?;
+            uv::validate(mesh, cancel)?;
             if mesh
                 .emissive_factor
                 .iter()
                 .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
-                || mesh.emissive_uvs.as_ref().is_some_and(|uv| {
-                    uv.len() != mesh.positions.len() || uv.iter().flatten().any(|v| !v.is_finite())
-                })
-                || (mesh.emissive_texture.is_some() && mesh.emissive_uvs.is_none())
             {
                 return Err(AssetError::new(
                     ErrorCode::InvalidGeometry,
@@ -210,10 +206,6 @@ impl AssetDocument {
             }
             if !mesh.occlusion_strength.is_finite()
                 || !(0.0..=1.0).contains(&mesh.occlusion_strength)
-                || mesh.occlusion_uvs.as_ref().is_some_and(|uv| {
-                    uv.len() != mesh.positions.len() || uv.iter().flatten().any(|v| !v.is_finite())
-                })
-                || (mesh.occlusion_texture.is_some() && mesh.occlusion_uvs.is_none())
             {
                 return Err(AssetError::new(
                     ErrorCode::InvalidGeometry,
@@ -230,10 +222,6 @@ impl AssetDocument {
                             v.iter().any(|x| !x.is_finite()) || (v[3] != -1. && v[3] != 1.)
                         })
                 })
-                || mesh.normal_uvs.as_ref().is_some_and(|uv| {
-                    uv.len() != mesh.positions.len() || uv.iter().flatten().any(|v| !v.is_finite())
-                })
-                || (mesh.normal_texture.is_some() && mesh.normal_uvs.is_none())
             {
                 return Err(AssetError::new(
                     ErrorCode::InvalidGeometry,
@@ -262,34 +250,23 @@ impl AssetDocument {
             if let Some(texture) = &mesh.normal_texture {
                 textures.admit(texture, TextureEncoding::Linear, limits)?;
             }
-            if mesh.metallic_roughness_uvs.as_ref().is_some_and(|uv| {
-                uv.len() != mesh.positions.len() || uv.iter().flatten().any(|v| !v.is_finite())
-            }) || (mesh.metallic_roughness_texture.is_some()
-                && mesh.metallic_roughness_uvs.is_none())
-            {
-                return Err(AssetError::new(
-                    ErrorCode::InvalidGeometry,
-                    "Invalid metallic/roughness UV attributes",
-                ));
-            }
-            if mesh.uvs.as_ref().is_some_and(|uv| {
-                uv.len() != mesh.positions.len() || uv.iter().flatten().any(|v| !v.is_finite())
-            }) || mesh.colors.as_ref().is_some_and(|colors| {
+            if mesh.colors.as_ref().is_some_and(|colors| {
                 colors.len() != mesh.positions.len()
                     || colors
                         .iter()
                         .flatten()
                         .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
-            }) || (mesh.color_texture.is_some() && mesh.uvs.is_none())
-                || mesh.alpha_cutoff.is_some_and(|v| !v.is_finite() || v < 0.)
+            }) || mesh.alpha_cutoff.is_some_and(|v| !v.is_finite() || v < 0.)
             {
                 return Err(AssetError::new(
                     ErrorCode::InvalidGeometry,
                     "Invalid UV/color/material attributes",
                 ));
             }
+            let uv_bytes = source_uv_bytes(mesh.positions.len(), mesh.uv_channels.len())?;
             bytes = bytes
                 .checked_add(geometry_bytes(mesh.positions.len(), mesh.indices.len())?)
+                .and_then(|v| v.checked_add(uv_bytes))
                 .ok_or_else(|| {
                     AssetError::new(ErrorCode::ResourceLimit, "Decoded geometry size overflow")
                 })?;
@@ -534,6 +511,16 @@ impl AssetDocument {
             let mesh = &self.parts.meshes[mesh_id.0];
             let normal_matrix = normals::normal_matrix(world);
             let tangent_matrix = normals::tangent_matrix(world);
+            let [
+                uvs,
+                metallic_roughness_uvs,
+                normal_uvs,
+                occlusion_uvs,
+                emissive_uvs,
+            ] = mesh
+                .uv_bindings
+                .sets()
+                .map(|set| set.and_then(|set| mesh.source_uv(set)));
             let offset = result.positions.len() as u32;
             for (i, point) in mesh.positions.iter().enumerate() {
                 if i % 4096 == 0 {
@@ -560,21 +547,17 @@ impl AssetDocument {
                 result.tangents.push(tangent);
                 result
                     .normal_uvs
-                    .push(mesh.normal_uvs.as_ref().map_or([0.; 2], |uv| uv[i]));
+                    .push(normal_uvs.map_or([0.; 2], |uv| uv[i]));
                 result
                     .occlusion_uvs
-                    .push(mesh.occlusion_uvs.as_ref().map_or([0.; 2], |uv| uv[i]));
+                    .push(occlusion_uvs.map_or([0.; 2], |uv| uv[i]));
                 result
                     .emissive_uvs
-                    .push(mesh.emissive_uvs.as_ref().map_or([0.; 2], |uv| uv[i]));
+                    .push(emissive_uvs.map_or([0.; 2], |uv| uv[i]));
+                result.uvs.push(uvs.map_or([0.; 2], |uv| uv[i]));
                 result
-                    .uvs
-                    .push(mesh.uvs.as_ref().map_or([0.; 2], |uv| uv[i]));
-                result.metallic_roughness_uvs.push(
-                    mesh.metallic_roughness_uvs
-                        .as_ref()
-                        .map_or([0.; 2], |uv| uv[i]),
-                );
+                    .metallic_roughness_uvs
+                    .push(metallic_roughness_uvs.map_or([0.; 2], |uv| uv[i]));
                 result
                     .colors
                     .push(mesh.colors.as_ref().map_or([1.; 4], |colors| colors[i]));
@@ -636,22 +619,19 @@ mod tests {
                 normals: None,
                 tangents: None,
                 normal_texture: None,
-                normal_uvs: None,
                 normal_scale: 1.,
                 occlusion_texture: None,
-                occlusion_uvs: None,
                 occlusion_strength: 1.,
                 emissive_factor: [0.; 3],
                 emissive_texture: None,
-                emissive_uvs: None,
                 metallic_roughness: [1.; 2],
                 indices: vec![0, 1, 2],
+                uv_channels: Vec::new(),
+                uv_bindings: UvBindings::default(),
                 base_color: [1.; 4],
-                uvs: None,
                 colors: None,
                 color_texture: None,
                 metallic_roughness_texture: None,
-                metallic_roughness_uvs: None,
                 alpha_cutoff: None,
             }],
             nodes: vec![
@@ -734,7 +714,11 @@ mod tests {
         let mut data = parts();
         data.meshes[0].normals = Some(vec![[0., 0., 1.]; 4]);
         data.meshes[0].tangents = Some(vec![[1., 0., 0., 1.]; 4]);
-        data.meshes[0].normal_uvs = Some(vec![[0.; 2]; 4]);
+        data.meshes[0].uv_channels = vec![UvChannel {
+            set: 0,
+            values: vec![[0.; 2]; 4],
+        }];
+        data.meshes[0].uv_bindings.normal = Some(0);
         data.meshes[0].normal_scale = -2.;
         data.meshes[0].normal_texture = Some(Arc::new(Texture {
             image: Arc::new(TextureImage {
@@ -780,7 +764,11 @@ mod tests {
             AssetDocument::new(data, ImportLimits::default(), &Cancellation::default()).is_err()
         );
         let mut data = parts();
-        data.meshes[0].normal_uvs = Some(vec![[0.; 2]; 3]);
+        data.meshes[0].uv_channels = vec![UvChannel {
+            set: 0,
+            values: vec![[0.; 2]; 3],
+        }];
+        data.meshes[0].uv_bindings.normal = Some(0);
         assert!(
             AssetDocument::new(data, ImportLimits::default(), &Cancellation::default()).is_err()
         );
@@ -796,7 +784,11 @@ mod tests {
             );
         }
         let mut data = parts();
-        data.meshes[0].occlusion_uvs = Some(vec![[f32::NAN, 0.]; 4]);
+        data.meshes[0].uv_channels = vec![UvChannel {
+            set: 0,
+            values: vec![[f32::NAN, 0.]; 4],
+        }];
+        data.meshes[0].uv_bindings.occlusion = Some(0);
         assert!(
             AssetDocument::new(data, ImportLimits::default(), &Cancellation::default()).is_err()
         );
@@ -815,6 +807,44 @@ mod tests {
         }
     }
     #[test]
+    fn source_uv_channels_keep_role_ids_and_have_independent_decoded_admission() {
+        let make = || {
+            let mut data = parts();
+            data.meshes[0].uv_channels = vec![
+                UvChannel {
+                    set: 0,
+                    values: vec![[1., 0.]; 4],
+                },
+                UvChannel {
+                    set: 2,
+                    values: vec![[0.25, 0.75]; 4],
+                },
+            ];
+            data.meshes[0].uv_bindings.color = Some(2);
+            data.meshes[0].uv_bindings.normal = Some(0);
+            data
+        };
+        let doc = AssetDocument::new(
+            make(),
+            ImportLimits {
+                decoded_bytes: 460,
+                ..Default::default()
+            },
+            &Cancellation::default(),
+        )
+        .unwrap();
+        let scene = doc
+            .snapshot(ImportLimits::default(), &Cancellation::default())
+            .unwrap();
+        assert_eq!(scene.uvs[0], [0.25, 0.75]);
+        assert_eq!(scene.normal_uvs[0], [1., 0.]);
+        assert_eq!(doc.primitives()[0].source_uv(0).unwrap()[0], [1., 0.]);
+        assert_eq!(&**doc.source(), &[1, 2, 3, 4]);
+        assert!(
+            matches!(AssetDocument::new(make(),ImportLimits{decoded_bytes:459,..Default::default()},&Cancellation::default()),Err(e) if e.code==ErrorCode::ResourceLimit)
+        );
+    }
+    #[test]
     fn emission_factor_and_uv_admission_reject_invalid_values_without_source_edit() {
         for bad in [f32::NAN, f32::INFINITY, -0.1, 1.1] {
             let mut data = parts();
@@ -825,7 +855,11 @@ mod tests {
             );
         }
         let mut data = parts();
-        data.meshes[0].emissive_uvs = Some(vec![[0.; 2]; 3]);
+        data.meshes[0].uv_channels = vec![UvChannel {
+            set: 0,
+            values: vec![[0.; 2]; 3],
+        }];
+        data.meshes[0].uv_bindings.emissive = Some(0);
         assert!(
             AssetDocument::new(data, ImportLimits::default(), &Cancellation::default()).is_err()
         );
@@ -841,6 +875,56 @@ mod tests {
             [0.2, 0.5, 1.]
         );
         assert_eq!(&**doc.source(), &[1, 2, 3, 4]);
+    }
+    #[test]
+    fn source_uv_inventory_rejects_invalid_ids_values_and_bindings() {
+        for case in 0..6 {
+            let mut data = parts();
+            let mesh = &mut data.meshes[0];
+            mesh.uv_channels = vec![UvChannel {
+                set: 0,
+                values: vec![[0.; 2]; 4],
+            }];
+            match case {
+                0 => mesh.uv_channels.push(UvChannel {
+                    set: 0,
+                    values: vec![[0.; 2]; 4],
+                }),
+                1 => {
+                    mesh.uv_channels[0].set = 2;
+                    mesh.uv_channels.push(UvChannel {
+                        set: 1,
+                        values: vec![[0.; 2]; 4],
+                    });
+                }
+                2 => mesh.uv_channels[0].values[0][0] = f32::NAN,
+                3 => {
+                    mesh.uv_channels[0].values.pop();
+                }
+                4 => mesh.uv_bindings.color = Some(1),
+                _ => {
+                    mesh.uv_channels = (0..9)
+                        .map(|set| UvChannel {
+                            set,
+                            values: vec![[0.; 2]; 4],
+                        })
+                        .collect();
+                }
+            }
+            let error = AssetDocument::new(data, ImportLimits::default(), &Cancellation::default())
+                .err()
+                .unwrap();
+            assert_eq!(
+                error.code,
+                if case == 5 {
+                    ErrorCode::ResourceLimit
+                } else {
+                    ErrorCode::InvalidGeometry
+                }
+            );
+        }
+        assert!(source_uv_bytes(usize::MAX, 1).is_err());
+        assert_eq!(source_uv_bytes(3, MAX_UV_CHANNELS).unwrap(), 192);
     }
     #[test]
     fn invalid_indices_are_refused_before_any_snapshot() {
