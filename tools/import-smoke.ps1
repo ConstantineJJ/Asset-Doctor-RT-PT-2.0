@@ -73,7 +73,7 @@ if ($Scene -eq 'edge-limit') {
     }
 }
 if ($Scene -eq 'geometry' -and $log -notmatch 'analysis_complete document=1 revision=0 primitives=2 triangles=6 findings=9') {throw 'Unexpected known geometry findings.'}
-$expectedBindings=if($Scene -in @('color','emission')){2}else{1}
+$expectedBindings=if($Scene -in @('color','mr','emission')){2}else{1}
 if($log -notmatch "gpu_material_binding_sets=$expectedBindings\b"){throw 'Missing material descriptor tuple-sharing evidence.'}
 if ($Scene -eq 'color' -and $log -notmatch 'gpu_material_images=1 material_textures=2 mip_bytes=20 decoded_images=1 srgb_images=1 linear_images=0') {
     throw 'Missing deduplicated color image upload evidence.'
