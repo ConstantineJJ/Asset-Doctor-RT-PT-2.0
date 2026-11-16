@@ -1,5 +1,7 @@
 # Development continuation checkpoint
 
+Historical checkpoint. Current: [2026-11-16](CONTINUATION_2026-11-16.md).
+
 Owner authorizes autonomous development and computer use without manual acceptance.
 No push/release authorized. Source models, Legacy and supplied Arc-XRay are read-only.
 
