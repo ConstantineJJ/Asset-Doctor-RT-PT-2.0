@@ -48,6 +48,12 @@
     "origin": "Project-authored numeric test geometry and PNG; no external content"
   },
   {
+    "file": "Bad_Unused_UV.glb",
+    "bytes": 2608,
+    "sha256": "b6327c1535267c2874bdad39cf35eeac25b5b09594312d21c0e5c4f35842023c",
+    "origin": "Project-authored numeric source UV/geometry; no external content"
+  },
+  {
     "file": "Color_Checker.glb",
     "bytes": 1840,
     "sha256": "222bde0768828c6fdc3fc4f0adad32c74ca4407eb4b0f0f353e7ade40b34b78a",
@@ -106,5 +112,11 @@
     "bytes": 1104,
     "sha256": "7567aeb18b354b90c4d93b6641b2bea76e50029d696b5d82cdc6802c4c209058",
     "origin": "Project-authored numeric test geometry and PNG; no external content"
+  },
+  {
+    "file": "UV_Checker.glb",
+    "bytes": 2608,
+    "sha256": "fab120bb474b25596331459ba730c3b4ddb0e2dec60e0e9afc1d5e8c6aa922ff",
+    "origin": "Project-authored numeric source UV/geometry; no external content"
   }
 ]

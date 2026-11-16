@@ -30,7 +30,11 @@ fn document(scale: f32, normals: bool) -> AssetDocument {
     )])
 }
 
-fn primitive(positions: Vec<[f32; 3]>, normals: bool, indices: Vec<u32>) -> MeshPrimitive {
+pub(super) fn primitive(
+    positions: Vec<[f32; 3]>,
+    normals: bool,
+    indices: Vec<u32>,
+) -> MeshPrimitive {
     let vertex_count = positions.len();
     MeshPrimitive {
         positions,
@@ -54,7 +58,7 @@ fn primitive(positions: Vec<[f32; 3]>, normals: bool, indices: Vec<u32>) -> Mesh
     }
 }
 
-fn from_primitives(meshes: Vec<MeshPrimitive>) -> AssetDocument {
+pub(super) fn from_primitives(meshes: Vec<MeshPrimitive>) -> AssetDocument {
     let node = || Node {
         name: "instance".into(),
         local: [
@@ -94,7 +98,7 @@ fn known_source_defects_keep_winding_indices_and_count_shared_instances_once() {
         (Code::UnusedVertex, 1, vec![4]),
         (Code::MissingNormals, 5, vec![0, 1, 2, 3, 4]),
     ];
-    assert_eq!(report.findings.len(), expected.len() + 2);
+    assert_eq!(report.findings.len(), expected.len() + 3); // Edges, components and missing UV0.
     for (finding, (code, count, samples)) in report.findings.iter().zip(expected) {
         assert_eq!(
             (finding.code, finding.count, &finding.samples),

@@ -7,9 +7,9 @@ pub fn show(
     asset: Option<&PreparedAsset>,
     viewport_height: f32,
 ) {
-    egui::Window::new("Диагностика геометрии").open(open).default_size([620.,420.]).show(context,|ui| {
+    egui::Window::new("Диагностика геометрии и UV").open(open).default_size([620.,420.]).show(context,|ui| {
                 ui.label("Исходные примитивы, включая неактивные; каждый проверен один раз. Экземпляры и преобразования просмотра не учитываются.");
-                ui.weak("Проверки: площадь, дубли, вершины, нормали, рёбра и связность по индексам. Границы и группы могут быть намеренными. Ремонт не выполняется.");
+                ui.weak("Геометрия и все исходные UV-каналы. Границы, группы и UV вне 0…1 могут быть намеренными. Ремонт не выполняется.");
                 ui.separator();
                 match asset.map(|a|(&a.document,&a.diagnostics)) {
                     None=>{ui.label("Откройте модель для анализа.");}
@@ -17,14 +17,17 @@ pub fn show(
                         ui.strong(format!("{} · {} примитивов · {} треугольников",document.name(),report.primitives,report.triangles));
                         if !report.is_complete() {ui.colored_label(Color32::from_rgb(255,190,120),"Анализ частичный. Сохранённые замечания доступны; часть проверок не завершена.");}
                         ui.collapsing("Объём проверок",|ui|{
+                            egui::ScrollArea::vertical().id_salt("diagnostic_coverage").auto_shrink([false,true]).max_height((viewport_height-380.).clamp(54.,144.)).show(ui,|ui|{
                             for c in &report.coverage {
                                 let reason=match c.reason {None=>"завершено",Some(ad_analysis::LimitReason::Findings)=>"лимит результатов",Some(ad_analysis::LimitReason::Scratch)=>"лимит памяти",Some(ad_analysis::LimitReason::Allocation)=>"недостаточно памяти"};
-                                let detail=format!("Пропущенные примитивы: {:?}. Исключено граней с повторными индексами: {}. Первое ограничение: {}.",c.omitted_samples().iter().map(|m|m.0).collect::<Vec<_>>(),c.excluded_triangles,reason);
-                                ui.label(format!("G{:03}: примитивы {}/{} · {}",c.code as usize+1,c.completed_primitives,report.primitives,reason)).on_hover_text(detail);
+                                let label=coverage_text(c,report.primitives);
+                                let detail=format!("{label}. Пропущенные примитивы: {:?}. Исключено граней с повторными индексами: {}. Первое ограничение: {}.",c.omitted_samples().iter().map(|m|m.0).collect::<Vec<_>>(),c.excluded_triangles,reason);
+                                ui.add(egui::Label::new(label).truncate()).on_hover_text(detail);
                             }
+                            });
                         });
                         if report.findings.is_empty() {ui.label(empty_result_text(report));}
-                        egui::ScrollArea::vertical().max_height((ui.available_height()-55.).clamp(60.,(viewport_height-300.).clamp(60.,400.))).show_rows(ui,76.,report.findings.len(),|ui,range|{
+                        egui::ScrollArea::vertical().id_salt("diagnostic_findings").max_height((ui.available_height()-55.).clamp(60.,(viewport_height-300.).clamp(60.,400.))).show_rows(ui,76.,report.findings.len(),|ui,range|{
                             for i in range {
                                 let finding=&report.findings[i];
                                 ui.push_id(i,|ui|{ ui.allocate_ui(egui::vec2(ui.available_width(),76.),|ui|{
@@ -38,6 +41,9 @@ pub fn show(
                                         ad_analysis::Code::BoundaryEdge=>("G006","Граничные рёбра · могут быть намеренными"),
                                         ad_analysis::Code::HighIncidenceEdge=>("G007","Рёбра с более чем двумя гранями"),
                                         ad_analysis::Code::DisconnectedComponents=>("G008","Группы связности по индексам · могут быть намеренными"),
+                                        ad_analysis::Code::MissingUv0=>("G009","Исходный UV0 отсутствует"),
+                                        ad_analysis::Code::ZeroUvArea=>("G010","Нулевая UV-площадь"),
+                                        ad_analysis::Code::OutsideUnitUv=>("G011","UV вне 0…1 · могут быть намеренными"),
                                     };
                                     let severity=if finding.severity==ad_analysis::Severity::Information {"Сведения"} else {"Замечание"};
                                     let title=format!("{code} · {severity} · {label}");
@@ -48,6 +54,8 @@ pub fn show(
                                         ad_analysis::Samples::Indices {element,indices}=>format!("{}: {indices:?} (с нуля, до 16 примеров)",match element {ad_analysis::Element::Vertex=>"Вершины",ad_analysis::Element::Triangle=>"Треугольники"}),
                                         ad_analysis::Samples::Edges(pairs)=>format!("Рёбра: {} (пары вершин, с нуля)",pairs.iter().map(|p|format!("{}–{}",p[0],p[1])).collect::<Vec<_>>().join(", ")),
                                         ad_analysis::Samples::Components(groups)=>format!("Группы: {}",groups.iter().map(|g|format!("v{} (вершин {}, граней {})",g.representative_vertex,g.vertices,g.triangles)).collect::<Vec<_>>().join("; ")),
+                                        ad_analysis::Samples::MissingUv {set}=>format!("Нет исходного TEXCOORD_{set}; канал материала не заменяет UV0"),
+                                        ad_analysis::Samples::Uv {set,element,indices}=>format!("TEXCOORD_{set} · {}: {indices:?} (с нуля)",match element {ad_analysis::Element::Vertex=>"вершины",ad_analysis::Element::Triangle=>"треугольники"}),
                                     };
                                     ui.add(egui::Label::new(&samples).truncate()).on_hover_text(samples);
                                 }); });
@@ -57,8 +65,19 @@ pub fn show(
                     Some((_,Err(error)))=>{ui.colored_label(Color32::from_rgb(255,190,120),format!("Анализ не завершён: {}. Модель доступна для просмотра.",error.message));}
                     Some((_,Ok(_)))=>{ui.label("Результат анализа устарел и скрыт.");}
                 }
-                ui.separator();ui.weak("Рёбра и связность — по индексам внутри примитива, без склеивания позиций. Повторные индексы исключены. Общая вершина объединяет группы; это не число физических деталей. Ориентация, UV, материалы и скелет пока не проверяются.");
+                ui.separator();ui.weak("Связность — по индексам, без склеивания позиций и подсчёта физических деталей. UV: наличие UV0, точная площадь, диапазон всех каналов. Перекрытия UV, ориентация, материалы и скелет не проверяются.");
             });
+}
+
+fn coverage_text(c: &ad_analysis::Coverage, total: usize) -> String {
+    format!(
+        "G{:03}: проверено {}/{} · неприменимо {} · пропущено {}",
+        c.code as usize + 1,
+        c.completed_primitives,
+        total,
+        c.not_applicable_primitives,
+        c.omitted_primitives
+    )
 }
 
 fn empty_result_text(report: &ad_analysis::Report) -> &'static str {
@@ -71,6 +90,34 @@ fn empty_result_text(report: &ad_analysis::Report) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn coverage_labels_distinguish_checked_not_applicable_and_omitted_primitives() {
+        let doc = ad_formats::import_glb(
+            std::sync::Arc::from(
+                include_bytes!("../../../tests/fixtures/UV_Checker.glb").as_slice(),
+            ),
+            "uv".into(),
+            ad_document::DocumentId(1),
+            Default::default(),
+            &Default::default(),
+        )
+        .unwrap();
+        let full = ad_analysis::analyze(&doc, Default::default(), &Default::default()).unwrap();
+        let text = super::coverage_text(&full.coverage[ad_analysis::Code::ZeroUvArea as usize], 3);
+        assert_eq!(text, "G010: проверено 2/3 · неприменимо 1 · пропущено 0");
+        let partial = ad_analysis::analyze(
+            &doc,
+            ad_analysis::Limits {
+                findings: 0,
+                ..Default::default()
+            },
+            &Default::default(),
+        )
+        .unwrap();
+        let text =
+            super::coverage_text(&partial.coverage[ad_analysis::Code::ZeroUvArea as usize], 3);
+        assert_eq!(text, "G010: проверено 1/3 · неприменимо 1 · пропущено 1");
+    }
     #[test]
     fn missing_findings_after_result_limit_are_never_presented_as_healthy() {
         let doc = ad_formats::import_glb(

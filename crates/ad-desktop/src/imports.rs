@@ -216,14 +216,15 @@ fn prepare_with_analysis_limits(
                     (entries + 1, count + f.count)
                 });
             eprintln!(
-                "analysis_coverage rule=G{:03} completed_primitives={} omitted_primitives={} excluded_triangles={} reason={:?} retained_findings={} retained_count={}",
+                "analysis_coverage rule=G{:03} completed_primitives={} omitted_primitives={} excluded_triangles={} reason={:?} retained_findings={} retained_count={} not_applicable_primitives={}",
                 c.code as usize + 1,
                 c.completed_primitives,
                 c.omitted_primitives,
                 c.excluded_triangles,
                 c.reason,
                 entries,
-                count
+                count,
+                c.not_applicable_primitives
             );
         }
     }
@@ -289,7 +290,62 @@ mod tests {
         );
     }
     #[test]
-    fn authored_diagnostic_fixture_has_nine_source_findings_and_eleven_displayed_triangles() {
+    fn authored_uv_fixture_keeps_source_channels_and_not_applicable_scope() {
+        let request = Request {
+            ticket: 1,
+            path: fixture("UV_Checker.glb"),
+            cancel: Cancellation::default(),
+        };
+        let asset = prepare(&request).unwrap();
+        let report = asset.diagnostics.unwrap();
+        assert!(report.is_complete());
+        assert_eq!(
+            (report.primitives, report.triangles, report.findings.len()),
+            (3, 4, 9)
+        );
+        assert_eq!(asset.snapshot.indices.len() / 3, 6);
+        let area = report.coverage[ad_analysis::Code::ZeroUvArea as usize];
+        assert_eq!(
+            (
+                area.completed_primitives,
+                area.not_applicable_primitives,
+                area.excluded_triangles
+            ),
+            (2, 1, 1)
+        );
+        let outside = report
+            .findings
+            .iter()
+            .find(|f| f.code == ad_analysis::Code::OutsideUnitUv)
+            .unwrap();
+        assert_eq!(
+            outside.samples,
+            ad_analysis::Samples::Uv {
+                set: 2,
+                element: ad_analysis::Element::Vertex,
+                indices: vec![3]
+            }
+        );
+        assert_eq!(
+            report
+                .findings
+                .iter()
+                .filter(|f| f.code == ad_analysis::Code::MissingUv0)
+                .count(),
+            2
+        );
+    }
+    #[test]
+    fn malformed_unused_uv_replacement_is_an_explicit_import_error() {
+        let request = Request {
+            ticket: 1,
+            path: fixture("Bad_Unused_UV.glb"),
+            cancel: Cancellation::default(),
+        };
+        assert!(matches!(prepare(&request),Err(e) if e.code==ErrorCode::InvalidFormat));
+    }
+    #[test]
+    fn authored_diagnostic_fixture_has_eleven_source_findings_and_eleven_displayed_triangles() {
         let request = Request {
             ticket: 1,
             path: fixture("Geometry_Findings.glb"),
@@ -299,7 +355,7 @@ mod tests {
         let report = asset.diagnostics.unwrap();
         assert_eq!(
             (report.primitives, report.triangles, report.findings.len()),
-            (2, 6, 9)
+            (2, 6, 11)
         );
         assert_eq!(asset.snapshot.indices.len() / 3, 11);
         assert_eq!(
@@ -336,7 +392,7 @@ mod tests {
         assert!(report.is_complete());
         assert_eq!(
             (report.primitives, report.triangles, report.findings.len()),
-            (7, 13, 17)
+            (7, 13, 24)
         );
         assert_eq!(asset.snapshot.indices.len() / 3, 16);
         let count = |code| {
@@ -371,7 +427,7 @@ mod tests {
         assert!(report.is_complete());
         assert_eq!(
             (report.primitives, report.triangles, report.findings.len()),
-            (3, 7, 8)
+            (3, 7, 11)
         );
         assert_eq!(asset.snapshot.indices.len() / 3, 11);
         let f = report

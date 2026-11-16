@@ -13,6 +13,7 @@ pub enum LimitReason {
 pub struct Coverage {
     pub code: Code,
     pub completed_primitives: usize,
+    pub not_applicable_primitives: usize,
     pub omitted_primitives: usize,
     pub excluded_triangles: usize,
     pub reason: Option<LimitReason>,
@@ -24,6 +25,7 @@ impl Coverage {
         Self {
             code,
             completed_primitives: 0,
+            not_applicable_primitives: 0,
             omitted_primitives: 0,
             excluded_triangles: 0,
             reason: None,
@@ -41,9 +43,56 @@ impl Coverage {
 
 impl Report {
     pub fn is_complete(&self) -> bool {
-        self.coverage
-            .iter()
-            .all(|c| c.is_complete() && c.completed_primitives == self.primitives)
+        self.coverage.iter().all(|c| {
+            c.is_complete()
+                && c.completed_primitives
+                    .checked_add(c.not_applicable_primitives)
+                    == Some(self.primitives)
+        })
+    }
+    pub(crate) fn not_applicable(&mut self, code: Code) {
+        self.coverage[code as usize].not_applicable_primitives += 1;
+    }
+    // All findings from one primitive/rule are admitted and appended together.
+    // A channel group must never look complete after only some channels fit.
+    pub(crate) fn retain_many(
+        &mut self,
+        code: Code,
+        mesh: MeshId,
+        rows: usize,
+        limits: Limits,
+        build: impl FnOnce() -> AssetResult<Vec<Finding>>,
+    ) {
+        if rows > 0 {
+            if self
+                .findings
+                .len()
+                .checked_add(rows)
+                .is_none_or(|n| n > limits.findings)
+            {
+                self.omit(code, mesh, LimitReason::Findings);
+                return;
+            }
+            if self.findings.try_reserve(rows).is_err() {
+                self.omit(code, mesh, LimitReason::Allocation);
+                return;
+            }
+            match build() {
+                Ok(group) => {
+                    assert_eq!(
+                        group.len(),
+                        rows,
+                        "internal rule group size must match admission"
+                    );
+                    self.findings.extend(group);
+                }
+                Err(_) => {
+                    self.omit(code, mesh, LimitReason::Allocation);
+                    return;
+                }
+            }
+        }
+        self.coverage[code as usize].completed_primitives += 1;
     }
     pub(crate) fn omit(&mut self, code: Code, mesh: MeshId, reason: LimitReason) {
         let coverage = &mut self.coverage[code as usize];

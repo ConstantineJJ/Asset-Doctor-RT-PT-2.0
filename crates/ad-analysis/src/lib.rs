@@ -2,6 +2,7 @@
 mod components;
 mod coverage;
 mod edges;
+mod uv;
 use ad_document::{
     AssetDocument, AssetError, AssetResult, Cancellation, DocumentId, ErrorCode, MeshId,
 };
@@ -18,9 +19,12 @@ pub enum Code {
     BoundaryEdge = 5,
     HighIncidenceEdge = 6,
     DisconnectedComponents = 7,
+    MissingUv0 = 8,
+    ZeroUvArea = 9,
+    OutsideUnitUv = 10,
 }
 impl Code {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 11] = [
         Self::ZeroArea,
         Self::DuplicateTriangle,
         Self::UnusedVertex,
@@ -29,9 +33,12 @@ impl Code {
         Self::BoundaryEdge,
         Self::HighIncidenceEdge,
         Self::DisconnectedComponents,
+        Self::MissingUv0,
+        Self::ZeroUvArea,
+        Self::OutsideUnitUv,
     ];
 }
-pub const ALGORITHM_VERSION: u32 = 4;
+pub const ALGORITHM_VERSION: u32 = 5;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Severity {
     Information,
@@ -45,9 +52,20 @@ pub enum Element {
 /// Edge evidence uses vertex pairs and cannot be confused with scalar offsets.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Samples {
-    Indices { element: Element, indices: Vec<u32> },
+    Indices {
+        element: Element,
+        indices: Vec<u32>,
+    },
     Edges(Vec<[u32; 2]>),
     Components(Vec<ComponentSample>),
+    MissingUv {
+        set: u32,
+    },
+    Uv {
+        set: u32,
+        element: Element,
+        indices: Vec<u32>,
+    },
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ComponentSample {
@@ -70,7 +88,7 @@ pub struct Report {
     pub primitives: usize,
     pub triangles: usize,
     pub findings: Vec<Finding>,
-    pub coverage: [Coverage; 8],
+    pub coverage: [Coverage; 11],
 }
 impl Report {
     pub fn matches(&self, document: &AssetDocument) -> bool {
@@ -258,9 +276,12 @@ pub fn analyze(
     }
     edges::analyze(document, &mut report, limits, cancel)?;
     components::analyze(document, &mut report, limits, cancel)?;
+    uv::analyze(document, &mut report, limits, cancel)?;
     cancel.check()?;
     Ok(report)
 }
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod uv_tests;
