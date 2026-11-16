@@ -64,6 +64,9 @@ per-increment owner acceptance is not a gate. Keep source/audit/verification lim
 - [x] L0: Accepted ADR-0023 edge eligibility and per-rule coverage; no implicit position welding/full manifoldness claim.
 - [x] L1: Algorithm3 typed edge samples; boundary information/high-incidence warnings; bounded separate scratch, omitted/excluded scope and retained core results.84tests and required Windows/dependency gates.
 - [x] L2: Native authored edge/partial-memory-refusal cases, prior geometry/emission/empty regressions, heavy Vanguard and actual full/partial UI checks;0validationerrors/source hashes unchanged.
-- [ ] Next: bounded indexed connected-component analysis contracts and fixtures, respecting primitive/index scope and per-rule coverage. UV/material diagnostics and verified repair remain separate steps. Environment/shadows remain future raster work.
+- [x] M0: ADR-0024/slice11audit: vertex-index groups, eligible/excluded/unused scope, typed bounded summaries; no physical-part or tiny-component inference.
+- [x] M1: Algorithm4/G008, bounded independent disjoint-set phase, deterministic counts/representatives, partial coverage/cancellation;94tests and Windows/dependency checks PASS.
+- [x] M2: Native components/partial-edge/edge/empty regression; Tire_Quartet and Vanguard source-preserving probes; full and partial8rule UI verified with0validationerrors.
+- [ ] Next: source UV-channel inventory and bounded diagnostic contracts. Current UV streams are selected per material role and must not be treated as a general TEXCOORD_0 inventory. Verified repair remains separate. Environment/shadows remain future raster work.
 - [ ] Later: environment/shadows/full PBR, diagnostics, Heal, manual rig/animation, unified Compare, verified export and installer.
 - [ ] Later: RT → PT → Mixamo rights check/autorig/retargeting.

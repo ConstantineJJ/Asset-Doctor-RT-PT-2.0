@@ -104,3 +104,11 @@ reports use typed scalar-index or vertex-pair samples. Fixed per-rule coverage
 retains completed/omitted/excluded scope and up to16omitted IDs without allocation
 on failure. Resource-limited edge checks preserve completed core findings; whole-
 job cancellation still discards publication. No welding or full manifoldness claim.
+
+ADR-0024 adds an independent source-index component phase after edge storage
+retires. A disjoint-set forest uses3u32arrays per source vertex; consuming its
+summary reuses member counts as visited-root markers. No adjacency graph or
+per-component allocation is retained. Algorithm4 adds typed minimum-index/member/
+triangle summaries and G008coverage, including after edge-resource refusal.
+Connectivity is through shared vertex indices, not positional welding, edge-only
+surface connectivity or physical-part identification.

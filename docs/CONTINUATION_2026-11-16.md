@@ -1,57 +1,55 @@
 # Development checkpoint — 2026-11-16
 
 Owner authorizes autonomous development and computer use without manual acceptance.
-No push or release is authorized. Models, Legacy and supplied Arc-XRay are read-only.
+No push/release authorized. Models, Legacy and supplied Arc-XRay remain read-only.
 
-New local commits:
+Current feature commit:2c12381 (vertex-index connected components). Previous
+757a963/412dd52 added per-rule coverage/indexed edge incidence.
 
-- `757a963`: per-rule coverage preserves completed findings on result limits.
-- `412dd52`: indexed edge incidence, typed evidence, fixtures and native verification.
+Analysis algorithm4, eight rules: zero area, oriented same-index duplicate faces,
+unused vertices, missing/zero normals, boundary edges, high-incidence edges and
+multiple vertex-index connected groups. G006/G008 are information. Connectivity
+uses shared source indices (a point join suffices), never positional welding,
+instance/material merging or physical-part counting. Repeated-index triangles
+are excluded/count retained for topology phases; distinct-index collinear rows
+participate. Unused/excluded-only vertices are not components.
 
-Current analysis algorithm is3. Seven rules: zero area, oriented same-index duplicate
-faces, unused vertices, missing/zero normals, boundary edges and edges with more
-than two incident source triangles. Boundaries are information, not automatic
-defects. Source primitives, including inactive ones, are checked once. Repeated-
-index triangles are excluded from edge checks and counted; distinct-index collinear
-faces remain eligible. Coincident positions and separate primitives are not welded.
+Typed evidence includes scalar indices, vertex pairs and component summaries
+(minimum source vertex, unique vertex count, eligible source triangle count),
+maximum16samples. Component forest uses3u32arrays/12bytes per source vertex after
+other phase scratch retires; consuming summary reuses member counts as root markers.
+Coverage retains completed/omitted primitives, first resource reason, excluded
+faces and16omitted IDs. G008 refusal preserves earlier results; G008 can complete
+after edge refusal. Whole-job cancellation discards publication; upfront core
+admission remains fatal. Sources and authoritative revision are unchanged.
 
-Report coverage is fixed per rule: completed/omitted source primitive counts,
-excluded faces, first resource reason and at most16omitted primitive IDs. Evidence
-is scalar vertex/triangle indices or typed vertex pairs, bounded to16samples.
-Existing source/material/UI/GPU behavior stays read-only. Whole-job cancellation
-discards publication; upfront core admission remains fatal. Edge scratch/output
-refusal preserves completed core findings with explicit partial status.
+Gates:94tests (24analysis/20desktop/14document/24formats/12renderer), fmt,
+all-target clippy warnings denied, Windows release build and cargo-deny all PASS.
+No new dependency or policy exception. All18fixture hashes/sizes/manifest entries
+verified, component generator reproducible. Source review found no blocker; added
+explicit continued-G008-after-edge-refusal test and native/visual checks.
 
-Checks:84workspace tests (15analysis/19desktop/14document/24formats/12renderer),
-fmt, all-target clippy with warnings denied, Windows release build and cargo-deny
-advisories/bans/licenses/sources PASS. No dependency or license-policy changes.
-All17fixture hashes/sizes/manifest entries verified; edge generator reproduces bytes.
+Native: Components_Checker3source primitives/7triangles/8findings,4groups in
+primitive0,11display triangles with instance.2Mface edge refusal retains3findings,
+6of8rules complete (G006/G007scratch limited,G008complete). Component/edge/partial/
+empty lifecycle/rejected replacements0validationerrors. Actual full/partial8rule
+UI and group counts/sizes/scroll/footer inspected800x540; normal closes0errors,
+capture reset, no test app left open. Sync validation requested, effective setting
+not independently queried. No user assets or screenshots copied into repository.
 
-Native evidence:
+Tire_Quartet402361vertices/702558triangles/124736boundary pairs,1399index groups,
+all8rules in140ms. Vanguard852516vertices/1559826triangles/2219index groups,295ms.
+One-run local observations, not benchmarks or physical-part oracles. Both source
+hashes unchanged, runtime/replacement/lifecycle0errors. Durable report:
+COMPONENTS_REPORT_2026-11-16.md; ignored logs artifacts/*components*, components-
+ui-visual.*, components-partial-ui.*, release-import-smoke*components*/*edge-limit*.
+Runnable EXE:target/release/AssetDoctorRTPT.exe.
 
-- Edge fixture:7source primitives/13triangles/16findings,21boundary pairs and
-  1high-incidence pair,1excluded face; instances yield16displayed triangles.
-- Generated transient2million-collinear-face input:3core findings retained,
-  5rules complete,2edge rules explicitly resource-limited. Core32000003bytes fits,
-  edge72000000bytes exceeds64MiB. Input stays in ignored artifacts, not repository.
-- Edge/partial/geometry/emission/empty lifecycle and failed replacement passed with
-  0validationerrors. Synchronization validation requested in child environment;
-  effective setting not independently queried.
-- Heavy Vanguard1559826triangles:7rules complete,1finding,267ms local observation,
-  source hash unchanged. No benchmark or arbitrary-model correctness oracle claimed.
-- Actual native UI showed edge pairs/counts, coverage and partial yellow status
-  with memory reasons. Scroll/footer inspected at800x540. Both windows closed with
-  0errors and capture session reset. No test app remains open or screenshot committed.
-
-Durable report: EDGE_DIAGNOSTICS_REPORT_2026-11-16.md. Ignored logs under artifacts:
-release-import-smoke*edges*, *edge-limit*, edge-ui-visual.*, edge-limit-ui-visual.*,
-vanguard-edge-smoke.*. Release EXE: target/release/AssetDoctorRTPT.exe.
-
-Next: settle source-index connected-component semantics and admission before
-implementation. Specify vertex-connected versus edge-connected groups, treatment
-of unused/degenerate data and primitive boundaries. Preserve per-rule coverage,
-bounded samples, immutable sources and cancellation. UV/material/profile analysis,
-rescan/edit invalidation, verified repair/Undo/export, environment/shadows and
-RT/PT remain future work. Sort phases are not internally interruptible; memory
-admission is not a whole-process peak bound. Source reviews found no remaining
-blocker after dense-cancellation/all-excluded acceptance tests were added.
+Next: source UV-channel inventory/diagnostics contracts before loader/domain edits.
+Current MeshPrimitive UV arrays are selected per material role; they are NOT a
+complete source TEXCOORD_n inventory and must not be labelled UV0 by assumption.
+Decide preservation/budgets/optional non-textured UVs and exact diagnostic rules.
+Do not infer arbitrary UV values outside0..1 are invalid with repeating samplers.
+Repair/history/export, full topology/profile/rig, environment/shadows and RT/PT
+remain future work. Existing sorts are not internally interruptible and scratch
+limits do not cap whole-process memory peaks.

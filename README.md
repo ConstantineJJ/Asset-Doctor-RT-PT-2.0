@@ -58,6 +58,9 @@ use [Twin_Cubes.glb](tests/fixtures/Twin_Cubes.glb).
   index/pair samples per finding. It checks zero-area and oriented duplicate triangles,
   unused vertices, missing and zero normals, boundary edges and edges with more
   than two incident triangles. Boundaries are informational and may be intentional.
+  **Группы связности** counts groups connected through shared source vertex indices
+  and lists representative vertex/triangle counts. These groups are informational;
+  split indices can create many groups inside a visible part.
   Per-rule coverage makes resource-limited checks explicit and retains completed
   findings. Each source primitive is counted once,
   including inactive data. This is a bounded first subset, with no health score or repair.
@@ -110,6 +113,10 @@ records exact source rules, resource/cancellation limits and native evidence.
 The [indexed edge report](docs/EDGE_DIAGNOSTICS_REPORT_2026-11-16.md) adds typed
 vertex-pair evidence and per-rule coverage, including a real partial-result smoke.
 
+The [connected-component report](docs/COMPONENTS_REPORT_2026-11-16.md) adds
+vertex-index connectivity, bounded group summaries and continued analysis after
+an edge resource refusal.
+
 ## Build on Windows
 
 Install MSVC C++ Build Tools with Windows SDK, Rust MSVC stable and LunarG Vulkan
@@ -148,6 +155,7 @@ environment. Its explicit array preserves Cargo's argument separator:
 .\tools\import-smoke.ps1 -Scene emission -Pbr -NoEmission -SynchronizationValidation
 .\tools\import-smoke.ps1 -Scene geometry -Pbr -SynchronizationValidation
 .\tools\import-smoke.ps1 -Scene edges -Pbr -SynchronizationValidation
+.\tools\import-smoke.ps1 -Scene components -Pbr -SynchronizationValidation
 .\tools\import-smoke.ps1 -Scene edge-limit -Pbr -SynchronizationValidation
 ```
 
