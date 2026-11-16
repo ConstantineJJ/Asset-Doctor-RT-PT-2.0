@@ -20,6 +20,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ad-commands"
+version = "0.1.0"
+dependencies = [
+ "ad-analysis",
+ "ad-document",
+ "ad-formats",
+]
+
+[[package]]
 name = "ad-desktop"
 version = "0.1.0"
 dependencies = [

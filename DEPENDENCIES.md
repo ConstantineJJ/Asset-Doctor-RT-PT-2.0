@@ -1,5 +1,10 @@
 # Dependencies
 
+ADR-0026 adds local workspace crate `ad-commands`0.1.0 for CPU command/history
+ownership. Its only runtime dependency is local `ad-document`; `ad-formats` and
+`ad-analysis` are test-only integration dependencies. No registry version or
+external package was added. Product licensing remains the owner's decision.
+
 | Dependency | Resolved version | License | Purpose / replacement |
 |---|---|---|---|
 | Rust | 1.100.0 pinned | MIT/Apache-2.0 toolchain | Compiler/build/test; update deliberately with verification |

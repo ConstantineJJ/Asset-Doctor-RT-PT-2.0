@@ -1,6 +1,8 @@
 # ADR-0005 — Commands, history and jobs
 
-Status: PROPOSED; gate before edits.
+Status: ACCEPTED only for the internal static index-command/history subset in
+ADR-0026. General commands/jobs/gestures/rig/persistence remain PROPOSED; native
+edit publication and first-Heal/export gates remain open in ADR-0027.
 
 Commands carry document ID and expected revision. Validate entirely before atomic
 commit; revision always increases, including Undo/Redo. One pointer gesture is one

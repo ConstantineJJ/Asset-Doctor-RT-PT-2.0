@@ -1,7 +1,11 @@
-//! Renderer-independent immutable asset data and revision-tagged snapshots.
+//! Renderer-independent source-retaining data and revision-tagged snapshots.
 mod color;
+mod indices;
 mod normals;
 mod uv;
+pub use indices::{AppliedRemoval, DocumentTag, IndexExchange, PreparedRemoval, RemovalPreview};
+#[cfg(test)]
+mod index_tests;
 pub use color::*;
 use std::{
     fmt,
@@ -21,6 +25,8 @@ pub enum ErrorCode {
     InvalidGeometry,
     InvalidScene,
     Io,
+    Conflict,
+    HistoryEmpty,
 }
 
 #[derive(Debug, Clone)]
@@ -132,6 +138,8 @@ pub struct DocumentParts {
 pub struct AssetDocument {
     parts: DocumentParts,
     texture_stats: TextureStats,
+    revision: u64,
+    origin: Arc<()>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -339,16 +347,18 @@ impl AssetDocument {
         Ok(Self {
             parts,
             texture_stats: textures.stats,
+            revision: 0,
+            origin: Arc::new(()),
         })
     }
     pub fn id(&self) -> DocumentId {
         self.parts.id
     }
-    /// Immutable imported documents start at revision zero. Editing is not implemented.
+    /// Every committed command and history exchange advances this version.
     pub fn revision(&self) -> u64 {
-        0
+        self.revision
     }
-    /// Source primitives, once per decoded primitive, including inactive scene data.
+    /// Current authoring primitives, once each, including inactive scene data.
     pub fn primitives(&self) -> &[MeshPrimitive] {
         &self.parts.meshes
     }
@@ -439,7 +449,7 @@ impl AssetDocument {
         }
         let mut result = GeometrySnapshot {
             document_id: self.id(),
-            revision: 0,
+            revision: self.revision(),
             positions: Vec::new(),
             normals: Vec::new(),
             tangents: Vec::new(),
@@ -609,7 +619,7 @@ pub fn geometry_bytes(vertices: usize, indices: usize) -> AssetResult<usize> {
 mod tests {
     use super::*;
     use glam::Mat4;
-    fn parts() -> DocumentParts {
+    pub(super) fn parts() -> DocumentParts {
         DocumentParts {
             id: DocumentId(7),
             name: "synthetic".into(),
