@@ -1,9 +1,12 @@
 //! Bounded read-only diagnostics over immutable source primitives, never GPU data.
+mod coverage;
 use ad_document::{
     AssetDocument, AssetError, AssetResult, Cancellation, DocumentId, ErrorCode, MeshId,
 };
+pub use coverage::{Coverage, LimitReason};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(usize)]
 pub enum Code {
     ZeroArea,
     DuplicateTriangle,
@@ -11,6 +14,16 @@ pub enum Code {
     MissingNormals,
     ZeroNormal,
 }
+impl Code {
+    pub const ALL: [Self; 5] = [
+        Self::ZeroArea,
+        Self::DuplicateTriangle,
+        Self::UnusedVertex,
+        Self::MissingNormals,
+        Self::ZeroNormal,
+    ];
+}
+pub const ALGORITHM_VERSION: u32 = 2;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Severity {
     Information,
@@ -37,12 +50,13 @@ pub struct Report {
     pub primitives: usize,
     pub triangles: usize,
     pub findings: Vec<Finding>,
+    pub coverage: [Coverage; 5],
 }
 impl Report {
     pub fn matches(&self, document: &AssetDocument) -> bool {
         self.document_id == document.id()
             && self.revision == document.revision()
-            && self.algorithm == 1
+            && self.algorithm == ALGORITHM_VERSION
     }
 }
 #[derive(Clone, Copy)]
@@ -139,10 +153,11 @@ pub fn analyze(
     let mut report = Report {
         document_id: document.id(),
         revision: document.revision(),
-        algorithm: 1,
+        algorithm: ALGORITHM_VERSION,
         primitives: document.primitives().len(),
         triangles,
         findings: Vec::new(),
+        coverage: Code::ALL.map(Coverage::new),
     };
     for (mesh_id, mesh) in document.primitives().iter().enumerate() {
         cancel.check()?;
@@ -210,15 +225,9 @@ pub fn analyze(
             (missing, Code::MissingNormals, Element::Vertex),
             (zero_normal, Code::ZeroNormal, Element::Vertex),
         ] {
-            if tally.count > 0 {
-                if report.findings.len() >= limits.findings {
-                    return Err(budget());
-                }
-                report.findings.try_reserve(1).map_err(|_| budget())?;
-                report
-                    .findings
-                    .push(tally.finding(MeshId(mesh_id), code, element)?);
-            }
+            report.retain(code, MeshId(mesh_id), tally.count, limits, || {
+                tally.finding(MeshId(mesh_id), code, element)
+            });
         }
     }
     cancel.check()?;

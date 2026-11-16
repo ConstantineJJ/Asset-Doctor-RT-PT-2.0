@@ -148,15 +148,55 @@ fn cancellation_and_each_budget_refuse_without_partial_report() {
             scratch_bytes: 84,
             ..Limits::default()
         },
-        Limits {
-            findings: 3,
-            ..Limits::default()
-        },
     ] {
         assert!(
             matches!(analyze(&doc,limits,&Cancellation::default()),Err(e) if e.code==ErrorCode::ResourceLimit)
         );
     }
+}
+
+#[test]
+fn finding_limit_retains_completed_checks_and_marks_only_missing_results_incomplete() {
+    let doc = document(1., false);
+    let report = analyze(
+        &doc,
+        Limits {
+            findings: 3,
+            ..Limits::default()
+        },
+        &Cancellation::default(),
+    )
+    .unwrap();
+    assert_eq!(report.findings.len(), 3);
+    assert!(!report.is_complete());
+    let missing = report
+        .coverage
+        .iter()
+        .find(|c| c.code == Code::MissingNormals)
+        .unwrap();
+    assert_eq!(
+        (
+            missing.completed_primitives,
+            missing.omitted_primitives,
+            missing.reason
+        ),
+        (0, 1, Some(LimitReason::Findings))
+    );
+    let zero = report
+        .coverage
+        .iter()
+        .find(|c| c.code == Code::ZeroNormal)
+        .unwrap();
+    assert_eq!(missing.omitted_samples(), &[MeshId(0)]);
+    assert_eq!(
+        (
+            zero.completed_primitives,
+            zero.omitted_primitives,
+            zero.reason
+        ),
+        (1, 0, None)
+    );
+    assert_eq!(report.findings[0].code, Code::ZeroArea);
 }
 
 #[test]

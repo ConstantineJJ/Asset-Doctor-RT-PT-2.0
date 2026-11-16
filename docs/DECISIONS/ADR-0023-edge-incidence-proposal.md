@@ -1,6 +1,26 @@
 # ADR-0023 — Source edge incidence and per-check coverage
 
-Status: PROPOSED; implement only after resolving the cases below and tests.
+Status: ACCEPTED for bounded indexed edge incidence and coverage, 2026-11-16.
+
+The source review conclusions below settle eligibility, counts and evidence.
+The implementation follows these decisions; earlier questions remain as rationale.
+
+Report algorithm version2 records one bounded coverage entry per implemented rule:
+completed/omitted source primitive counts, excluded repeated-index triangles for
+edge rules and an explicit resource reason. A finding/sample allocation or result
+cap refuses only that primitive/rule result; earlier findings are never evicted.
+No empty-success message is allowed when coverage is incomplete. Initial admission
+for existing geometry rules (total triangles/core scratch) remains a fatal error
+before any result work begins; no completed report is lost in that case. Whole-job
+cancellation still returns Cancelled with no report.
+
+Core rules finish before edge allocation. Each edge primitive pre-counts eligible
+triangles with cancellation checks, admits 3×eligible×size_of(EdgeRecord) against
+the same scratch cap and releases earlier phase storage. EdgeRecord is three u32
+values (canonical pair and triangle ordinal), checked to be12bytes. Degree1 is
+informational G006; degree>2 is warning G007, labelled high incidence rather than
+proof of complete manifoldness. Evidence is typed vertex-pair data, lowest16 in
+lexicographic order. No positions, instances or primitives are welded.
 
 Next bounded diagnostic increment is indexed edge incidence, independently of
 near-zero geometry thresholds or spatial welding. Do not infer an open edge is

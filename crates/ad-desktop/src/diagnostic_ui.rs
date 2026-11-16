@@ -15,8 +15,15 @@ pub fn show(
                     None=>{ui.label("Откройте модель для анализа.");}
                     Some((document,Ok(report))) if report.matches(document)=>{
                         ui.strong(format!("{} · {} примитивов · {} треугольников",document.name(),report.primitives,report.triangles));
-                        if report.findings.is_empty() {ui.label("По выполненным проверкам замечаний нет. Полная пригодность модели не оценивалась.");}
-                        egui::ScrollArea::vertical().max_height((viewport_height-260.).clamp(80.,400.)).show_rows(ui,76.,report.findings.len(),|ui,range|{
+                        if !report.is_complete() {ui.colored_label(Color32::from_rgb(255,190,120),"Анализ частичный. Сохранённые замечания доступны; часть проверок не завершена.");}
+                        ui.collapsing("Объём проверок",|ui|{
+                            for c in &report.coverage {
+                                let reason=match c.reason {None=>"завершено",Some(ad_analysis::LimitReason::Findings)=>"лимит результатов",Some(ad_analysis::LimitReason::Scratch)=>"лимит памяти",Some(ad_analysis::LimitReason::Allocation)=>"недостаточно памяти"};
+                                ui.label(format!("G{:03}: примитивы {}/{} · {}",c.code as usize+1,c.completed_primitives,report.primitives,reason));
+                            }
+                        });
+                        if report.findings.is_empty() {ui.label(empty_result_text(report));}
+                        egui::ScrollArea::vertical().max_height((ui.available_height()-55.).clamp(60.,(viewport_height-300.).clamp(60.,400.))).show_rows(ui,76.,report.findings.len(),|ui,range|{
                             for i in range {
                                 let finding=&report.findings[i];
                                 ui.push_id(i,|ui|{ ui.allocate_ui(egui::vec2(ui.available_width(),76.),|ui|{
@@ -45,4 +52,41 @@ pub fn show(
                 }
                 ui.separator();ui.weak("Границы, связность, почти вырожденные грани, UV, материалы и скелет пока не проверяются. Противоположный обход не считается дублем.");
             });
+}
+
+fn empty_result_text(report: &ad_analysis::Report) -> &'static str {
+    if report.is_complete() {
+        "По выполненным проверкам замечаний нет. Полная пригодность модели не оценивалась."
+    } else {
+        "Сохранённых замечаний нет. Часть проверок не завершена; это не оценка пригодности модели."
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn missing_findings_after_result_limit_are_never_presented_as_healthy() {
+        let doc = ad_formats::import_glb(
+            std::sync::Arc::from(
+                &include_bytes!("../../../tests/fixtures/Geometry_Findings.glb")[..],
+            ),
+            "test".into(),
+            ad_document::DocumentId(1),
+            ad_document::ImportLimits::default(),
+            &ad_document::Cancellation::default(),
+        )
+        .unwrap();
+        let report = ad_analysis::analyze(
+            &doc,
+            ad_analysis::Limits {
+                findings: 0,
+                ..Default::default()
+            },
+            &ad_document::Cancellation::default(),
+        )
+        .unwrap();
+        assert!(report.findings.is_empty());
+        assert!(!report.is_complete());
+        assert!(super::empty_result_text(&report).contains("не завершена"));
+    }
 }

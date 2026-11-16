@@ -1,5 +1,11 @@
 # Project pulse
 
+## 2026-11-16 — Per-rule coverage before edge diagnostics
+
+- Accepted ADR-0023 eligibility/resource decisions. Algorithm2 now retains completed primitive/rule findings when later output/sample allocation or finding count refuses a result. Bounded coverage records completed/omitted primitive counts, first resource reason and up to16omitted primitive IDs without allocation on failure. Fatal core admission and whole-job cancellation remain explicit errors.
+- UI distinguishes partial reports, exposes per-rule coverage and never describes an empty partial result as no issues. Worker logs analysis_partial separately. Edge execution is the next increment, not yet claimed here.
+-74workspace tests(6analysis/18desktop/14document/24formats/12renderer), clippy warnings denied, fmt and Windows release build PASS. Result-limit regression failed before coverage implementation then passed; partial UI message test passes. Source review found no blocker; its omitted-ID sample gap was filled. Native geometry lifecycle/rejected replacement0validationerrors. No dependencies/push/Legacy changes.
+
 ## 2026-11-15 — Read-only diagnostics in native viewer
 
 - Import worker computes tagged analysis over immutable document after snapshot, with existing latest-ticket/cancel publication guards. Analysis resource refusal retains valid model+explicit incomplete result; cancellation discards import. No UI-thread analysis or new worker. Summary/viewport geometry count distinction remains explicit.

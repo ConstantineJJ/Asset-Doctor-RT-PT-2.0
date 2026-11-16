@@ -191,7 +191,12 @@ fn prepare_with_analysis_limits(
     request.cancel.check()?;
     match &diagnostics {
         Ok(report) => eprintln!(
-            "analysis_complete document={} revision={} primitives={} triangles={} findings={} elapsed_ms={}",
+            "analysis_{} document={} revision={} primitives={} triangles={} findings={} elapsed_ms={}",
+            if report.is_complete() {
+                "complete"
+            } else {
+                "partial"
+            },
             report.document_id.0,
             report.revision,
             report.primitives,
