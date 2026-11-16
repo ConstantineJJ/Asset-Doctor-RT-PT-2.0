@@ -1,6 +1,6 @@
 param(
     [ValidateSet('debug','release')][string]$Configuration='release',
-    [ValidateSet('static','color','pbr','mr','normal','ao','emission','geometry')][string]$Scene='static',
+    [ValidateSet('static','color','pbr','mr','normal','ao','emission','geometry','edges','edge-limit')][string]$Scene='static',
     [switch]$Pbr,
     [switch]$NoMrMaps,
     [switch]$NoNormalMaps,
@@ -12,8 +12,12 @@ $ErrorActionPreference='Stop'
 $repo=Split-Path $PSScriptRoot -Parent
 $exe=Join-Path $repo "target\$Configuration\AssetDoctorRTPT.exe"
 if (!(Test-Path -LiteralPath $exe)) { throw 'Build the desktop executable first.' }
-$good=Join-Path $repo $(switch($Scene) {'color' {'tests\fixtures\Color_Checker.glb'} 'pbr' {'tests\fixtures\Pbr_Factors.glb'} 'mr' {'tests\fixtures\MR_Checker.glb'} 'normal' {'tests\fixtures\Normal_Checker.glb'} 'ao' {'tests\fixtures\AO_Checker.glb'} 'emission' {'tests\fixtures\Emission_Checker.glb'} 'geometry' {'tests\fixtures\Geometry_Findings.glb'} default {'tests\fixtures\Twin_Cubes.glb'}})
+$good=Join-Path $repo $(switch($Scene) {'color' {'tests\fixtures\Color_Checker.glb'} 'pbr' {'tests\fixtures\Pbr_Factors.glb'} 'mr' {'tests\fixtures\MR_Checker.glb'} 'normal' {'tests\fixtures\Normal_Checker.glb'} 'ao' {'tests\fixtures\AO_Checker.glb'} 'emission' {'tests\fixtures\Emission_Checker.glb'} 'geometry' {'tests\fixtures\Geometry_Findings.glb'} 'edges' {'tests\fixtures\Edge_Topology.glb'} 'edge-limit' {'artifacts\Edge_Limit.glb'} default {'tests\fixtures\Twin_Cubes.glb'}})
 $bad=Join-Path $repo $(switch($Scene) {'color' {'tests\fixtures\Bad_Image.glb'} 'mr' {'tests\fixtures\Bad_MR_Image.glb'} 'normal' {'tests\fixtures\Bad_Normal_Image.glb'} 'ao' {'tests\fixtures\Bad_AO_Image.glb'} 'emission' {'tests\fixtures\Bad_Emission_Image.glb'} default {'tests\fixtures\Bad_Truncated.glb'}})
+if ($Scene -eq 'edge-limit') {
+    python (Join-Path $PSScriptRoot 'make_edge_fixtures.py') --large-refusal
+    if ($LASTEXITCODE -ne 0) {throw 'Cannot generate authored edge-limit input.'}
+}
 $reports=Join-Path $repo 'artifacts'
 New-Item -ItemType Directory -Force -Path $reports | Out-Null
 $suffix=if ($SynchronizationValidation) {'-sync'} else {''}
@@ -24,6 +28,7 @@ if ($Scene -eq 'normal') {$suffix='-normal'+$suffix}
 if ($Scene -eq 'ao') {$suffix='-ao'+$suffix}
 if ($Scene -eq 'emission') {$suffix='-emission'+$suffix}
 if ($Scene -eq 'geometry') {$suffix='-geometry'+$suffix}
+if ($Scene -in @('edges','edge-limit')) {$suffix='-'+$Scene+$suffix}
 if ($Pbr) {$suffix='-pbr'+$suffix}
 if ($NoMrMaps) {$suffix='-no-maps'+$suffix}
 if ($NoNormalMaps) {$suffix='-no-normal'+$suffix}
@@ -53,8 +58,19 @@ $pass=$log -split "`n" | Where-Object { $_ -match '^SMOKE_PASS .*validation_enab
 if (!$pass -or $log -notmatch 'asset_smoke imported=true mesh_frames=\d+ rejected_replacement_preserved=true') {
     throw 'Missing import/rejected-replacement/native lifecycle evidence.'
 }
-if ($log -notmatch 'analysis_complete document=1 revision=0 primitives=\d+ triangles=\d+ findings=\d+') {throw 'Missing completed source diagnostics evidence.'}
-if ($Scene -eq 'geometry' -and $log -notmatch 'analysis_complete document=1 revision=0 primitives=2 triangles=6 findings=6') {throw 'Unexpected known geometry findings.'}
+$expectedAnalysis=if($Scene -eq 'edge-limit'){'partial'}else{'complete'}
+if ($log -notmatch "analysis_$expectedAnalysis document=1 revision=0 primitives=\d+ triangles=\d+ findings=\d+") {throw 'Missing expected diagnostic completion state.'}
+if ($Scene -eq 'edges' -and $log -notmatch 'analysis_complete document=1 revision=0 primitives=7 triangles=13 findings=16') {throw 'Unexpected known edge findings.'}
+if ($Scene -eq 'edge-limit') {
+    if ($log -notmatch 'analysis_partial document=1 revision=0 primitives=1 triangles=2000000 findings=3') {throw 'Missing preserved core findings after edge refusal.'}
+    foreach($rule in @('G001','G002','G003','G004','G005')) {
+        if ($log -notmatch "analysis_coverage rule=$rule completed_primitives=1 omitted_primitives=0 excluded_triangles=0 reason=None") {throw "Core coverage lost: $rule"}
+    }
+    foreach($rule in @('G006','G007')) {
+        if ($log -notmatch "analysis_coverage rule=$rule completed_primitives=0 omitted_primitives=1 excluded_triangles=0 reason=Some\(Scratch\)") {throw "Edge refusal not explicit: $rule"}
+    }
+}
+if ($Scene -eq 'geometry' -and $log -notmatch 'analysis_complete document=1 revision=0 primitives=2 triangles=6 findings=9') {throw 'Unexpected known geometry findings.'}
 $expectedBindings=if($Scene -in @('color','emission')){2}else{1}
 if($log -notmatch "gpu_material_binding_sets=$expectedBindings\b"){throw 'Missing material descriptor tuple-sharing evidence.'}
 if ($Scene -eq 'color' -and $log -notmatch 'gpu_material_images=1 material_textures=2 mip_bytes=20 decoded_images=1 srgb_images=1 linear_images=0') {
@@ -73,4 +89,4 @@ if (($NoNormalMaps -or !$Pbr -or $Scene -ne 'normal') -and $log -notmatch 'norma
 if ($Scene -eq 'mr' -and $Pbr -and !$NoMrMaps -and $log -notmatch 'mr_frames=(1[5-9]|[2-9]\d|\d{3,})\b') {throw 'Missing MR sampled frame evidence.'}
 if (($NoMrMaps -or !$Pbr) -and $log -notmatch 'mr_frames=0\b') {throw 'MR sampling unexpectedly active.'}
 if ($Pbr -and $log -notmatch 'lighting_smoke mode=DirectPbr pbr_frames=(1[5-9]|[2-9]\d|\d{3,})\b') {throw 'Missing PBR frame presentation evidence.'}
-($log -split "`n" | Where-Object { $_ -match '^analysis_complete|^gpu_material_images|^asset_smoke|^lighting_smoke|^SMOKE_PASS' }).Trim()
+($log -split "`n" | Where-Object { $_ -match '^analysis_complete|^analysis_partial|^analysis_coverage|^gpu_material_images|^asset_smoke|^lighting_smoke|^SMOKE_PASS' }).Trim()

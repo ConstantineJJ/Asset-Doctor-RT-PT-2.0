@@ -23,9 +23,18 @@ fn document(scale: f32, normals: bool) -> AssetDocument {
         [2. * scale, 0., 0.],
         [0., 0., scale],
     ];
-    let mesh = MeshPrimitive {
+    from_primitives(vec![primitive(
         positions,
-        normals: normals.then(|| vec![[0.; 3]; 5]),
+        normals,
+        vec![0, 1, 2, 1, 2, 0, 0, 2, 1, 0, 1, 3, 0, 0, 1],
+    )])
+}
+
+fn primitive(positions: Vec<[f32; 3]>, normals: bool, indices: Vec<u32>) -> MeshPrimitive {
+    let vertex_count = positions.len();
+    MeshPrimitive {
+        positions,
+        normals: normals.then(|| vec![[0.; 3]; vertex_count]),
         tangents: None,
         normal_texture: None,
         normal_uvs: None,
@@ -37,7 +46,7 @@ fn document(scale: f32, normals: bool) -> AssetDocument {
         emissive_texture: None,
         emissive_uvs: None,
         metallic_roughness: [1.; 2],
-        indices: vec![0, 1, 2, 1, 2, 0, 0, 2, 1, 0, 1, 3, 0, 0, 1],
+        indices,
         base_color: [1.; 4],
         uvs: None,
         colors: None,
@@ -45,7 +54,10 @@ fn document(scale: f32, normals: bool) -> AssetDocument {
         metallic_roughness_texture: None,
         metallic_roughness_uvs: None,
         alpha_cutoff: None,
-    };
+    }
+}
+
+fn from_primitives(meshes: Vec<MeshPrimitive>) -> AssetDocument {
     let node = || Node {
         name: "instance".into(),
         local: [
@@ -62,7 +74,7 @@ fn document(scale: f32, normals: bool) -> AssetDocument {
             id: DocumentId(17),
             name: "authored test".into(),
             source: Arc::from([1, 2, 3]),
-            meshes: vec![mesh],
+            meshes,
             nodes: vec![node(), node()],
             roots: vec![NodeId(0), NodeId(1)],
             notes: Vec::new(),
@@ -85,11 +97,22 @@ fn known_source_defects_keep_winding_indices_and_count_shared_instances_once() {
         (Code::UnusedVertex, 1, vec![4]),
         (Code::MissingNormals, 5, vec![0, 1, 2, 3, 4]),
     ];
-    assert_eq!(report.findings.len(), expected.len());
+    assert_eq!(report.findings.len(), expected.len() + 2);
     for (finding, (code, count, samples)) in report.findings.iter().zip(expected) {
         assert_eq!(
             (finding.code, finding.count, &finding.samples),
-            (code, count, &samples)
+            (
+                code,
+                count,
+                &Samples::Indices {
+                    element: if matches!(code, Code::ZeroArea | Code::DuplicateTriangle) {
+                        Element::Triangle
+                    } else {
+                        Element::Vertex
+                    },
+                    indices: samples
+                }
+            )
         );
         assert_eq!(finding.mesh, MeshId(0));
         assert_eq!(
@@ -127,7 +150,7 @@ fn exact_area_handles_tiny_large_scales_and_zero_normals_without_heuristic() {
             .iter()
             .find(|f| f.code == Code::ZeroNormal)
             .unwrap();
-        assert_eq!((normals.element, normals.count), (Element::Vertex, 5));
+        assert_eq!((normals.code, normals.count), (Code::ZeroNormal, 5));
     }
 }
 
@@ -209,7 +232,13 @@ fn samples_keep_lowest_sixteen_and_stale_reports_are_explicit() {
         .finding(MeshId(0), Code::ZeroArea, Element::Triangle)
         .unwrap();
     assert_eq!(finding.count, 100);
-    assert_eq!(finding.samples, (0..16).collect::<Vec<_>>());
+    assert_eq!(
+        finding.samples,
+        Samples::Indices {
+            element: Element::Triangle,
+            indices: (0..16).collect::<Vec<_>>()
+        }
+    );
     let doc = document(1., false);
     let mut report = analyze(&doc, Limits::default(), &Cancellation::default()).unwrap();
     report.document_id = DocumentId(18);
@@ -217,4 +246,233 @@ fn samples_keep_lowest_sixteen_and_stale_reports_are_explicit() {
     report.document_id = doc.id();
     report.revision += 1;
     assert!(!report.matches(&doc));
+}
+
+fn topology(faces: &[&[u32]]) -> AssetDocument {
+    from_primitives(
+        faces
+            .iter()
+            .map(|indices| {
+                primitive(
+                    vec![
+                        [0., 0., 0.],
+                        [1., 0., 0.],
+                        [0., 1., 0.],
+                        [0., 0., 1.],
+                        [1., 1., 1.],
+                    ],
+                    false,
+                    indices.to_vec(),
+                )
+            })
+            .collect(),
+    )
+}
+fn edge_counts(report: &Report) -> (usize, usize) {
+    assert!(report.is_complete());
+    let count = |code| {
+        report
+            .findings
+            .iter()
+            .filter(|f| f.code == code)
+            .map(|f| f.count)
+            .sum()
+    };
+    (count(Code::BoundaryEdge), count(Code::HighIncidenceEdge))
+}
+#[test]
+fn indexed_edge_oracles_keep_source_triangle_incidence_and_primitive_boundaries() {
+    for (indices, expected) in [
+        (&[0, 1, 2][..], (3, 0)),
+        (&[0, 1, 2, 0, 2, 3][..], (4, 0)),
+        (&[0, 1, 2, 0, 1, 3, 0, 2, 3, 1, 2, 3][..], (0, 0)),
+        (&[0, 1, 2, 0, 1, 3, 0, 1, 4][..], (6, 1)),
+        (&[0, 1, 2, 1, 2, 0][..], (0, 0)),
+        (&[0, 1, 2, 0, 2, 1][..], (0, 0)),
+        (&[0, 1, 2, 1, 2, 0, 0, 2, 1][..], (0, 3)),
+    ] {
+        let doc = topology(&[indices]);
+        let report = analyze(&doc, Limits::default(), &Cancellation::default()).unwrap();
+        assert_eq!(edge_counts(&report), expected, "{indices:?}");
+    }
+    // The second primitive is inactive but analyzed independently. Instances do not multiply counts.
+    let doc = topology(&[&[0, 1, 2], &[0, 2, 3]]);
+    let report = analyze(&doc, Limits::default(), &Cancellation::default()).unwrap();
+    assert_eq!(edge_counts(&report), (6, 0));
+    let boundary = report
+        .findings
+        .iter()
+        .find(|f| f.code == Code::BoundaryEdge)
+        .unwrap();
+    assert_eq!(boundary.severity, Severity::Information);
+    assert_eq!(
+        boundary.samples,
+        Samples::Edges(vec![[0, 1], [0, 2], [1, 2]])
+    );
+}
+#[test]
+fn repeated_index_faces_are_excluded_but_distinct_collinear_indices_remain_eligible() {
+    let doc = topology(&[&[0, 1, 2, 0, 0, 1]]);
+    let report = analyze(&doc, Limits::default(), &Cancellation::default()).unwrap();
+    assert_eq!(edge_counts(&report), (3, 0));
+    for code in [Code::BoundaryEdge, Code::HighIncidenceEdge] {
+        assert_eq!(report.coverage[code as usize].excluded_triangles, 1);
+    }
+    let doc = from_primitives(vec![primitive(
+        vec![[0., 0., 0.], [1., 0., 0.], [2., 0., 0.]],
+        false,
+        vec![0, 1, 2],
+    )]);
+    let report = analyze(&doc, Limits::default(), &Cancellation::default()).unwrap();
+    assert_eq!(edge_counts(&report), (3, 0));
+    assert!(report.findings.iter().any(|f| f.code == Code::ZeroArea));
+}
+#[test]
+fn edge_scratch_and_result_refusals_preserve_earlier_core_results() {
+    let doc = topology(&[&[0, 1, 2, 0, 1, 3, 0, 1, 4]]);
+    let report = analyze(
+        &doc,
+        Limits {
+            scratch_bytes: 100,
+            ..Default::default()
+        },
+        &Cancellation::default(),
+    )
+    .unwrap();
+    assert!(!report.is_complete());
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|f| f.code == Code::MissingNormals)
+    );
+    assert!(report.coverage[..5].iter().all(Coverage::is_complete));
+    for code in [Code::BoundaryEdge, Code::HighIncidenceEdge] {
+        let c = &report.coverage[code as usize];
+        assert_eq!(
+            (c.completed_primitives, c.omitted_primitives, c.reason),
+            (0, 1, Some(LimitReason::Scratch))
+        );
+        assert_eq!(c.omitted_samples(), &[MeshId(0)]);
+    }
+    let doc = topology(&[&[0, 1, 2]]);
+    let report = analyze(
+        &doc,
+        Limits {
+            findings: 2,
+            ..Default::default()
+        },
+        &Cancellation::default(),
+    )
+    .unwrap();
+    assert_eq!(report.findings.len(), 2); // Unused vertices and missing normals retained.
+    assert_eq!(
+        report.coverage[Code::BoundaryEdge as usize].reason,
+        Some(LimitReason::Findings)
+    );
+    assert!(report.coverage[Code::HighIncidenceEdge as usize].is_complete());
+}
+
+#[test]
+fn separate_coincident_indices_are_not_welded_and_edge_samples_are_bounded() {
+    let mut positions = Vec::new();
+    let mut indices = Vec::new();
+    for i in 0..20u32 {
+        positions.extend_from_slice(&[[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]]);
+        indices.extend_from_slice(&[i * 3, i * 3 + 1, i * 3 + 2]);
+    }
+    let doc = from_primitives(vec![primitive(positions, false, indices)]);
+    let report = analyze(&doc, Limits::default(), &Cancellation::default()).unwrap();
+    assert_eq!(edge_counts(&report), (60, 0));
+    let f = report
+        .findings
+        .iter()
+        .find(|f| f.code == Code::BoundaryEdge)
+        .unwrap();
+    let Samples::Edges(pairs) = &f.samples else {
+        panic!("Typed edge evidence expected")
+    };
+    assert_eq!(pairs.len(), 16);
+    assert_eq!(pairs[0], [0, 1]);
+    assert_eq!(pairs[15], [15, 16]);
+    assert!(pairs.windows(2).all(|p| p[0] < p[1]));
+}
+
+#[test]
+fn edge_scratch_boundary_is_exact_and_later_primitives_survive_a_refusal() {
+    let faces = &[0, 1, 2, 0, 1, 3, 0, 1, 4];
+    let doc = topology(&[faces]);
+    for (scratch, complete) in [(107, false), (108, true)] {
+        let report = analyze(
+            &doc,
+            Limits {
+                scratch_bytes: scratch,
+                ..Default::default()
+            },
+            &Cancellation::default(),
+        )
+        .unwrap();
+        assert_eq!(report.is_complete(), complete);
+    }
+    let doc = topology(&[faces, &[0, 1, 2]]);
+    let report = analyze(
+        &doc,
+        Limits {
+            scratch_bytes: 100,
+            ..Default::default()
+        },
+        &Cancellation::default(),
+    )
+    .unwrap();
+    let c = &report.coverage[Code::BoundaryEdge as usize];
+    assert_eq!(
+        (c.completed_primitives, c.omitted_primitives, c.reason),
+        (1, 1, Some(LimitReason::Scratch))
+    );
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|f| f.code == Code::BoundaryEdge && f.mesh == MeshId(1))
+    );
+}
+
+#[test]
+fn omitted_scope_samples_remain_bounded_when_output_budget_is_zero() {
+    let faces = vec![&[0, 1, 2][..]; 20];
+    let doc = topology(&faces);
+    let report = analyze(
+        &doc,
+        Limits {
+            findings: 0,
+            ..Default::default()
+        },
+        &Cancellation::default(),
+    )
+    .unwrap();
+    assert!(report.findings.is_empty());
+    assert!(!report.is_complete());
+    let c = &report.coverage[Code::BoundaryEdge as usize];
+    assert_eq!(c.omitted_primitives, 20);
+    assert_eq!(
+        c.omitted_samples(),
+        &(0..16).map(MeshId).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        report.coverage[Code::HighIncidenceEdge as usize].completed_primitives,
+        20
+    );
+}
+
+#[test]
+fn all_repeated_index_faces_have_complete_empty_edge_results_with_exclusions() {
+    let doc = topology(&[&[0, 0, 1, 1, 1, 2]]);
+    let report = analyze(&doc, Limits::default(), &Cancellation::default()).unwrap();
+    assert_eq!(edge_counts(&report), (0, 0));
+    for code in [Code::BoundaryEdge, Code::HighIncidenceEdge] {
+        let c = &report.coverage[code as usize];
+        assert!(c.is_complete());
+        assert_eq!(c.completed_primitives, 1);
+        assert_eq!(c.excluded_triangles, 2);
+    }
 }

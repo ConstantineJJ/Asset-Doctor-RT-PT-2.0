@@ -61,6 +61,9 @@ per-increment owner acceptance is not a gate. Keep source/audit/verification lim
 - [x] K0: ADR-0022/slice09 audit, independent bounded source findings; robust adaptive area predicate fixes numerical review repro.
 - [x] K1: Tagged worker report/incomplete failure retention, read-only Diagnostics window, capped samples and virtual rows;72tests and required Windows/dependency checks.
 - [x] K2: Authored defect fixture source6/display11triangles and6findings; native scroll/footer/close checked. Heavy Vanguard1559826source triangles/0findings in77ms, lifecycle0errors.
-- [ ] Next: indexed edge incidence/boundary/non-manifold contracts with resource-aware per-check coverage; no automatic repair or healthy score. Environment/shadows remain future raster work.
+- [x] L0: Accepted ADR-0023 edge eligibility and per-rule coverage; no implicit position welding/full manifoldness claim.
+- [x] L1: Algorithm3 typed edge samples; boundary information/high-incidence warnings; bounded separate scratch, omitted/excluded scope and retained core results.84tests and required Windows/dependency gates.
+- [x] L2: Native authored edge/partial-memory-refusal cases, prior geometry/emission/empty regressions, heavy Vanguard and actual full/partial UI checks;0validationerrors/source hashes unchanged.
+- [ ] Next: bounded indexed connected-component analysis contracts and fixtures, respecting primitive/index scope and per-rule coverage. UV/material diagnostics and verified repair remain separate steps. Environment/shadows remain future raster work.
 - [ ] Later: environment/shadows/full PBR, diagnostics, Heal, manual rig/animation, unified Compare, verified export and installer.
 - [ ] Later: RT → PT → Mixamo rights check/autorig/retargeting.

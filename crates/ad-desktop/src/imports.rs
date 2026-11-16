@@ -206,6 +206,18 @@ fn prepare_with_analysis_limits(
         ),
         Err(error) => eprintln!("analysis_incomplete code={:?}", error.code),
     }
+    if let Ok(report) = &diagnostics {
+        for c in &report.coverage {
+            eprintln!(
+                "analysis_coverage rule=G{:03} completed_primitives={} omitted_primitives={} excluded_triangles={} reason={:?}",
+                c.code as usize + 1,
+                c.completed_primitives,
+                c.omitted_primitives,
+                c.excluded_triangles,
+                c.reason
+            );
+        }
+    }
     Ok(PreparedAsset {
         document,
         snapshot,
@@ -268,7 +280,7 @@ mod tests {
         );
     }
     #[test]
-    fn authored_diagnostic_fixture_has_six_source_findings_and_eleven_displayed_triangles() {
+    fn authored_diagnostic_fixture_has_nine_source_findings_and_eleven_displayed_triangles() {
         let request = Request {
             ticket: 1,
             path: fixture("Geometry_Findings.glb"),
@@ -278,12 +290,65 @@ mod tests {
         let report = asset.diagnostics.unwrap();
         assert_eq!(
             (report.primitives, report.triangles, report.findings.len()),
-            (2, 6, 6)
+            (2, 6, 9)
         );
         assert_eq!(asset.snapshot.indices.len() / 3, 11);
-        assert_eq!(report.findings[0].samples, [3, 4]);
-        assert_eq!(report.findings[1].samples, [1]);
-        assert_eq!(report.findings[4].samples, [3, 4]);
+        assert_eq!(
+            report.findings[0].samples,
+            ad_analysis::Samples::Indices {
+                element: ad_analysis::Element::Triangle,
+                indices: vec![3, 4]
+            }
+        );
+        assert_eq!(
+            report.findings[1].samples,
+            ad_analysis::Samples::Indices {
+                element: ad_analysis::Element::Triangle,
+                indices: vec![1]
+            }
+        );
+        assert_eq!(
+            report.findings[4].samples,
+            ad_analysis::Samples::Indices {
+                element: ad_analysis::Element::Vertex,
+                indices: vec![3, 4]
+            }
+        );
+    }
+    #[test]
+    fn authored_edge_fixture_counts_topology_without_multiplying_instances() {
+        let request = Request {
+            ticket: 1,
+            path: fixture("Edge_Topology.glb"),
+            cancel: Cancellation::default(),
+        };
+        let asset = prepare(&request).unwrap();
+        let report = asset.diagnostics.unwrap();
+        assert!(report.is_complete());
+        assert_eq!(
+            (report.primitives, report.triangles, report.findings.len()),
+            (7, 13, 16)
+        );
+        assert_eq!(asset.snapshot.indices.len() / 3, 16);
+        let count = |code| {
+            report
+                .findings
+                .iter()
+                .filter(|f| f.code == code)
+                .map(|f| f.count)
+                .sum::<usize>()
+        };
+        assert_eq!(
+            (
+                count(ad_analysis::Code::BoundaryEdge),
+                count(ad_analysis::Code::HighIncidenceEdge)
+            ),
+            (21, 1)
+        );
+        assert_eq!(
+            report.coverage[ad_analysis::Code::BoundaryEdge as usize].excluded_triangles,
+            1
+        );
     }
     #[test]
     fn analysis_refusal_keeps_the_valid_viewable_asset_and_incomplete_status() {

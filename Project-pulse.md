@@ -1,5 +1,13 @@
 # Project pulse
 
+## 2026-11-16 — Indexed edge incidence and partial-result verification
+
+- Implemented accepted ADR-0023 in separate edge phase after core buffers retire. Algorithm3 adds typed vertex-pair G006boundary information and G007high-incidence warning, without welding or full manifoldness claims. Distinct-index collinear faces remain eligible; repeated-index faces excluded/count retained.12byte records,64MiB scratch, sorted degree counts, lowest16pairs, per-rule completed/omitted/excluded scope. Core findings survive edge refusal; whole-job cancellation discards publication.
+-84workspace tests(15analysis/19desktop/14document/24formats/12renderer), fmt/clippy denied warnings/release build/cargo-deny PASS. Source reviews found no blocker after dense-group cancellation/all-excluded tests added. No packages or license-policy changes. Source parity matrix now marks topology and normal diagnostics partial, not full parity.
+- Native authored Edge_Topology7source primitives/13triangles/16findings versus16displayed triangles,21boundary pairs/1high-incidence pair/1excluded face. Transient2Mcollinear-face resource case retains3core findings and5/7completed rules, explicitly refuses edge72000000bytes against64MiB. Source core32000003bytes fits. Rejected replacement/lifecycle0validationerrors. Large input stays under ignored artifacts; only3KBnumeric fixture committed.
+- Native geometry(now9findings)/emission/empty regressions0errors. Heavy Vanguard1559826triangles/all7rules complete/1finding/267ms,4images223696208mipbytes, replacement/lifecycle0errors/sourcehashunchanged. Timings are single local observations, no benchmark or memory-peak measurement. Import runs request child sync validation, effective setting not separately queried.
+- Sky native UI observed G006pairs and G0070–1, full coverage and partial yellow status with explicit G006/G007memory reasons. Scroll/footer checked800x540, both apps closed0errors; capture session reset. Logs artifacts/edge-ui-visual.*, edge-limit-ui-visual.*, vanguard-edge-smoke.*, release-import-smoke*edges*/*edge-limit*. No user assets/screenshots vendored, Legacy/Arc-XRay unchanged/no push. Next: source-index connected-component contracts, not automatic repair.
+
 ## 2026-11-16 — Per-rule coverage before edge diagnostics
 
 - Accepted ADR-0023 eligibility/resource decisions. Algorithm2 now retains completed primitive/rule findings when later output/sample allocation or finding count refuses a result. Bounded coverage records completed/omitted primitive counts, first resource reason and up to16omitted primitive IDs without allocation on failure. Fatal core admission and whole-job cancellation remain explicit errors.

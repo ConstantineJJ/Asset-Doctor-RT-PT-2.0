@@ -51,12 +51,13 @@ aware image sharing/admission. ADR-0018 adds normal maps with source tangent/sca
 preservation and explicit non-Mikk fallback. ADR-0019 adds linear source occlusion
 only to approximate fill. ADR-0020 separates frame/material bindings and ADR-0021
 adds core emission with SRGB maps. ADR-0022 adds bounded source geometry findings in independent ad-analysis.
-Final workspace has72 tests; native static/textured/PBR/MR/normal/AO import,
+ADR-0023 adds indexed edge incidence and per-rule coverage, with algorithm3 typed
+edge evidence. Final workspace has84 tests; native static/textured/PBR/MR/normal/AO import,
 rejected replacement and resize/minimize/restore/close smoke pass with validation.
-Read-only diagnostics currently cover five source geometry rules only.
+Read-only diagnostics currently cover seven source geometry rules only.
 Full UI/parity, topology/UV/material/profile diagnostics, repair, rig/animation, export, Mikk fidelity,
 environment/shadows and RT/PT remain open. Current evidence and limits are in
-GEOMETRY_DIAGNOSTICS_REPORT_2026-11-15.md. Development/self-verification continues
+EDGE_DIAGNOSTICS_REPORT_2026-11-16.md. Development/self-verification continues
 autonomously under the owner's instruction, without per-increment owner acceptance.
 Application name includes 2.0; engineering package starts at 0.1.0 to avoid
 confusing this new prototype with Legacy 2.0.14 or a released product.

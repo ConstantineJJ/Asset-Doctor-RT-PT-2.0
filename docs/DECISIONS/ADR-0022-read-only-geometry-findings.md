@@ -44,3 +44,7 @@ Numerical review reproduced plain f64 cross cancellation for a nonzero triangle.
 Use pinned robust1.2.0 adaptive predicates (MIT OR Apache-2.0), no geometry engine.
 Finite f32 inputs fit safe f64 product ranges. Replacement boundary is zero_area.
 See [upstream predicate docs](https://docs.rs/robust/1.2.0/robust/fn.orient2d.html).
+
+ADR-0023 supersedes all-or-nothing result-cap behavior: completed findings survive
+result/edge resource refusal with per-rule incomplete coverage. Upfront core
+admission and whole-job cancellation remain fatal, before any report publication.

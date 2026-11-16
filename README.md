@@ -55,8 +55,11 @@ use [Twin_Cubes.glb](tests/fixtures/Twin_Cubes.glb).
 - **Дерево** opens the initially hidden scene list. Selecting a node shows its
   read-only details; geometry highlighting/editing is not implemented yet.
 - **Диагностика** opens a read-only report with counts and up to16 source vertex/triangle
-  index samples per finding. It checks zero-area and oriented duplicate triangles,
-  unused vertices, missing and zero normals. Each source primitive is counted once,
+  index/pair samples per finding. It checks zero-area and oriented duplicate triangles,
+  unused vertices, missing and zero normals, boundary edges and edges with more
+  than two incident triangles. Boundaries are informational and may be intentional.
+  Per-rule coverage makes resource-limited checks explicit and retains completed
+  findings. Each source primitive is counted once,
   including inactive data. This is a bounded first subset, with no health score or repair.
 - **Сводка** shows source size, document nodes, expanded display counts and bounds.
   Optional panels hide in compact windows. Help includes embedded font notices.
@@ -104,6 +107,9 @@ strict image admission, shared SRGB resources and lights-off visual checks.
 The [geometry diagnostics report](docs/GEOMETRY_DIAGNOSTICS_REPORT_2026-11-15.md)
 records exact source rules, resource/cancellation limits and native evidence.
 
+The [indexed edge report](docs/EDGE_DIAGNOSTICS_REPORT_2026-11-16.md) adds typed
+vertex-pair evidence and per-rule coverage, including a real partial-result smoke.
+
 ## Build on Windows
 
 Install MSVC C++ Build Tools with Windows SDK, Rust MSVC stable and LunarG Vulkan
@@ -141,6 +147,8 @@ environment. Its explicit array preserves Cargo's argument separator:
 .\tools\import-smoke.ps1 -Scene emission -Pbr -SynchronizationValidation
 .\tools\import-smoke.ps1 -Scene emission -Pbr -NoEmission -SynchronizationValidation
 .\tools\import-smoke.ps1 -Scene geometry -Pbr -SynchronizationValidation
+.\tools\import-smoke.ps1 -Scene edges -Pbr -SynchronizationValidation
+.\tools\import-smoke.ps1 -Scene edge-limit -Pbr -SynchronizationValidation
 ```
 
 The separate probe prints actual GPU/API/heap/queue/extension availability. It does not

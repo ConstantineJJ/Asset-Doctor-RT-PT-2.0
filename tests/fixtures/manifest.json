@@ -54,6 +54,12 @@
     "origin": "Project-authored numeric test geometry and PNG; no external content"
   },
   {
+    "file": "Edge_Topology.glb",
+    "bytes": 3064,
+    "sha256": "27c06870e0b24f453fb7d80aabebe546495fb06d45b47ecaccbfeea6ac819516",
+    "origin": "Project-authored numeric edge incidence/primitive/instance data; no external content"
+  },
+  {
     "file": "Emission_Checker.glb",
     "bytes": 41996,
     "sha256": "34dc709091920a49cd6c34ee9afa7b6f8d347ce0cac0bea4914fb081797e8e7f",

@@ -5,7 +5,8 @@ Status: ACCEPTED for bounded indexed edge incidence and coverage, 2026-11-16.
 The source review conclusions below settle eligibility, counts and evidence.
 The implementation follows these decisions; earlier questions remain as rationale.
 
-Report algorithm version2 records one bounded coverage entry per implemented rule:
+Report algorithm version2 introduced coverage; version3 adds typed edge samples
+and the two edge rules. It records one bounded coverage entry per implemented rule:
 completed/omitted source primitive counts, excluded repeated-index triangles for
 edge rules and an explicit resource reason. A finding/sample allocation or result
 cap refuses only that primitive/rule result; earlier findings are never evicted.
@@ -60,7 +61,8 @@ phase budget boundaries and stale/cancel before publication. Use typed edge samp
 (two source vertex indices) with the existing16sample bound. Do not repurpose a
 triangle sample index as an edge index or silently change G001..G005 semantics.
 
-No implementation or runtime acceptance is claimed by this proposal.
+Implementation and verification: EDGE_DIAGNOSTICS_REPORT_2026-11-16.md.
+Earlier proposal questions below are retained as decision rationale.
 
 ## Source review conclusions for implementation planning
 
@@ -86,8 +88,8 @@ No implementation or runtime acceptance is claimed by this proposal.
   sort and referenced buffers where possible; verify actual record size and all
   prospective arithmetic. Never overlap face-sort storage with edge records.
 
-These decisions narrow the proposal; the report coverage API and tests remain
-to be implemented and reviewed. Suggested first count oracle: one triangle has
+These decisions are implemented in the version3 report and covered by source
+review, unit tests and native checks. Suggested first count oracle: one triangle has
 3boundary edges; two triangles sharing one edge have4; a tetrahedron has0; three
 triangles sharing one edge have6boundary edges and1high-incidence edge. Duplicate
 faces can hide boundaries or create high incidence, so report G002 independently.

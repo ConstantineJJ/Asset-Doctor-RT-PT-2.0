@@ -1,5 +1,6 @@
 //! Bounded read-only diagnostics over immutable source primitives, never GPU data.
 mod coverage;
+mod edges;
 use ad_document::{
     AssetDocument, AssetError, AssetResult, Cancellation, DocumentId, ErrorCode, MeshId,
 };
@@ -13,17 +14,21 @@ pub enum Code {
     UnusedVertex,
     MissingNormals,
     ZeroNormal,
+    BoundaryEdge,
+    HighIncidenceEdge,
 }
 impl Code {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::ZeroArea,
         Self::DuplicateTriangle,
         Self::UnusedVertex,
         Self::MissingNormals,
         Self::ZeroNormal,
+        Self::BoundaryEdge,
+        Self::HighIncidenceEdge,
     ];
 }
-pub const ALGORITHM_VERSION: u32 = 2;
+pub const ALGORITHM_VERSION: u32 = 3;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Severity {
     Information,
@@ -34,14 +39,19 @@ pub enum Element {
     Vertex,
     Triangle,
 }
+/// Edge evidence uses vertex pairs and cannot be confused with scalar offsets.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Samples {
+    Indices { element: Element, indices: Vec<u32> },
+    Edges(Vec<[u32; 2]>),
+}
 #[derive(Debug, PartialEq, Eq)]
 pub struct Finding {
     pub code: Code,
     pub severity: Severity,
     pub mesh: MeshId,
-    pub element: Element,
     pub count: usize,
-    pub samples: Vec<u32>,
+    pub samples: Samples,
 }
 pub struct Report {
     pub document_id: DocumentId,
@@ -50,7 +60,7 @@ pub struct Report {
     pub primitives: usize,
     pub triangles: usize,
     pub findings: Vec<Finding>,
-    pub coverage: [Coverage; 5],
+    pub coverage: [Coverage; 7],
 }
 impl Report {
     pub fn matches(&self, document: &AssetDocument) -> bool {
@@ -105,9 +115,11 @@ impl Tally {
         Ok(Finding {
             code,
             mesh,
-            element,
             count: self.count,
-            samples,
+            samples: Samples::Indices {
+                element,
+                indices: samples,
+            },
             severity: if code == Code::MissingNormals {
                 Severity::Information
             } else {
@@ -230,6 +242,7 @@ pub fn analyze(
             });
         }
     }
+    edges::analyze(document, &mut report, limits, cancel)?;
     cancel.check()?;
     Ok(report)
 }

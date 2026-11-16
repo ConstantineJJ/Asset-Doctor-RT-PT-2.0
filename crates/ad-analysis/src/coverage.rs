@@ -41,7 +41,9 @@ impl Coverage {
 
 impl Report {
     pub fn is_complete(&self) -> bool {
-        self.coverage.iter().all(Coverage::is_complete)
+        self.coverage
+            .iter()
+            .all(|c| c.is_complete() && c.completed_primitives == self.primitives)
     }
     pub(crate) fn omit(&mut self, code: Code, mesh: MeshId, reason: LimitReason) {
         let coverage = &mut self.coverage[code as usize];

@@ -9,7 +9,7 @@ pub fn show(
 ) {
     egui::Window::new("Диагностика геометрии").open(open).default_size([620.,420.]).show(context,|ui| {
                 ui.label("Исходные примитивы, включая неактивные; каждый проверен один раз. Экземпляры и преобразования просмотра не учитываются.");
-                ui.weak("Первые проверки: нулевая площадь, дубли индексов с тем же обходом, неиспользуемые вершины, отсутствие и нулевые нормали. Ремонт не выполняется.");
+                ui.weak("Проверки: площадь, дубли, вершины, нормали и рёбра по индексам. Открытые края могут быть намеренными. Ремонт не выполняется.");
                 ui.separator();
                 match asset.map(|a|(&a.document,&a.diagnostics)) {
                     None=>{ui.label("Откройте модель для анализа.");}
@@ -19,7 +19,8 @@ pub fn show(
                         ui.collapsing("Объём проверок",|ui|{
                             for c in &report.coverage {
                                 let reason=match c.reason {None=>"завершено",Some(ad_analysis::LimitReason::Findings)=>"лимит результатов",Some(ad_analysis::LimitReason::Scratch)=>"лимит памяти",Some(ad_analysis::LimitReason::Allocation)=>"недостаточно памяти"};
-                                ui.label(format!("G{:03}: примитивы {}/{} · {}",c.code as usize+1,c.completed_primitives,report.primitives,reason));
+                                let detail=format!("Пропущенные примитивы: {:?}. Исключено граней с повторными индексами: {}. Первое ограничение: {}.",c.omitted_samples().iter().map(|m|m.0).collect::<Vec<_>>(),c.excluded_triangles,reason);
+                                ui.label(format!("G{:03}: примитивы {}/{} · {}",c.code as usize+1,c.completed_primitives,report.primitives,reason)).on_hover_text(detail);
                             }
                         });
                         if report.findings.is_empty() {ui.label(empty_result_text(report));}
@@ -34,14 +35,18 @@ pub fn show(
                                         ad_analysis::Code::UnusedVertex=>("G003","Неиспользуемые вершины"),
                                         ad_analysis::Code::MissingNormals=>("G004","Нормали отсутствуют · просмотр использует нормаль грани"),
                                         ad_analysis::Code::ZeroNormal=>("G005","Нулевые нормали"),
+                                        ad_analysis::Code::BoundaryEdge=>("G006","Граничные рёбра · могут быть намеренными"),
+                                        ad_analysis::Code::HighIncidenceEdge=>("G007","Рёбра с более чем двумя гранями"),
                                     };
                                     let severity=if finding.severity==ad_analysis::Severity::Information {"Сведения"} else {"Замечание"};
                                     let title=format!("{code} · {severity} · {label}");
                                     ui.add(egui::Label::new(&title).truncate()).on_hover_text(title);
                                     let metadata=format!("Примитив #{} · количество {}",finding.mesh.0,finding.count);
                                     ui.add(egui::Label::new(&metadata).truncate()).on_hover_text(metadata);
-                                    let element=match finding.element {ad_analysis::Element::Vertex=>"Вершины",ad_analysis::Element::Triangle=>"Треугольники"};
-                                    let samples=format!("{element}: {:?} (с нуля, до 16 примеров)",finding.samples);
+                                    let samples=match &finding.samples {
+                                        ad_analysis::Samples::Indices {element,indices}=>format!("{}: {indices:?} (с нуля, до 16 примеров)",match element {ad_analysis::Element::Vertex=>"Вершины",ad_analysis::Element::Triangle=>"Треугольники"}),
+                                        ad_analysis::Samples::Edges(pairs)=>format!("Рёбра: {} (пары вершин, с нуля)",pairs.iter().map(|p|format!("{}–{}",p[0],p[1])).collect::<Vec<_>>().join(", ")),
+                                    };
                                     ui.add(egui::Label::new(&samples).truncate()).on_hover_text(samples);
                                 }); });
                             }
@@ -50,7 +55,7 @@ pub fn show(
                     Some((_,Err(error)))=>{ui.colored_label(Color32::from_rgb(255,190,120),format!("Анализ не завершён: {}. Модель доступна для просмотра.",error.message));}
                     Some((_,Ok(_)))=>{ui.label("Результат анализа устарел и скрыт.");}
                 }
-                ui.separator();ui.weak("Границы, связность, почти вырожденные грани, UV, материалы и скелет пока не проверяются. Противоположный обход не считается дублем.");
+                ui.separator();ui.weak("Рёбра сопоставлены только по индексам внутри примитива; совпадающие позиции не объединяются. Грани с повторными индексами исключены из проверки рёбер. Связность, ориентация оболочек, UV, материалы и скелет пока не проверяются.");
             });
 }
 

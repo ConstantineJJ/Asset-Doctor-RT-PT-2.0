@@ -97,3 +97,10 @@ algorithm. The bounded import worker computes them before publication; an analys
 budget failure is retained as incomplete status alongside the viewable asset. UI
 never replaces stale/incomplete evidence with a healthy result. Current source
 checks use robust adaptive predicates and bounded sorting/samples, no renderer data.
+
+ADR-0023 extends analysis to indexed edge incidence. Core primitive buffers are
+released before per-primitive12byte edge records are admitted/sorted. Version3
+reports use typed scalar-index or vertex-pair samples. Fixed per-rule coverage
+retains completed/omitted/excluded scope and up to16omitted IDs without allocation
+on failure. Resource-limited edge checks preserve completed core findings; whole-
+job cancellation still discards publication. No welding or full manifoldness claim.

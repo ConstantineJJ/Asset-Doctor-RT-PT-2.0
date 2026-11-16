@@ -302,7 +302,7 @@ implementation progress is maintained in docs/FEATURE_PARITY_MATRIX.csv and repo
 - Mutation / Undo / cancellation: Worker path; cancellation/stale guards require native exercise
 - Errors: See acceptance and referenced implementation; native fault exercise pending
 - Evidence: `src/analysis/TopologyAnalyzer.ts:3`
-- Source: OBSERVED; native: UNVERIFIED; new product: NOT_STARTED.
+- Source: OBSERVED; native: UNVERIFIED; new product: PARTIAL_INDEXED_TOPOLOGY.
 - Acceptance: Synthetic defect fixture gives expected issue IDs and locations
 
 ## DIAG-04 — Normals and UV
@@ -312,7 +312,7 @@ implementation progress is maintained in docs/FEATURE_PARITY_MATRIX.csv and repo
 - Mutation / Undo / cancellation: Read-only
 - Errors: See acceptance and referenced implementation; native fault exercise pending
 - Evidence: `src/analysis/NormalsAndUvAnalyzer.ts:12`
-- Source: OBSERVED; native: UNVERIFIED; new product: NOT_STARTED.
+- Source: OBSERVED; native: UNVERIFIED; new product: PARTIAL_SOURCE_NORMALS.
 - Acceptance: Known absent/zero data produces correct severity
 
 ## DIAG-05 — Materials/textures
