@@ -3,7 +3,9 @@ mod color;
 mod indices;
 mod normals;
 mod uv;
-pub use indices::{AppliedRemoval, DocumentTag, IndexExchange, PreparedRemoval, RemovalPreview};
+pub use indices::{
+    AppliedRemoval, DocumentStamp, DocumentTag, IndexExchange, PreparedRemoval, RemovalPreview,
+};
 #[cfg(test)]
 mod index_tests;
 pub use color::*;
@@ -27,6 +29,7 @@ pub enum ErrorCode {
     Io,
     Conflict,
     HistoryEmpty,
+    VerificationFailed,
 }
 
 #[derive(Debug, Clone)]

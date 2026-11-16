@@ -1,6 +1,8 @@
 # ADR-0027 — First safe Heal and static export
 
-Status: PROPOSED, 2026-11-16. No user operation or writer approved by this proposal.
+Status: PARTIALLY DECIDED, 2026-11-16. ADR-0028/0029accept internal static index
+export and new-path storage subsets. Full first-Heal/native publication remains
+PROPOSED; no user operation approved by this proposal alone.
 
 Target first complete workflow: oriented same-index duplicate findingG002 →
 read-only preview of full removal set → explicit apply → independent postcheck →
@@ -14,10 +16,11 @@ revision and exact removal-only diff. Reversed winding is not the same duplicate
 BLEND, skin/morph/animation and unknown extension/metadata interactions require
 explicit certification or refusal, not a silent fallback.
 
-Before a writer implementation, decide source-primitive/accessor provenance,
+ADR-0028/0029 decide the implemented internal writer subset: source-primitive/accessor provenance,
 supported optional extras/extensions, index-only BIN patch vs reconstruction,
 independent readback tolerances and unknown-data preservation. Static view support
-is not export fidelity. Do not copy Legacy's source-patch/export architecture.
+is not export fidelity. Broader editing/rig combinations remain undecided.
+Do not copy Legacy's source-patch/export architecture.
 
 Native publication must handle snapshot/analysis/upload failure atomically while
 retaining current scene/history. Export must be bound to the selected revision,

@@ -60,6 +60,7 @@ dependencies = [
  "ad-document",
  "gltf",
  "image",
+ "serde",
  "serde_json",
 ]
 
@@ -74,6 +75,15 @@ dependencies = [
  "egui-ash-renderer",
  "naga",
  "raw-window-handle",
+]
+
+[[package]]
+name = "ad-storage"
+version = "0.1.0"
+dependencies = [
+ "ad-document",
+ "ad-formats",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

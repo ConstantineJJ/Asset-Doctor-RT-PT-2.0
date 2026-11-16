@@ -21,7 +21,7 @@ pub enum Mipmap {
     #[default]
     Linear,
 }
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TextureSampler {
     pub min: Filter,
     pub mag: Filter,
@@ -44,7 +44,7 @@ pub enum TextureEncoding {
     Srgb,
     Linear,
 }
-#[derive(Clone, Copy, Default, Debug)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct TextureStats {
     pub textures: usize,
     pub images: usize,

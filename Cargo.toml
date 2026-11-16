@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/ad-document", "crates/ad-formats", "crates/ad-render-vulkan", "crates/ad-desktop", "crates/ad-analysis", "crates/ad-commands"]
+members = ["crates/ad-document", "crates/ad-formats", "crates/ad-render-vulkan", "crates/ad-desktop", "crates/ad-analysis", "crates/ad-commands", "crates/ad-storage"]
 resolver = "2"
 
 [workspace.package]

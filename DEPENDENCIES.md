@@ -15,11 +15,11 @@ external package was added. Product licensing remains the owner's decision.
 | winit | 0.30.13, rwh_06 only | Apache-2.0 | Native event loop/window experiment; separate desktop crate boundary permits replacement |
 | png | 0.18.1 | MIT OR Apache-2.0 | Decode compile-time owner window icon; no user image decoding |
 | winresource | 0.1.34, build only | MIT | Embed EXE icon/version through Windows SDK resource compiler |
-| windows-sys / windows-targets / MSVC import libs | 0.52.0 / 0.52.6 | MIT OR Apache-2.0 | Desktop-only OS close smoke and error message; same version as winit |
+| windows-sys / windows-targets / MSVC import libs | 0.52.0 / 0.52.6 | MIT OR Apache-2.0 | Desktop OS dialogs/close smoke and isolated ad-storage handle-bound staging deletion; new storage features Foundation/FileSystem reuse the locked version; replace inside each platform boundary |
 | cargo-deny | 0.20.2, development tool | MIT OR Apache-2.0 | License/advisory/source/duplicate gates; not an application runtime dependency |
 | glam | 0.34.3, std; f64 in document | MIT OR Apache-2.0 | Document transforms, double-precision inverse-transpose normals and desktop camera math; public geometry stays plain arrays, replace at these boundaries |
 | gltf / gltf-json / gltf-derive | 1.4.1, default features disabled | MIT OR Apache-2.0 | Maintained GLB container/schema/accessor validation; utils/names/extras only, no image/import/network helpers; replace inside ad-formats |
-| serde_json | 1.0.150, direct use in tests only; parser transitive | MIT OR Apache-2.0 | Synthetic GLB metadata fixture construction; gltf owns production metadata parsing |
+| serde_json / serde | 1.0.150 / 1.0.229 exact, production ad-formats | MIT OR Apache-2.0 | Existing parser dependencies promoted to explicit use for bounded duplicate-aware metadata parsing and changed-GLB serialization/readback; no raw_value feature or new registry version; replace inside formats |
 | naga / naga-types | 30.0.2, BUILD only | MIT OR Apache-2.0 | Authored GLSL to embedded SPIR-V, glsl-in/spv-out only; replace build.rs compiler without changing runtime renderer |
 | foldhash / pp-rs / unicode-ident | 0.2.0 / 0.2.1 / 1.0.27, transitive build tools | Zlib / BSD-3-Clause / (MIT OR Apache-2.0) AND Unicode-3.0 | Shader/compiler data structures, GLSL preprocessor, proc-macro identifiers; source license notices reviewed, retain attribution when packaging |
 | egui / egui-winit | 0.36.2 exact; defaults disabled except egui default_fonts | MIT OR Apache-2.0 | Native widget/input experiment; desktop owns controls/context, renderer accepts paint data only. No eframe/wgpu/clipboard/URL-opening integration. Replace at UiFrame boundary |

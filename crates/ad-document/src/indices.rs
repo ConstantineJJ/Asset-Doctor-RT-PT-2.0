@@ -9,6 +9,20 @@ pub struct DocumentTag {
     pub document: DocumentId,
     pub revision: u64,
 }
+/// Private origin plus public version: safe against reused public IDs.
+#[derive(Clone)]
+pub struct DocumentStamp {
+    tag: DocumentTag,
+    owner: Arc<()>,
+}
+impl DocumentStamp {
+    pub fn tag(&self) -> DocumentTag {
+        self.tag
+    }
+    pub fn is_current(&self, document: &AssetDocument) -> bool {
+        self.tag == document.tag() && Arc::ptr_eq(&self.owner, &document.origin)
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RemovalPreview {
     pub tag: DocumentTag,
@@ -93,6 +107,12 @@ fn copy_retained(
 }
 
 impl AssetDocument {
+    pub fn stamp(&self) -> DocumentStamp {
+        DocumentStamp {
+            tag: self.tag(),
+            owner: self.origin.clone(),
+        }
+    }
     pub fn tag(&self) -> DocumentTag {
         DocumentTag {
             document: self.id(),
