@@ -103,6 +103,7 @@ if ($GpuFault -ne 'none' -and !$Edit -and $log -notmatch "gpu_fault_smoke stage=
 if ($Edit) {
     if ($GpuFault -ne 'none' -and $log -notmatch 'edit_gpu_fault preserved=true revision=0 scene_revision=0 undo=0 redo=0') {throw 'Injected GPU failure during Apply was not fully preserved.'}
     foreach ($line in @(
+        'edit_preview mesh=0 before=992 after=960 references=1 complete=true g002_left=0',
         'edit_published kind=remove removed=32 revision=1 scene_revision=1 mesh_triangles=960 analysis=complete g002_in_mesh=0 undo=1 redo=0 consistent=true',
         'edit_published kind=undo removed=0 revision=2 scene_revision=2 mesh_triangles=992 analysis=complete g002_in_mesh=1 undo=0 redo=1 consistent=true',
         'edit_published kind=redo removed=0 revision=3 scene_revision=3 mesh_triangles=960 analysis=complete g002_in_mesh=0 undo=1 redo=0 consistent=true',
@@ -128,4 +129,4 @@ if (($NoNormalMaps -or !$Pbr -or $Scene -notin @('normal','heal')) -and $log -no
 if ($Scene -eq 'mr' -and $Pbr -and !$NoMrMaps -and $log -notmatch 'mr_frames=(1[5-9]|[2-9]\d|\d{3,})\b') {throw 'Missing MR sampled frame evidence.'}
 if (($NoMrMaps -or !$Pbr) -and $log -notmatch 'mr_frames=0\b') {throw 'MR sampling unexpectedly active.'}
 if ($Pbr -and $log -notmatch 'lighting_smoke mode=DirectPbr pbr_frames=(1[5-9]|[2-9]\d|\d{3,})\b') {throw 'Missing PBR frame presentation evidence.'}
-($log -split "`n" | Where-Object { $_ -match '^edit_gpu_fault|^edit_published|^edit_smoke_done|^gpu_fault_smoke|^gpu_scene_published|^analysis_complete|^analysis_partial|^analysis_coverage|^gpu_material_images|^asset_smoke|^lighting_smoke|^SMOKE_PASS' }).Trim()
+($log -split "`n" | Where-Object { $_ -match '^edit_preview|^edit_gpu_fault|^edit_published|^edit_smoke_done|^gpu_fault_smoke|^gpu_scene_published|^analysis_complete|^analysis_partial|^analysis_coverage|^gpu_material_images|^asset_smoke|^lighting_smoke|^SMOKE_PASS' }).Trim()

@@ -47,6 +47,32 @@ impl EditCandidate {
     pub fn preview(&self) -> Option<DuplicatePreview> {
         self.preview
     }
+    /// Read-only facts for the Preview window; None for Undo/Redo.
+    pub fn info(&self) -> Option<crate::viewer_ui::PreviewInfo> {
+        let preview = self.preview?;
+        let report = self.diagnostics.as_ref().ok();
+        Some(crate::viewer_ui::PreviewInfo {
+            mesh: preview.mesh,
+            before: preview.before_triangles,
+            after: preview.after_triangles,
+            references: preview.source_node_references,
+            complete: report.is_some_and(|r| r.is_complete()),
+            g002_left: report.map(|r| {
+                r.findings
+                    .iter()
+                    .filter(|f| {
+                        f.mesh == preview.mesh && f.code == ad_analysis::Code::DuplicateTriangle
+                    })
+                    .map(|f| f.count)
+                    .sum()
+            }),
+            geometry_bytes: ad_document::geometry_bytes(
+                self.snapshot.positions.len(),
+                self.snapshot.indices.len(),
+            )
+            .unwrap_or(usize::MAX),
+        })
+    }
     pub fn tag_after(&self) -> DocumentTag {
         DocumentTag {
             document: self.snapshot.document_id,
@@ -92,7 +118,6 @@ pub fn prepare_edit(
             if plan.removed_triangles().is_empty() {
                 return Ok(EditOutcome::NoChange(plan.preview()));
             }
-            // Stage C adds changed-export eligibility before this point.
             removal = plan.prepare(session, VerificationLimits::default(), cancel)?;
             preview = Some(plan.preview());
             change = Change::Remove(removal);
@@ -112,6 +137,16 @@ pub fn prepare_edit(
         Change::Redo => session.redo_candidate()?,
     };
     let view = document.candidate_view(candidate, cancel)?;
+    if matches!(kind, EditKind::RemoveDuplicates(_)) {
+        // G002-06: refuse before Apply if the result could not be saved by
+        // the verified static exporter (ADR-0028), with its exact reason.
+        ad_formats::preflight_changed_export(
+            &view,
+            ad_formats::ExportLimits::default(),
+            ImportLimits::default(),
+            cancel,
+        )?;
+    }
     let snapshot = Arc::new(view.snapshot(ImportLimits::default(), cancel)?);
     // Like import, an analysis resource refusal keeps a viewable result with
     // an incomplete report; whole-job cancellation still discards everything.

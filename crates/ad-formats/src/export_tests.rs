@@ -387,3 +387,101 @@ fn mismatched_authoring_data_cannot_be_certified_by_copying_original_bytes() {
     .unwrap();
     assert!(matches!(export(&d),Err(e) if e.code==ErrorCode::VerificationFailed));
 }
+
+fn preflight(view: &ad_document::DocumentView<'_>, limits: ExportLimits) -> AssetResult<()> {
+    preflight_changed_export(
+        view,
+        limits,
+        ImportLimits::default(),
+        &Cancellation::default(),
+    )
+}
+
+#[test]
+fn preflight_refuses_unsupported_changed_export_before_apply_and_agrees_with_export() {
+    for what in 0..5 {
+        let (mut j, b) = tiny();
+        match what {
+            0 => j["extras"] = serde_json::json!({"author":"retained"}),
+            1 => {
+                j["extensionsUsed"] = serde_json::json!(["OWNER_unknown"]);
+                j["meshes"][0]["extensions"] =
+                    serde_json::json!({"OWNER_unknown":{"indexSensitive":true}});
+            }
+            2 => j["ownerCustomField"] = serde_json::json!({"data":17}),
+            _ => {}
+        }
+        let mut source = bytes(j, b);
+        if what == 3 {
+            source.extend(4u32.to_le_bytes());
+            source.extend(0x12345678u32.to_le_bytes());
+            source.extend([1, 2, 3, 4]);
+            let len = source.len() as u32;
+            source[8..12].copy_from_slice(&len.to_le_bytes());
+        }
+        let mut d = fixture(&source);
+        let c = Cancellation::default();
+        let l = ImportLimits::default();
+        // The unchanged document is an exact source copy and always eligible.
+        preflight(&d.view(), ExportLimits::default()).unwrap();
+        let verdict = {
+            let plan = d
+                .prepare_triangle_removal(d.tag(), MeshId(0), &[0], l, &c)
+                .unwrap();
+            let view = d
+                .candidate_view(plan.candidate(&d, &c).unwrap(), &c)
+                .unwrap();
+            preflight(&view, ExportLimits::default())
+        };
+        assert_eq!(d.revision(), 0, "preflight never mutates");
+        remove(&mut d, 0);
+        let exported = export(&d);
+        if what == 4 {
+            verdict.unwrap();
+            exported.unwrap();
+        } else {
+            assert!(matches!(verdict, Err(e) if e.code == ErrorCode::Unsupported));
+            assert!(matches!(exported, Err(e) if e.code == ErrorCode::Unsupported));
+        }
+    }
+}
+
+#[test]
+fn preflight_counts_earlier_edits_with_the_candidate_and_honours_budgets_and_cancel() {
+    let mut d = fixture(include_bytes!("../../../tests/fixtures/Edge_Topology.glb"));
+    let c = Cancellation::default();
+    let l = ImportLimits::default();
+    let editable: Vec<usize> = (0..d.primitives().len())
+        .filter(|&m| d.primitives()[m].indices.len() >= 6)
+        .collect();
+    assert!(
+        editable.len() >= 2,
+        "fixture needs two multi-triangle primitives"
+    );
+    remove(&mut d, editable[0]);
+    let plan = d
+        .prepare_triangle_removal(d.tag(), MeshId(editable[1]), &[0], l, &c)
+        .unwrap();
+    let view = d
+        .candidate_view(plan.candidate(&d, &c).unwrap(), &c)
+        .unwrap();
+    preflight(&view, ExportLimits::default()).unwrap();
+    let one = ExportLimits {
+        changed_primitives: 1,
+        ..Default::default()
+    };
+    // The current document alone changes one primitive; the candidate a second.
+    preflight(&d.view(), one).unwrap();
+    assert!(matches!(preflight(&view, one), Err(e) if e.code == ErrorCode::ResourceLimit));
+    let tiny_output = ExportLimits {
+        output_bytes: 16,
+        ..Default::default()
+    };
+    assert!(matches!(preflight(&view, tiny_output), Err(e) if e.code == ErrorCode::ResourceLimit));
+    let cancelled = Cancellation::default();
+    cancelled.cancel();
+    assert!(matches!(
+        preflight_changed_export(&view, ExportLimits::default(), l, &cancelled),
+        Err(e) if e.code == ErrorCode::Cancelled
+    ));
+}

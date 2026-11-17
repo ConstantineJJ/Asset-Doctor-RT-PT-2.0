@@ -16,7 +16,9 @@ use ad_render_vulkan::{
     renderer::{FrameResult, Renderer, SceneFault},
 };
 use camera::Camera;
-use edits::{EditInput, EditKind, EditOutcome, Edits, PublishError, new_edits, publish_edit};
+use edits::{
+    EditCandidate, EditInput, EditKind, EditOutcome, Edits, PublishError, new_edits, publish_edit,
+};
 use imports::{Imports, PreparedAsset, new_imports};
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -100,6 +102,10 @@ struct App {
     gpu_fault_preserved: bool,
     edits: Edits,
     editing: bool,
+    edit_busy: String,
+    edit_started: Instant,
+    /// Prepared, verified but unpublished G002 repair shown in Preview.
+    pending_preview: Option<EditCandidate>,
     /// ADR-0031 B4 smoke without UI controls: queued edits on the G002 mesh,
     /// the first optionally with an injected GPU failure.
     smoke_edit: bool,
@@ -260,6 +266,7 @@ impl App {
         // A new model supersedes any edit still being prepared (decision 5).
         self.edits.cancel();
         self.editing = false;
+        self.pending_preview = None;
         let ticket = self.imports.request(path);
         self.importing = true;
         self.ui.error = None;
@@ -382,6 +389,13 @@ impl App {
             kind,
         });
         self.editing = true;
+        self.edit_started = Instant::now();
+        self.edit_busy = match kind {
+            EditKind::RemoveDuplicates(_) => "Расчёт и проверка ремонта G002…",
+            EditKind::Undo => "Подготовка отмены правки…",
+            EditKind::Redo => "Подготовка повтора правки…",
+        }
+        .into();
         eprintln!("edit_started ticket={ticket} kind={kind:?}");
         true
     }
@@ -393,6 +407,7 @@ impl App {
             return Ok(());
         }
         self.editing = false;
+        let prepare_ms = self.edit_started.elapsed().as_millis();
         let candidate = match completion.result {
             Ok(EditOutcome::NoChange(preview)) => {
                 eprintln!(
@@ -408,10 +423,43 @@ impl App {
                 if self.smoke_edit {
                     return Err(error.into());
                 }
-                self.ui.status = format!("Правка не выполнена: {error}");
+                self.ui.status = format!("Правка не подготовлена, модель прежняя: {error}");
                 return Ok(());
             }
         };
+        if let Some(info) = candidate.info() {
+            eprintln!(
+                "edit_preview mesh={} before={} after={} references={} complete={} g002_left={}",
+                info.mesh.0,
+                info.before,
+                info.after,
+                info.references,
+                info.complete,
+                info.g002_left.map_or(-1, |n| n as i64)
+            );
+            eprintln!("edit_timing stage=prepare kind=remove prepare_ms={prepare_ms}");
+            self.ui.status = "Предпросмотр готов; модель не изменена".into();
+            self.pending_preview = Some(candidate);
+            if self.smoke_edit {
+                return self.apply_preview();
+            }
+            return Ok(());
+        }
+        eprintln!(
+            "edit_timing stage=prepare kind={} prepare_ms={prepare_ms}",
+            edit_name(candidate.kind())
+        );
+        self.publish_candidate(candidate)
+    }
+    fn apply_preview(&mut self) -> GpuResult<()> {
+        match self.pending_preview.take() {
+            Some(candidate) => self.publish_candidate(candidate),
+            None => Ok(()),
+        }
+    }
+    fn publish_candidate(&mut self, candidate: EditCandidate) -> GpuResult<()> {
+        // Any publication attempt invalidates an older preview.
+        self.pending_preview = None;
         let kind = candidate.kind();
         let removed = candidate
             .preview()
@@ -419,7 +467,14 @@ impl App {
         let (Some(asset), Some(renderer)) = (self.current.as_mut(), self.renderer.as_mut()) else {
             return Ok(());
         };
-        match publish_edit(asset, renderer, candidate, &Cancellation::default()) {
+        let started = Instant::now();
+        let published = publish_edit(asset, renderer, candidate, &Cancellation::default());
+        eprintln!(
+            "edit_timing stage=publish kind={} publish_ms={}",
+            edit_name(kind),
+            started.elapsed().as_millis()
+        );
+        match published {
             Ok(tag) => {
                 let report = asset.diagnostics().as_ref().ok();
                 let mesh = match kind {
@@ -454,6 +509,13 @@ impl App {
                     asset.is_consistent()
                 );
                 self.ui.status = format!("Правка применена; ревизия {}", tag.revision);
+            }
+            Err(error)
+                if !self.smoke_edit
+                    && matches!(error, PublishError::Stale | PublishError::Busy) =>
+            {
+                eprintln!("edit_refused kind={} reason={error:?}", edit_name(kind));
+                self.ui.status = format!("Правка не применена: {error}. Повторите предпросмотр.");
             }
             Err(error) => {
                 let revision = asset.document().revision();
@@ -552,6 +614,7 @@ impl App {
         if self.renderer.as_ref().is_none_or(|r| !r.drawable()) {
             return Ok(());
         }
+        self.refresh_edit_ui();
         let (mut frame, actions) = self
             .ui
             .frame(&window, self.current.as_ref(), self.importing);
@@ -587,7 +650,53 @@ impl App {
         if actions.open {
             self.choose_model();
         }
+        if let Some(mesh) = actions.preview {
+            self.request_edit(EditKind::RemoveDuplicates(mesh));
+        }
+        if actions.discard_preview && self.pending_preview.take().is_some() {
+            self.ui.status = "Предпросмотр закрыт; модель не изменена".into();
+        }
+        if actions.apply {
+            self.apply_preview()?;
+        }
+        if actions.undo {
+            self.request_history(EditKind::Undo);
+        }
+        if actions.redo {
+            self.request_history(EditKind::Redo);
+        }
+        if actions.cancel_edit {
+            self.cancel_edit();
+        }
         Ok(())
+    }
+    fn request_history(&mut self, kind: EditKind) {
+        let allowed = self.current.as_ref().is_some_and(|asset| match kind {
+            EditKind::Undo => asset.session.can_undo(),
+            _ => asset.session.can_redo(),
+        });
+        if allowed {
+            self.request_edit(kind);
+        }
+    }
+    fn cancel_edit(&mut self) {
+        if self.editing {
+            self.edits.cancel();
+            self.editing = false;
+            self.ui.status = "Подготовка правки отменена; модель не изменена".into();
+        }
+    }
+    fn refresh_edit_ui(&mut self) {
+        let history = self
+            .current
+            .as_ref()
+            .map(|asset| (asset.session.can_undo(), asset.session.can_redo()));
+        self.ui.edit = viewer_ui::EditUi {
+            busy: self.editing.then(|| self.edit_busy.clone()),
+            preview: self.pending_preview.as_ref().and_then(EditCandidate::info),
+            can_undo: history.is_some_and(|h| h.0),
+            can_redo: history.is_some_and(|h| h.1),
+        };
     }
 
     fn tick(&mut self, event_loop: &ActiveEventLoop) -> GpuResult<()> {
@@ -767,6 +876,18 @@ impl ApplicationHandler for App {
                         if self.importing {
                             self.cancel_import();
                         }
+                        self.cancel_edit();
+                    }
+                    PhysicalKey::Code(KeyCode::KeyZ)
+                        if self.modifiers.control_key() && self.modifiers.shift_key() =>
+                    {
+                        self.request_history(EditKind::Redo)
+                    }
+                    PhysicalKey::Code(KeyCode::KeyZ) if self.modifiers.control_key() => {
+                        self.request_history(EditKind::Undo)
+                    }
+                    PhysicalKey::Code(KeyCode::KeyY) if self.modifiers.control_key() => {
+                        self.request_history(EditKind::Redo)
                     }
                     PhysicalKey::Code(KeyCode::KeyH) => self.ui.help(),
                     _ => (),
@@ -964,6 +1085,9 @@ fn run() -> GpuResult<()> {
         gpu_fault_preserved: false,
         edits: new_edits(),
         editing: false,
+        edit_busy: String::new(),
+        edit_started: Instant::now(),
+        pending_preview: None,
         smoke_edit,
         edit_fault,
         edit_queue: VecDeque::new(),

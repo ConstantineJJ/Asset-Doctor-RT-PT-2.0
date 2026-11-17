@@ -1,7 +1,7 @@
 use crate::{metadata, roundtrip, source};
 use ad_document::{
-    AssetDocument, AssetError, AssetResult, Cancellation, DocumentStamp, DocumentTag, ErrorCode,
-    ImportLimits,
+    AssetDocument, AssetError, AssetResult, Cancellation, DocumentStamp, DocumentTag, DocumentView,
+    ErrorCode, ImportLimits, MeshId,
 };
 use serde_json::{Value, json};
 use std::{
@@ -72,7 +72,7 @@ struct Binding {
 
 fn bindings(
     parsed: &source::Parsed<'_>,
-    document: &AssetDocument,
+    view: &DocumentView<'_>,
     limits: ExportLimits,
     cancel: &Cancellation,
 ) -> AssetResult<Vec<Binding>> {
@@ -87,10 +87,11 @@ fn bindings(
             {
                 return Err(metadata::unsupported());
             }
-            let current = document
+            let current = view
                 .primitives()
                 .get(ordinal)
                 .ok_or_else(roundtrip::mismatch)?;
+            let current_indices = view.indices(MeshId(ordinal));
             let position = primitive
                 .get(&gltf::Semantic::Positions)
                 .ok_or_else(invalid)?;
@@ -123,9 +124,9 @@ fn bindings(
                 Some(i) => i.next(),
                 None => implied.next(),
             };
-            let wanted = current.indices.as_chunks::<3>().0;
+            let wanted = current_indices.as_chunks::<3>().0;
             let mut kept = 0;
-            let mut same = count == current.indices.len();
+            let mut same = count == current_indices.len();
             for face in 0..count / 3 {
                 if face % 1024 == 0 {
                     cancel.check()?;
@@ -163,7 +164,7 @@ fn bindings(
             ordinal += 1;
         }
     }
-    if ordinal != document.primitives().len() {
+    if ordinal != view.primitives().len() {
         return Err(roundtrip::mismatch());
     }
     Ok(changed)
@@ -222,6 +223,80 @@ fn strict_chunks(source: &[u8], json_len: usize, bin_len: usize) -> AssetResult<
     Ok(())
 }
 
+/// Checks shared by changed-export preflight and real export: strict chunks,
+/// bounded core-only metadata and the appended BIN size of every changed
+/// primitive seen through `view`. Returns parsed metadata and the BIN length.
+fn changed_admission(
+    parsed: &source::Parsed<'_>,
+    view: &DocumentView<'_>,
+    changed: &[Binding],
+    limits: ExportLimits,
+    import: ImportLimits,
+    cancel: &Cancellation,
+) -> AssetResult<(Value, usize, usize)> {
+    let document = view.document();
+    let bin = parsed.glb.bin.as_deref().ok_or_else(invalid)?;
+    strict_chunks(document.source(), parsed.glb.json.len(), bin.len())?;
+    let (meta, values) = metadata::parse(&parsed.glb.json, limits.metadata_values, cancel)?;
+    metadata::core_only(&meta, cancel)?;
+    if changed
+        .len()
+        .checked_mul(11)
+        .and_then(|n| n.checked_add(values))
+        .is_none_or(|n| n > limits.metadata_values)
+    {
+        return Err(budget());
+    }
+    let mut bin_len = bin.len();
+    for binding in changed {
+        bin_len = bin_len
+            .checked_add(
+                view.indices(MeshId(binding.current))
+                    .len()
+                    .checked_mul(4)
+                    .ok_or_else(budget)?,
+            )
+            .ok_or_else(budget)?;
+    }
+    let max = limits
+        .output_bytes
+        .min(import.source_bytes)
+        .min(u32::MAX as usize);
+    if bin_len.checked_add(28).is_none_or(|n| n > max) {
+        return Err(budget());
+    }
+    Ok((meta, bin_len, max))
+}
+
+/// G002-06 / ADR-0031: before a user Apply, check that saving the candidate
+/// view would stay inside the accepted static export subset (ADR-0028):
+/// stable source bindings, order-preserving removal only, strict chunks,
+/// core-only metadata and output/metadata/changed-primitive budgets. The
+/// candidate is not serialized or reimported here; Save Copy still performs
+/// the full verified export. Never mutates the document.
+pub fn preflight_changed_export(
+    view: &DocumentView<'_>,
+    limits: ExportLimits,
+    import: ImportLimits,
+    cancel: &Cancellation,
+) -> AssetResult<()> {
+    cancel.check()?;
+    let document = view.document();
+    let parsed = source::parse(document.source(), import, cancel)?;
+    if parsed.glb.json.len() > limits.json_bytes {
+        return Err(budget());
+    }
+    let changed = bindings(&parsed, view, limits, cancel)?;
+    if changed.is_empty() {
+        if document.source().len() > limits.output_bytes {
+            return Err(budget());
+        }
+        return Ok(());
+    }
+    changed_admission(&parsed, view, &changed, limits, import, cancel)?;
+    cancel.check()
+}
+
 pub fn prepare_glb(
     document: &AssetDocument,
     expected: DocumentTag,
@@ -235,7 +310,8 @@ pub fn prepare_glb(
     if parsed.glb.json.len() > limits.json_bytes {
         return Err(budget());
     }
-    let changed = bindings(&parsed, document, limits, cancel)?;
+    let view = document.view();
+    let changed = bindings(&parsed, &view, limits, cancel)?;
     let bytes = if changed.is_empty() {
         if document.source().len() > limits.output_bytes {
             return Err(budget());
@@ -243,36 +319,8 @@ pub fn prepare_glb(
         document.source().clone()
     } else {
         let bin = parsed.glb.bin.as_deref().ok_or_else(invalid)?;
-        strict_chunks(document.source(), parsed.glb.json.len(), bin.len())?;
-        let (mut meta, values) = metadata::parse(&parsed.glb.json, limits.metadata_values, cancel)?;
-        metadata::core_only(&meta, cancel)?;
-        if changed
-            .len()
-            .checked_mul(11)
-            .and_then(|n| n.checked_add(values))
-            .is_none_or(|n| n > limits.metadata_values)
-        {
-            return Err(budget());
-        }
-        let mut bin_len = bin.len();
-        for binding in &changed {
-            bin_len = bin_len
-                .checked_add(
-                    document.primitives()[binding.current]
-                        .indices
-                        .len()
-                        .checked_mul(4)
-                        .ok_or_else(budget)?,
-                )
-                .ok_or_else(budget)?;
-        }
-        let max = limits
-            .output_bytes
-            .min(import.source_bytes)
-            .min(u32::MAX as usize);
-        if bin_len.checked_add(28).is_none_or(|n| n > max) {
-            return Err(budget());
-        }
+        let (mut meta, bin_len, max) =
+            changed_admission(&parsed, &view, &changed, limits, import, cancel)?;
         let mut offset = bin.len();
         for binding in &changed {
             cancel.check()?;

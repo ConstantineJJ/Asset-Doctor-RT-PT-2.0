@@ -4,7 +4,7 @@ mod export;
 mod metadata;
 mod roundtrip;
 mod uv;
-pub use export::{ExportLimits, VerifiedGlb, prepare_glb};
+pub use export::{ExportLimits, VerifiedGlb, preflight_changed_export, prepare_glb};
 #[cfg(test)]
 mod export_tests;
 mod source;

@@ -285,3 +285,79 @@ fn edit_worker_releases_the_session_before_its_latest_result_is_visible() {
     assert_eq!(tag.revision, 1);
     assert!(asset.is_consistent());
 }
+
+/// Duplicate_Heal with root-level `extras`: viewable, but a changed export
+/// would drop or alter opaque metadata, so Apply must be refused (G002-06).
+fn with_root_extras(source: &[u8]) -> Vec<u8> {
+    let json_len = u32::from_le_bytes(source[12..16].try_into().unwrap()) as usize;
+    let json = &source[20..20 + json_len];
+    let mut patched = b"{\"extras\":{\"owner\":1},".to_vec();
+    patched.extend_from_slice(&json[1..]);
+    while !patched.len().is_multiple_of(4) {
+        patched.push(b' ');
+    }
+    let rest = &source[20 + json_len..];
+    let total = 20 + patched.len() + rest.len();
+    let mut out = Vec::with_capacity(total);
+    out.extend_from_slice(&source[0..8]);
+    out.extend((total as u32).to_le_bytes());
+    out.extend((patched.len() as u32).to_le_bytes());
+    out.extend_from_slice(&source[16..20]);
+    out.extend_from_slice(&patched);
+    out.extend_from_slice(rest);
+    out
+}
+
+#[test]
+fn unsupported_changed_export_refuses_apply_before_any_change() {
+    let source = std::fs::read(fixture("Duplicate_Heal.glb")).unwrap();
+    let c = Cancellation::default();
+    let limits = ad_document::ImportLimits::default();
+    let document = ad_formats::import_glb(
+        with_root_extras(&source).into(),
+        "extras".into(),
+        DocumentId(9),
+        limits,
+        &c,
+    )
+    .unwrap();
+    let snapshot = std::sync::Arc::new(document.snapshot(limits, &c).unwrap());
+    let diagnostics = ad_analysis::analyze(&document, Default::default(), &c);
+    let stamp = document.stamp();
+    let mut asset = PreparedAsset {
+        session: std::sync::Arc::new(
+            ad_commands::Session::new(document, Default::default(), limits).unwrap(),
+        ),
+        generation: crate::imports::Generation {
+            snapshot,
+            diagnostics,
+            stamp,
+        },
+    };
+    let scene = FakeScene {
+        tag: Some((asset.document().id(), 0)),
+        ..Default::default()
+    };
+    let before = observe(&asset, &scene);
+    let mesh = duplicate_mesh(&asset);
+    let result = prepare_edit(
+        &asset.session,
+        &asset.generation.stamp,
+        EditKind::RemoveDuplicates(mesh),
+        &c,
+    );
+    assert!(matches!(result, Err(e) if e.code == ErrorCode::Unsupported));
+    assert_eq!(observe(&asset, &scene), before);
+    assert!(asset.is_consistent());
+    // The model stays viewable and its unchanged bytes still export exactly.
+    let copy = ad_formats::prepare_glb(
+        asset.document(),
+        asset.document().tag(),
+        Default::default(),
+        limits,
+        &c,
+    )
+    .unwrap();
+    assert_eq!(&**copy.bytes(), &*asset.document().source().clone());
+    let _ = &mut asset;
+}
