@@ -51,6 +51,8 @@ $previousSync=$env:VK_LAYER_VALIDATE_SYNC
 try {
     if ($SynchronizationValidation) { $env:VK_LAYER_VALIDATE_SYNC='1' }
     $process=Start-Process -FilePath $exe -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+    # Windows PowerShell 5.1 reports ExitCode only if the handle is cached before exit.
+    $null=$process.Handle
 } finally { $env:VK_LAYER_VALIDATE_SYNC=$previousSync }
 if (!$process.WaitForExit(30000)) {
     Stop-Process -Id $process.Id
