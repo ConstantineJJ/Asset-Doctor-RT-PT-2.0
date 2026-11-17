@@ -38,6 +38,7 @@ dependencies = [
  "ad-formats",
  "ad-heal",
  "ad-render-vulkan",
+ "ad-storage",
  "egui",
  "egui-winit",
  "glam",

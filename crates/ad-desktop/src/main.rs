@@ -5,6 +5,7 @@ mod diagnostic_ui;
 mod edits;
 mod imports;
 mod native;
+mod saving;
 mod ui_model;
 mod viewer_ui;
 mod worker;
@@ -20,6 +21,7 @@ use edits::{
     EditCandidate, EditInput, EditKind, EditOutcome, Edits, PublishError, new_edits, publish_edit,
 };
 use imports::{Imports, PreparedAsset, new_imports};
+use saving::{AfterSave, Confirmed, Guard, SaveInput, Saves, guard, new_saves};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::{
@@ -104,6 +106,8 @@ struct App {
     editing: bool,
     edit_busy: String,
     edit_started: Instant,
+    /// Open was requested from the UI; resolved with the unsaved guard in tick.
+    pending_open: bool,
     /// Prepared, verified but unpublished G002 repair shown in Preview.
     pending_preview: Option<EditCandidate>,
     /// ADR-0031 B4 smoke without UI controls: queued edits on the G002 mesh,
@@ -114,6 +118,13 @@ struct App {
     edit_mesh: Option<MeshId>,
     edit_fault_expected: bool,
     edit_smoke_done: bool,
+    saves: Saves,
+    saving: bool,
+    /// Last state known to exist on disk for the current model (decision 2).
+    confirmed: Option<Confirmed>,
+    after_save: Option<AfterSave>,
+    /// Smoke-only Save Copy sequence: refused existing target, new copy, reopen.
+    save_smoke: Option<(PathBuf, u8)>,
     ui: viewer_ui::ViewerUi,
 }
 
@@ -279,7 +290,8 @@ impl App {
         if let Some(window) = self.window.as_ref() {
             let title = if let Some(asset) = self.current.as_ref() {
                 format!(
-                    "Asset Doctor RT-PT 2.0 — {} | {} vertices · {} triangles | Ctrl+O: open · F: fit · H: help",
+                    "{}Asset Doctor RT-PT 2.0 — {} | {} vertices · {} triangles | Ctrl+O: open · F: fit · H: help",
+                    if self.is_dirty() { "● " } else { "" },
                     asset.document().name(),
                     asset.snapshot().positions.len(),
                     asset.snapshot().indices.len() / 3
@@ -343,8 +355,36 @@ impl App {
                 self.ui.tree.replace(asset.document());
                 self.ui.status = format!("Открыт {}", asset.document().name());
                 self.ui.error = None;
+                self.confirmed = Some(Confirmed::imported(&asset));
                 self.current = Some(asset);
                 eprintln!("import_published ticket={}", completion.ticket);
+                if let Some((dir, 5)) = self.save_smoke.as_ref() {
+                    let dir = dir.clone();
+                    let asset = self.current.as_ref().expect("Published above");
+                    let report = asset.diagnostics().as_ref().ok();
+                    eprintln!(
+                        "reopened_saved revision={} primitives={} mesh_triangles={} analysis={} g002_in_mesh={} dirty={}",
+                        asset.document().revision(),
+                        asset.document().primitives().len(),
+                        asset
+                            .document()
+                            .primitives()
+                            .get(self.edit_mesh.unwrap_or(MeshId(0)).0)
+                            .map_or(0, |m| m.indices.len() / 3),
+                        if report.is_some_and(|r| r.is_complete()) {
+                            "complete"
+                        } else {
+                            "incomplete"
+                        },
+                        report.map_or(usize::MAX, |r| r
+                            .findings
+                            .iter()
+                            .filter(|f| f.code == ad_analysis::Code::DuplicateTriangle)
+                            .count()),
+                        self.is_dirty()
+                    );
+                    self.save_smoke = Some((dir, 6));
+                }
             }
             Err(error) => {
                 eprintln!(
@@ -380,7 +420,7 @@ impl App {
         let Some(asset) = self.current.as_ref() else {
             return false;
         };
-        if self.importing || self.editing {
+        if self.importing || self.editing || self.saving {
             return false;
         }
         let ticket = self.edits.request(EditInput {
@@ -577,6 +617,9 @@ impl App {
             ]);
         }
         let Some(kind) = self.edit_queue.pop_front() else {
+            if self.saving || !self.advance_save_smoke() {
+                return Ok(());
+            }
             if !self.edit_smoke_done {
                 self.edit_smoke_done = true;
                 eprintln!("edit_smoke_done=true");
@@ -589,6 +632,186 @@ impl App {
         }
         self.request_edit(kind);
         Ok(())
+    }
+    fn is_dirty(&self) -> bool {
+        match (self.current.as_ref(), self.confirmed.as_ref()) {
+            (Some(asset), Some(confirmed)) => confirmed.is_dirty(asset),
+            _ => false,
+        }
+    }
+    /// Smoke-only Save Copy sequence; returns true when finished or absent.
+    /// Stages: 0 start refused save, 1 waiting, 2 start new copy, 3 waiting,
+    /// 4 reopen saved copy, 5 waiting for import, 6 done.
+    fn advance_save_smoke(&mut self) -> bool {
+        let Some((dir, stage)) = self.save_smoke.clone() else {
+            return true;
+        };
+        match stage {
+            0 => {
+                eprintln!(
+                    "unsaved_guard dirty={} decision={:?}",
+                    self.is_dirty(),
+                    guard(self.is_dirty(), None)
+                );
+                self.save_smoke = Some((dir.clone(), 1));
+                self.start_save_to(dir.join("existing.glb"), None);
+            }
+            2 => {
+                self.save_smoke = Some((dir.clone(), 3));
+                self.start_save_to(dir.join("healed.glb"), None);
+            }
+            4 => {
+                eprintln!(
+                    "unsaved_guard dirty={} decision={:?}",
+                    self.is_dirty(),
+                    guard(self.is_dirty(), None)
+                );
+                self.save_smoke = Some((dir.clone(), 5));
+                self.start_import(dir.join("healed.glb"));
+            }
+            6 => return true,
+            _ => (),
+        }
+        false
+    }
+    /// User-facing Save Copy: asks for a new path unless a smoke target exists.
+    fn start_save(&mut self, after: Option<AfterSave>) {
+        if self.saving || self.editing || self.importing || self.current.is_none() {
+            return;
+        }
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        let suggested = self.current.as_ref().map_or(String::new(), |asset| {
+            let name = asset.document().name();
+            let stem = name.strip_suffix(".glb").unwrap_or(name);
+            format!("{stem}_copy.glb")
+        });
+        match native::choose_save_path(window, &suggested) {
+            Ok(Some(path)) => self.start_save_to(path, after),
+            Ok(None) => {
+                eprintln!("save_cancelled dialog=true");
+                self.ui.status = "Сохранение отменено; правки не сохранены".into();
+            }
+            Err(error) => native::show_error(&error.to_string()),
+        }
+    }
+    fn start_save_to(&mut self, path: PathBuf, after: Option<AfterSave>) {
+        let Some(asset) = self.current.as_ref() else {
+            return;
+        };
+        if self.saving || self.editing || self.importing {
+            return;
+        }
+        let ticket = self.saves.request(SaveInput {
+            session: asset.session.clone(),
+            base: asset.generation.stamp.clone(),
+            path,
+        });
+        self.saving = true;
+        self.after_save = after;
+        eprintln!(
+            "save_started ticket={ticket} revision={}",
+            asset.document().revision()
+        );
+    }
+    fn poll_save(&mut self, event_loop: &ActiveEventLoop) -> GpuResult<()> {
+        let Some(completion) = self.saves.poll() else {
+            return Ok(());
+        };
+        if completion.ticket != self.saves.ticket() {
+            return Ok(());
+        }
+        self.saving = false;
+        let after = self.after_save.take();
+        let stage = self.save_smoke.as_ref().map(|(_, stage)| *stage);
+        match completion.result {
+            Ok(outcome) => {
+                let path = outcome.receipt.path().display().to_string();
+                let tag = outcome.receipt.tag();
+                let accepted = match (self.confirmed.as_mut(), self.current.as_ref()) {
+                    (Some(confirmed), Some(asset)) => confirmed.accept(outcome.receipt, asset),
+                    _ => false,
+                };
+                eprintln!(
+                    "save_published revision={} bytes={} exact_copy={} reimported_triangles={} cleanup_warning={} accepted={accepted} dirty={}",
+                    tag.revision,
+                    outcome.bytes,
+                    outcome.exact_copy,
+                    outcome.reimported_triangles,
+                    outcome.cleanup_warning,
+                    self.is_dirty()
+                );
+                if stage == Some(1) {
+                    return Err("Smoke Save Copy replaced an existing destination".into());
+                }
+                if let (Some(3), Some((dir, _))) = (stage, self.save_smoke.clone()) {
+                    self.save_smoke = Some((dir, 4));
+                }
+                if accepted {
+                    self.ui.status = format!("Копия сохранена и проверена: {path}");
+                    if let Some(after) = after {
+                        self.perform(after, event_loop);
+                    }
+                } else {
+                    self.ui.status = format!(
+                        "Копия {path} сохранена для более ранней ревизии; текущие правки не сохранены"
+                    );
+                }
+            }
+            Err(error) => {
+                eprintln!(
+                    "save_failed code={:?} dirty={} reason={}",
+                    error.code,
+                    self.is_dirty(),
+                    error.message
+                );
+                if let (Some(1), Some((dir, _))) = (stage, self.save_smoke.clone()) {
+                    self.save_smoke = Some((dir, 2));
+                } else if self.smoke.is_some() {
+                    return Err(error.into());
+                } else {
+                    self.ui.status = "Копия не сохранена; правки остаются несохранёнными".into();
+                    native::show_error(&format!("Копия не сохранена: {error}"));
+                }
+            }
+        }
+        self.title();
+        Ok(())
+    }
+    /// Close/replace guard (decision 2): ask only when the model is dirty.
+    fn guarded(&mut self, after: AfterSave, event_loop: &ActiveEventLoop) {
+        if self.saving {
+            self.ui.status = "Дождитесь окончания сохранения копии".into();
+            return;
+        }
+        let dirty = self.is_dirty();
+        let mut decision = guard(dirty, None);
+        if decision == Guard::Ask {
+            let Some(window) = self.window.as_ref() else {
+                return;
+            };
+            let choice = native::ask_unsaved(window, after.verb());
+            decision = guard(dirty, Some(choice));
+            eprintln!("unsaved_guard dirty=true choice={choice:?} decision={decision:?}");
+        }
+        match decision {
+            Guard::Proceed => self.perform(after, event_loop),
+            Guard::SaveThenProceed => self.start_save(Some(after)),
+            Guard::Stay | Guard::Ask => {
+                self.ui.status = "Действие отменено; модель и правки сохранены в окне".into();
+            }
+        }
+    }
+    fn perform(&mut self, after: AfterSave, event_loop: &ActiveEventLoop) {
+        match after {
+            AfterSave::Close => {
+                self.close_requested = true;
+                self.finish(event_loop);
+            }
+            AfterSave::Choose => self.choose_model(),
+            AfterSave::Open(path) => self.start_import(path),
+        }
     }
     fn choose_model(&mut self) {
         if let Some(window) = self.window.as_ref() {
@@ -648,7 +871,10 @@ impl App {
         }
         // Open native dialogs only after the acquired image has been submitted.
         if actions.open {
-            self.choose_model();
+            self.pending_open = true;
+        }
+        if actions.save_copy {
+            self.start_save(None);
         }
         if let Some(mesh) = actions.preview {
             self.request_edit(EditKind::RemoveDuplicates(mesh));
@@ -680,6 +906,10 @@ impl App {
         }
     }
     fn cancel_edit(&mut self) {
+        if self.saving {
+            self.saves.interrupt();
+            self.ui.status = "Отмена сохранения…".into();
+        }
         if self.editing {
             self.edits.cancel();
             self.editing = false;
@@ -696,7 +926,12 @@ impl App {
             preview: self.pending_preview.as_ref().and_then(EditCandidate::info),
             can_undo: history.is_some_and(|h| h.0),
             can_redo: history.is_some_and(|h| h.1),
+            can_save: self.current.is_some(),
+            dirty: self.is_dirty(),
         };
+        if self.saving {
+            self.ui.edit.busy = Some("Сохранение и проверка копии…".into());
+        }
     }
 
     fn tick(&mut self, event_loop: &ActiveEventLoop) -> GpuResult<()> {
@@ -705,6 +940,10 @@ impl App {
         }
         self.poll_import()?;
         self.poll_edit()?;
+        self.poll_save(event_loop)?;
+        if std::mem::take(&mut self.pending_open) {
+            self.guarded(AfterSave::Choose, event_loop);
+        }
         self.advance_edit_smoke()?;
         if self.smoke_import
             && matches!(self.smoke, Some(SmokeStage::Initial))
@@ -847,7 +1086,7 @@ impl ApplicationHandler for App {
                 Ok(())
             }
             WindowEvent::DroppedFile(path) => {
-                self.start_import(path);
+                self.guarded(AfterSave::Open(path), event_loop);
                 Ok(())
             }
             WindowEvent::ModifiersChanged(modifiers) => {
@@ -864,7 +1103,12 @@ impl ApplicationHandler for App {
             {
                 match event.physical_key {
                     PhysicalKey::Code(KeyCode::KeyO) if self.modifiers.control_key() => {
-                        self.choose_model()
+                        self.guarded(AfterSave::Choose, event_loop)
+                    }
+                    PhysicalKey::Code(KeyCode::KeyS)
+                        if self.modifiers.control_key() && self.modifiers.shift_key() =>
+                    {
+                        self.start_save(None)
                     }
                     PhysicalKey::Code(KeyCode::KeyF) => {
                         if let Some(asset) = self.current.as_ref() {
@@ -934,9 +1178,13 @@ impl ApplicationHandler for App {
                 Ok(())
             }
             WindowEvent::CloseRequested => {
-                self.close_requested = true;
                 eprintln!("native_close_requested");
-                self.finish(event_loop);
+                if self.smoke.is_some() {
+                    self.close_requested = true;
+                    self.finish(event_loop);
+                } else {
+                    self.guarded(AfterSave::Close, event_loop);
+                }
                 Ok(())
             }
             WindowEvent::Resized(size) => {
@@ -994,6 +1242,7 @@ fn run() -> GpuResult<()> {
     let mut smoke_bad = None;
     let mut smoke_gpu_fault = None;
     let mut smoke_edit = false;
+    let mut smoke_save = None;
     let mut ui = viewer_ui::ViewerUi::default();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -1025,6 +1274,12 @@ fn run() -> GpuResult<()> {
                 ))
             }
             "--smoke-edit" => smoke_edit = true,
+            "--smoke-save" => {
+                smoke_save = Some(PathBuf::from(
+                    args.next()
+                        .ok_or("--smoke-save needs an owned output directory")?,
+                ))
+            }
             "--smoke-gpu-fault" => {
                 smoke_gpu_fault = Some(
                     args.next()
@@ -1034,12 +1289,15 @@ fn run() -> GpuResult<()> {
             }
             "--help" => {
                 println!(
-                    "AssetDoctorRTPT [--require-validation] [--pbr] [--no-mr-maps] [--no-normal-maps] [--no-ao-maps] [--no-emission] [--open model.glb] [--smoke] [--smoke-import model.glb --smoke-bad bad.glb [--smoke-edit] [--smoke-gpu-fault upload|wait]]"
+                    "AssetDoctorRTPT [--require-validation] [--pbr] [--no-mr-maps] [--no-normal-maps] [--no-ao-maps] [--no-emission] [--open model.glb] [--smoke] [--smoke-import model.glb --smoke-bad bad.glb [--smoke-edit [--smoke-save dir]] [--smoke-gpu-fault upload|wait]]"
                 );
                 return Ok(());
             }
             _ => return Err(format!("Unknown argument: {arg}").into()),
         }
+    }
+    if smoke_save.is_some() && !smoke_edit {
+        return Err("--smoke-save requires --smoke-edit".into());
     }
     if (smoke_gpu_fault.is_some() || smoke_edit) && (!smoke_import || smoke_bad.is_none()) {
         return Err("--smoke-gpu-fault/--smoke-edit require --smoke-import and --smoke-bad".into());
@@ -1087,6 +1345,7 @@ fn run() -> GpuResult<()> {
         editing: false,
         edit_busy: String::new(),
         edit_started: Instant::now(),
+        pending_open: false,
         pending_preview: None,
         smoke_edit,
         edit_fault,
@@ -1094,6 +1353,11 @@ fn run() -> GpuResult<()> {
         edit_mesh: None,
         edit_fault_expected: false,
         edit_smoke_done: false,
+        saves: new_saves(),
+        saving: false,
+        confirmed: None,
+        after_save: None,
+        save_smoke: smoke_save.map(|dir| (dir, 0)),
         ui,
     };
     event_loop.run_app(&mut app)?;

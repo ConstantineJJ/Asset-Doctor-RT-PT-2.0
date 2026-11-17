@@ -5,6 +5,18 @@ mod metadata;
 mod roundtrip;
 mod uv;
 pub use export::{ExportLimits, VerifiedGlb, preflight_changed_export, prepare_glb};
+
+/// Independent comparison of a freshly reimported document with the document
+/// it was saved from: nodes, roots, transforms, every source primitive's
+/// indices/attributes/UV sets and bindings, core materials, samplers, images
+/// and texture statistics. Used after a Save Copy is read back from disk.
+pub fn compare_reimported(
+    original: &ad_document::AssetDocument,
+    reimported: &ad_document::AssetDocument,
+    cancel: &ad_document::Cancellation,
+) -> ad_document::AssetResult<()> {
+    roundtrip::compare(original, reimported, cancel)
+}
 #[cfg(test)]
 mod export_tests;
 mod source;

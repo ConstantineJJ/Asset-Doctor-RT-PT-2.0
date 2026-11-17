@@ -19,6 +19,7 @@ pub struct Actions {
     pub undo: bool,
     pub redo: bool,
     pub cancel_edit: bool,
+    pub save_copy: bool,
 }
 /// Facts of a prepared, not yet applied G002 repair (ADR-0031 Preview).
 #[derive(Clone)]
@@ -39,6 +40,10 @@ pub struct EditUi {
     pub preview: Option<PreviewInfo>,
     pub can_undo: bool,
     pub can_redo: bool,
+    /// A model is open; Save Copy also works for an unchanged model.
+    pub can_save: bool,
+    /// Revision/origin differs from the imported file or last verified copy.
+    pub dirty: bool,
 }
 pub struct ViewerUi {
     pub context: egui::Context,
@@ -70,6 +75,8 @@ pub struct ViewerUi {
     redo_rect: egui::Rect,
     #[cfg(test)]
     preview_rect: egui::Rect,
+    #[cfg(test)]
+    save_rect: egui::Rect,
     #[cfg(test)]
     reset_lighting_rect: egui::Rect,
     #[cfg(test)]
@@ -123,6 +130,8 @@ impl Default for ViewerUi {
             redo_rect: egui::Rect::NOTHING,
             #[cfg(test)]
             preview_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            save_rect: egui::Rect::NOTHING,
             #[cfg(test)]
             reset_lighting_rect: egui::Rect::NOTHING,
             #[cfg(test)]
@@ -244,6 +253,11 @@ impl ViewerUi {
                         {self.undo_rect=undo.rect;self.redo_rect=redo.rect;}
                         actions.undo|=undo.clicked();
                         actions.redo|=redo.clicked();
+                        let save=ui.add_enabled(idle && self.edit.can_save,egui::Button::new("Сохранить копию…")).on_hover_text("Проверенная копия GLB в новый файл · Ctrl+Shift+S. Исходный файл и существующие файлы не перезаписываются; рабочий файл не меняется.");
+                        #[cfg(test)]
+                        {self.save_rect=save.rect;}
+                        actions.save_copy|=save.clicked();
+                        if self.edit.dirty {ui.colored_label(Color32::from_rgb(255,190,120),"● не сохранено").on_hover_text("Есть правки, которых нет ни в исходном файле, ни в последней проверенной копии.");}
                     }
                     if width>=680. {
                         ui.add_enabled_ui(width>=780.,|ui|{ui.toggle_value(&mut self.show_tree,"Дерево");});
@@ -407,7 +421,8 @@ impl ViewerUi {
                 ui.label("ЛКМ — вращение; ПКМ / средняя — перемещение; колесо — масштаб.");
                 ui.label("F — вписать модель; Esc — отменить загрузку или подготовку правки; H — справка.");
                 ui.label("Ремонт G002: Диагностика → «Предпросмотр ремонта…» → «Применить». Ctrl+Z — отменить правку, Ctrl+Y — вернуть.");
-                ui.separator();ui.label("Выбор узла показывает сведения. Подсветка и сохранение копии появятся позднее.");
+                ui.label("«Сохранить копию…» (Ctrl+Shift+S) пишет проверенный GLB только в новый файл и заново открывает его для сверки. При закрытии или открытии другой модели с несохранёнными правками программа спросит, что делать.");
+                ui.separator();ui.label("Выбор узла показывает сведения. Подсветка узлов появится позднее.");
                 ui.label("В Сводке: базовый вид или PBR с авторскими нормалями, металлом и шероховатостью. Экспозиция и свет меняют только просмотр.");
                 ui.label("Цвет, металл/шероховатость, нормали, окклюзия и свечение: встроенные PNG/JPEG до 8 бит/канал с независимыми переключателями. AO влияет только на заполняющий свет. Нормали используют авторские касательные либо приближённую UV-основу без MikkTSpace. Свечение не освещает соседние объекты; ореол, HDR-окружение и тени пока не отображаются. Обе стороны граней видимы.");
                 ui.collapsing("Лицензии встроенных шрифтов",|ui| {
@@ -844,5 +859,32 @@ mod tests {
             0,
             "preview request changes nothing"
         );
+    }
+    #[test]
+    fn save_copy_is_offered_when_idle_and_dirty_state_is_visible() {
+        let mut ui = ViewerUi::default();
+        ui.edit.can_save = true;
+        ui.edit.dirty = true;
+        let (out, _, _) = ui.layout(raw(1200., 760.), None, false);
+        out.drop_without_applying_deltas();
+        assert!(ui.save_rect.is_positive());
+        let actions = {
+            let rect = ui.save_rect;
+            click(&mut ui, None, rect, (1200., 760.))
+        };
+        assert!(actions.save_copy);
+        ui.edit.busy = Some("Сохранение копии".into());
+        let actions = {
+            let rect = ui.save_rect;
+            click(&mut ui, None, rect, (1200., 760.))
+        };
+        assert!(!actions.save_copy, "no second save or edit while busy");
+        ui.edit.busy = None;
+        ui.edit.can_save = false;
+        let actions = {
+            let rect = ui.save_rect;
+            click(&mut ui, None, rect, (1200., 760.))
+        };
+        assert!(!actions.save_copy);
     }
 }

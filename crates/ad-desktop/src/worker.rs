@@ -104,6 +104,11 @@ impl<Q: Send + 'static, R: Send + 'static> Worker<Q, R> {
         state.pending = None;
         state.result = None;
     }
+    /// Signals cancellation without discarding the eventual result, for jobs
+    /// whose late success must still be reported (a published Save Copy).
+    pub fn interrupt(&self) {
+        self.cancel.cancel();
+    }
     pub fn ticket(&self) -> u64 {
         self.ticket
     }

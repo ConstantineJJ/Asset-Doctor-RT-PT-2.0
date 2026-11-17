@@ -485,3 +485,14 @@ fn preflight_counts_earlier_edits_with_the_candidate_and_honours_budgets_and_can
         Err(e) if e.code == ErrorCode::Cancelled
     ));
 }
+
+#[test]
+fn public_reimport_comparison_accepts_equal_and_refuses_index_differences() {
+    let bytes = include_bytes!("../../../tests/fixtures/Geometry_Findings.glb");
+    let a = fixture(bytes);
+    let mut b = fixture(bytes);
+    let c = Cancellation::default();
+    crate::compare_reimported(&a, &b, &c).unwrap();
+    remove(&mut b, 0);
+    assert!(crate::compare_reimported(&a, &b, &c).is_err());
+}

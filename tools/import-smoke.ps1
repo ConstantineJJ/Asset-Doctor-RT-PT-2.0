@@ -10,7 +10,10 @@ param(
     # ADR-0031 B3: replace the scene once more with an injected GPU stage failure.
     [ValidateSet('none','upload','wait')][string]$GpuFault='none',
     # ADR-0031 B4: Apply G002 (optionally after an injected GPU failure), Undo, Redo.
-    [switch]$Edit
+    [switch]$Edit,
+    # ADR-0031 D: after Redo, refused Save Copy onto an existing file, a new
+    # verified copy, then reopen that copy in the app.
+    [switch]$Save
 )
 $ErrorActionPreference='Stop'
 $repo=Split-Path $PSScriptRoot -Parent
@@ -23,6 +26,9 @@ if ($Scene -eq 'heal') {
     $bad=Join-Path $repo 'tests\fixtures\Bad_Normal_Image.glb'
 }
 if ($Edit -and $Scene -ne 'heal') {throw '-Edit requires -Scene heal.'}
+if ($Save -and !$Edit) {throw '-Save requires -Edit.'}
+$saveDir=$null
+$existingBytes=[byte[]](111,119,110,101,114,32,100,97,116,97)
 if ($Scene -eq 'uv') {
     $good=Join-Path $repo 'tests\fixtures\UV_Checker.glb'
     $bad=Join-Path $repo 'tests\fixtures\Bad_Unused_UV.glb'
@@ -60,6 +66,14 @@ if ($NoAoMaps) {$arguments+='--no-ao-maps'}
 if ($NoEmission) {$arguments+='--no-emission'}
 if ($GpuFault -ne 'none') {$arguments+=@('--smoke-gpu-fault',$GpuFault)}
 if ($Edit) {$arguments+='--smoke-edit'}
+if ($Save) {
+    $saveDir=Join-Path $reports ('save-smoke-'+[Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $saveDir | Out-Null
+    [IO.File]::WriteAllBytes((Join-Path $saveDir 'existing.glb'),$existingBytes)
+    $arguments+=@('--smoke-save',('"'+$saveDir+'"'))
+}
+if ($Save) {$suffix='-save'+$suffix}
+$sourceHash=(Get-FileHash -LiteralPath $good -Algorithm SHA256).Hash
 $previousSync=$env:VK_LAYER_VALIDATE_SYNC
 try {
     if ($SynchronizationValidation) { $env:VK_LAYER_VALIDATE_SYNC='1' }
@@ -111,6 +125,24 @@ if ($Edit) {
         if ($log -notmatch [regex]::Escape($line)) {throw "Missing edit evidence: $line"}
     }
 }
+if ($Save) {
+    foreach ($line in @(
+        'unsaved_guard dirty=true decision=Ask',
+        'unsaved_guard dirty=false decision=Proceed',
+        'reopened_saved revision=0 primitives=4 mesh_triangles=960 analysis=complete g002_in_mesh=0 dirty=false')) {
+        if ($log -notmatch [regex]::Escape($line)) {throw "Missing Save Copy evidence: $line"}
+    }
+    if ($log -notmatch 'save_failed code=\w+ dirty=true') {throw 'Existing destination was not refused while keeping unsaved state.'}
+    if ($log -notmatch 'save_published revision=3 bytes=(\d+) exact_copy=false reimported_triangles=3840 cleanup_warning=false accepted=true dirty=false') {throw 'Missing verified Save Copy receipt evidence.'}
+    $savedBytes=[int64]$Matches[1]
+    $healed=Join-Path $saveDir 'healed.glb'
+    if (!(Test-Path -LiteralPath $healed) -or (Get-Item -LiteralPath $healed).Length -ne $savedBytes) {throw 'Saved copy is missing or has an unexpected size.'}
+    $after=[IO.File]::ReadAllBytes((Join-Path $saveDir 'existing.glb'))
+    if ([Convert]::ToBase64String($after) -ne [Convert]::ToBase64String($existingBytes)) {throw 'Existing destination was modified.'}
+    if (@(Get-ChildItem -LiteralPath $saveDir -Force | Where-Object {$_.Name -like '.asset-doctor-copy-*'}).Count -ne 0) {throw 'Staging file left behind.'}
+    "save_smoke_dir=$saveDir saved_bytes=$savedBytes"
+}
+if ((Get-FileHash -LiteralPath $good -Algorithm SHA256).Hash -ne $sourceHash) {throw 'Source model changed during smoke.'}
 $expectedBindings=if($Scene -in @('color','mr','emission')){2}else{1}
 if($log -notmatch "gpu_material_binding_sets=$expectedBindings\b"){throw 'Missing material descriptor tuple-sharing evidence.'}
 if ($Scene -eq 'color' -and $log -notmatch 'gpu_material_images=1 material_textures=2 mip_bytes=20 decoded_images=1 srgb_images=1 linear_images=0') {
@@ -129,4 +161,4 @@ if (($NoNormalMaps -or !$Pbr -or $Scene -notin @('normal','heal')) -and $log -no
 if ($Scene -eq 'mr' -and $Pbr -and !$NoMrMaps -and $log -notmatch 'mr_frames=(1[5-9]|[2-9]\d|\d{3,})\b') {throw 'Missing MR sampled frame evidence.'}
 if (($NoMrMaps -or !$Pbr) -and $log -notmatch 'mr_frames=0\b') {throw 'MR sampling unexpectedly active.'}
 if ($Pbr -and $log -notmatch 'lighting_smoke mode=DirectPbr pbr_frames=(1[5-9]|[2-9]\d|\d{3,})\b') {throw 'Missing PBR frame presentation evidence.'}
-($log -split "`n" | Where-Object { $_ -match '^edit_preview|^edit_gpu_fault|^edit_published|^edit_smoke_done|^gpu_fault_smoke|^gpu_scene_published|^analysis_complete|^analysis_partial|^analysis_coverage|^gpu_material_images|^asset_smoke|^lighting_smoke|^SMOKE_PASS' }).Trim()
+($log -split "`n" | Where-Object { $_ -match '^unsaved_guard|^save_|^reopened_saved|^edit_preview|^edit_gpu_fault|^edit_published|^edit_smoke_done|^gpu_fault_smoke|^gpu_scene_published|^analysis_complete|^analysis_partial|^analysis_coverage|^gpu_material_images|^asset_smoke|^lighting_smoke|^SMOKE_PASS' }).Trim()
