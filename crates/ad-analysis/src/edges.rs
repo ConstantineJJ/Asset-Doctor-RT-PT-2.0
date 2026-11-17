@@ -1,5 +1,5 @@
 use crate::{
-    AssetDocument, AssetResult, Cancellation, Code, Finding, LimitReason, Limits, MeshId, Report,
+    AssetResult, Cancellation, Code, DocumentView, Finding, LimitReason, Limits, MeshId, Report,
     Samples, Severity, budget, eligible_triangle,
 };
 
@@ -57,16 +57,16 @@ fn scratch_bytes(triangles: usize) -> Option<usize> {
 /// Called after ALL core primitives finish; their per-primitive sort/reference
 /// buffers are gone. At most one edge buffer is alive; output evidence is bounded.
 pub(crate) fn analyze(
-    document: &AssetDocument,
+    view: &DocumentView,
     report: &mut Report,
     limits: Limits,
     cancel: &Cancellation,
 ) -> AssetResult<()> {
-    for (index, mesh) in document.primitives().iter().enumerate() {
+    for index in 0..view.primitives().len() {
         let mesh_id = MeshId(index);
         let mut count = 0usize;
         let mut excluded = 0usize;
-        for (i, face) in mesh.indices.as_chunks::<3>().0.iter().enumerate() {
+        for (i, face) in view.indices(mesh_id).as_chunks::<3>().0.iter().enumerate() {
             if i % 1024 == 0 {
                 cancel.check()?;
             }
@@ -89,7 +89,7 @@ pub(crate) fn analyze(
             omit(report, mesh_id, LimitReason::Allocation);
             continue;
         }
-        for (i, face) in mesh.indices.as_chunks::<3>().0.iter().enumerate() {
+        for (i, face) in view.indices(mesh_id).as_chunks::<3>().0.iter().enumerate() {
             if i % 1024 == 0 {
                 cancel.check()?;
             }

@@ -12,6 +12,38 @@ pub struct Actions {
     pub open: bool,
     pub fit: bool,
     pub cancel: bool,
+    /// Start a read-only G002 repair preview for this source primitive.
+    pub preview: Option<ad_document::MeshId>,
+    pub apply: bool,
+    pub discard_preview: bool,
+    pub undo: bool,
+    pub redo: bool,
+    pub cancel_edit: bool,
+    pub save_copy: bool,
+}
+/// Facts of a prepared, not yet applied G002 repair (ADR-0031 Preview).
+#[derive(Clone)]
+pub struct PreviewInfo {
+    pub mesh: ad_document::MeshId,
+    pub before: usize,
+    pub after: usize,
+    /// Source node references, including inactive nodes; not visible copies.
+    pub references: usize,
+    pub complete: bool,
+    pub g002_left: Option<usize>,
+    pub geometry_bytes: usize,
+}
+/// Edit state shown by the UI; owned and refreshed by the application.
+#[derive(Default)]
+pub struct EditUi {
+    pub busy: Option<String>,
+    pub preview: Option<PreviewInfo>,
+    pub can_undo: bool,
+    pub can_redo: bool,
+    /// A model is open; Save Copy also works for an unchanged model.
+    pub can_save: bool,
+    /// Revision/origin differs from the imported file or last verified copy.
+    pub dirty: bool,
 }
 pub struct ViewerUi {
     pub context: egui::Context,
@@ -30,8 +62,21 @@ pub struct ViewerUi {
     scene: egui::Rect,
     pub status: String,
     pub error: Option<String>,
+    pub edit: EditUi,
     #[cfg(test)]
     open_rect: egui::Rect,
+    #[cfg(test)]
+    apply_rect: egui::Rect,
+    #[cfg(test)]
+    discard_rect: egui::Rect,
+    #[cfg(test)]
+    undo_rect: egui::Rect,
+    #[cfg(test)]
+    redo_rect: egui::Rect,
+    #[cfg(test)]
+    preview_rect: egui::Rect,
+    #[cfg(test)]
+    save_rect: egui::Rect,
     #[cfg(test)]
     reset_lighting_rect: egui::Rect,
     #[cfg(test)]
@@ -72,8 +117,21 @@ impl Default for ViewerUi {
             scene: egui::Rect::NOTHING,
             status: "Готов к открытию GLB".into(),
             error: None,
+            edit: EditUi::default(),
             #[cfg(test)]
             open_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            apply_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            discard_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            undo_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            redo_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            preview_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            save_rect: egui::Rect::NOTHING,
             #[cfg(test)]
             reset_lighting_rect: egui::Rect::NOTHING,
             #[cfg(test)]
@@ -187,6 +245,20 @@ impl ViewerUi {
                     {self.open_rect=open.rect;}
                     actions.open|=open.clicked();
                     actions.fit|=ui.add_enabled(asset.is_some(),egui::Button::new("Вписать")).on_hover_text("Показать модель целиком · F").clicked();
+                    if width>=900. {
+                        let idle=!loading && self.edit.busy.is_none();
+                        let undo=ui.add_enabled(idle && self.edit.can_undo,egui::Button::new("Отменить правку")).on_hover_text("Вернуть индексы до последней правки · Ctrl+Z. Ревизия всё равно увеличится.");
+                        let redo=ui.add_enabled(idle && self.edit.can_redo,egui::Button::new("Вернуть правку")).on_hover_text("Повторить отменённую правку · Ctrl+Y");
+                        #[cfg(test)]
+                        {self.undo_rect=undo.rect;self.redo_rect=redo.rect;}
+                        actions.undo|=undo.clicked();
+                        actions.redo|=redo.clicked();
+                        let save=ui.add_enabled(idle && self.edit.can_save,egui::Button::new("Сохранить копию…")).on_hover_text("Проверенная копия GLB в новый файл · Ctrl+Shift+S. Исходный файл и существующие файлы не перезаписываются; рабочий файл не меняется.");
+                        #[cfg(test)]
+                        {self.save_rect=save.rect;}
+                        actions.save_copy|=save.clicked();
+                        if self.edit.dirty {ui.colored_label(Color32::from_rgb(255,190,120),"* не сохранено").on_hover_text("Есть правки, которых нет ни в исходном файле, ни в последней проверенной копии.");}
+                    }
                     if width>=680. {
                         ui.add_enabled_ui(width>=780.,|ui|{ui.toggle_value(&mut self.show_tree,"Дерево");});
                         ui.toggle_value(&mut self.show_summary,"Сводка");
@@ -208,6 +280,11 @@ impl ViewerUi {
                         ui.spinner();
                         if width>=430. {ui.label("Загрузка GLB…");}
                         actions.cancel|=ui.button(if width>=430. {"Отменить · Esc"} else {"Отменить"}).on_hover_text("Отменить загрузку · Esc").clicked();
+                    }
+                    else if let Some(busy)=&self.edit.busy {
+                        ui.spinner();
+                        if width>=430. {ui.label(busy);}
+                        actions.cancel_edit|=ui.button("Отменить подготовку").on_hover_text("Модель не изменится · Esc").clicked();
                     }
                     else {ui.label(&self.status);}
                     if ui.available_width()>220. {ui.separator();ui.weak("Vulkan · геометрия и базовые цвета");}
@@ -263,25 +340,25 @@ impl ViewerUi {
                             ui.weak("Металл и шероховатость: параметры × карты. Заполнение приблизительное; без HDR-окружения и теней.");
                         }
                         if let Some(asset)=asset {
-                            ui.strong(asset.document.name());
-                            ui.label(format!("Исходный файл: {:.2} МиБ",asset.document.source().len() as f64/1048576.));
-                            ui.label(format!("Узлов в документе: {}",asset.document.nodes().len()));
-                            let textures=asset.document.texture_stats();
+                            ui.strong(asset.document().name());
+                            ui.label(format!("Исходный файл: {:.2} МиБ",asset.document().source().len() as f64/1048576.));
+                            ui.label(format!("Узлов в документе: {}",asset.document().nodes().len()));
+                            let textures=asset.document().texture_stats();
                             ui.label(format!("Изображений материалов: {}",textures.images));
                             ui.label(format!("RGBA с mip-уровнями: {:.2} МиБ",textures.mip_bytes as f64/1048576.));
                             ui.add_space(12.);ui.strong("Отображаемая геометрия");
-                            ui.label(format!("Вершины: {}",asset.snapshot.positions.len()));
-                            ui.label(format!("Треугольники: {}",asset.snapshot.indices.len()/3));
-                            ui.label(format!("Примитивы с повторами: {}",asset.snapshot.draws.len()));
-                            ui.label(format!("Нормаль грани: {} вершин",asset.snapshot.fallback_normal_vertices)).on_hover_text("Авторская нормаль отсутствует, нулевая или преобразование вырождено. Источник не исправляется.");
-                            if asset.snapshot.fallback_tangent_vertices>0 {
-                                ui.label(format!("UV-основа нормалей: {} вершин",asset.snapshot.fallback_tangent_vertices)).on_hover_text("Нет пригодных авторских касательных. Используется основа по производным геометрии/UV; на сложных швах возможно отличие от MikkTSpace.");
+                            ui.label(format!("Вершины: {}",asset.snapshot().positions.len()));
+                            ui.label(format!("Треугольники: {}",asset.snapshot().indices.len()/3));
+                            ui.label(format!("Примитивы с повторами: {}",asset.snapshot().draws.len()));
+                            ui.label(format!("Нормаль грани: {} вершин",asset.snapshot().fallback_normal_vertices)).on_hover_text("Авторская нормаль отсутствует, нулевая или преобразование вырождено. Источник не исправляется.");
+                            if asset.snapshot().fallback_tangent_vertices>0 {
+                                ui.label(format!("UV-основа нормалей: {} вершин",asset.snapshot().fallback_tangent_vertices)).on_hover_text("Нет пригодных авторских касательных. Используется основа по производным геометрии/UV; на сложных швах возможно отличие от MikkTSpace.");
                             }
                             ui.weak("С учётом экземпляров в сцене");
-                            let b=asset.snapshot.bounds;
+                            let b=asset.snapshot().bounds;
                             ui.add_space(12.);ui.strong("Габариты · метры");
                             for (i,axis) in ["X","Y","Z"].into_iter().enumerate() {ui.label(format!("{axis}   {:.3}",b.max[i]-b.min[i]));}
-                            if let Some(id)=self.tree.selected && let Some(node)=asset.document.nodes().get(id.0) {
+                            if let Some(id)=self.tree.selected && let Some(node)=asset.document().nodes().get(id.0) {
                                 ui.separator();ui.strong("Выбранный узел");
                                 if let Some(row)=self.tree.rows.iter().find(|row|row.id==id) {ui.label(&row.label);}
                                 ui.label(format!("Дочерние узлы: {}",node.children.len()));
@@ -291,7 +368,7 @@ impl ViewerUi {
                                 });
                             }
                             ui.collapsing("Ограничения просмотра",|ui| {
-                                for note in asset.document.notes() {ui.weak(note);}
+                                for note in asset.document().notes() {ui.weak(note);}
                             });
                         } else {ui.label("Откройте модель, чтобы увидеть её состав и размеры.");}
                         ui.add_space(16.);ui.separator();ui.weak("Статические GLB: PNG/JPEG, цвета вершин, нормали, OPAQUE/MASK. PBR — предварительный режим. BLEND, скелеты и анимации пока не поддерживаются.");
@@ -308,12 +385,44 @@ impl ViewerUi {
                     root.painter().text(center+egui::vec2(0.,22.),egui::Align2::CENTER_CENTER,"Ctrl+O или перетащите GLB в окно",egui::FontId::proportional(14.),Color32::from_rgb(154,164,181));
                 }
             }
-            crate::diagnostic_ui::show(&context,&mut self.show_diagnostics,asset,height);
+            let (preview,_preview_rect)=crate::diagnostic_ui::show(&context,&mut self.show_diagnostics,asset,height,!loading && self.edit.busy.is_none());
+            #[cfg(test)]
+            {self.preview_rect=_preview_rect;}
+            actions.preview=preview;
+            if let Some(info)=self.edit.preview.clone() {
+                let ready=!loading && self.edit.busy.is_none();
+                egui::Window::new("Ремонт G002 · предпросмотр").collapsible(false).resizable(false).default_width(420.).show(&context,|ui| {
+                    ui.strong(format!("Исходный примитив #{}",info.mesh.0));
+                    ui.label(format!("Ссылок из узлов: {} (включая неактивные; это не число видимых копий).",info.references));
+                    ui.label("Правка меняет общий примитив: все узлы, которые его используют, получат одинаковые индексы.");
+                    ui.separator();
+                    ui.label(format!("Треугольники: было {}, станет {} (удаляется {}).",info.before,info.after,info.before-info.after));
+                    ui.weak("Удаляются только точные повторы с тем же обходом; первый экземпляр, порядок и все атрибуты сохраняются.");
+                    match (info.complete,info.g002_left) {
+                        (true,Some(0))=>ui.label("Проверка результата: полный анализ, G002 в этом примитиве не останется."),
+                        (true,Some(n))=>ui.colored_label(Color32::from_rgb(255,190,120),format!("Проверка результата: полный анализ, G002 останется: {n}.")),
+                        _=>ui.colored_label(Color32::from_rgb(255,190,120),"Проверка результата неполная: отсутствие G002 не доказано."),
+                    };
+                    ui.label("Сохранение: результат совместим с проверенным экспортом копии GLB.");
+                    ui.weak(format!("Новая сцена на GPU: {:.1} МиБ геометрии; текстуры загружаются заново. Новые G006 после удаления дублей — не обязательно новые дыры.",info.geometry_bytes as f64/1048576.));
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        let apply=ui.add_enabled(ready,egui::Button::new("Применить")).on_hover_text("Опубликовать правку целиком: индексы, история, анализ и сцена. Отменяется через «Отменить правку».");
+                        let discard=ui.button("Отмена").on_hover_text("Закрыть предпросмотр; модель не изменится.");
+                        #[cfg(test)]
+                        {self.apply_rect=apply.rect;self.discard_rect=discard.rect;}
+                        actions.apply|=apply.clicked();
+                        actions.discard_preview|=discard.clicked();
+                    });
+                });
+            }
             egui::Window::new("Справка").open(&mut self.help).resizable(true).show(&context,|ui| {
                 ui.label("Открыть: Ctrl+O или перетащить GLB в окно.");
                 ui.label("ЛКМ — вращение; ПКМ / средняя — перемещение; колесо — масштаб.");
-                ui.label("F — вписать модель; Esc — отменить загрузку; H — справка.");
-                ui.separator();ui.label("Выбор узла показывает сведения. Подсветка, редактирование и сохранение появятся позднее.");
+                ui.label("F — вписать модель; Esc — отменить загрузку или подготовку правки; H — справка.");
+                ui.label("Ремонт G002: «Диагностика», затем «Предпросмотр ремонта…», затем «Применить». Ctrl+Z — отменить правку, Ctrl+Y — вернуть.");
+                ui.label("«Сохранить копию…» (Ctrl+Shift+S) пишет проверенный GLB только в новый файл и заново открывает его для сверки. При закрытии или открытии другой модели с несохранёнными правками программа спросит, что делать.");
+                ui.separator();ui.label("Выбор узла показывает сведения. Подсветка узлов появится позднее.");
                 ui.label("В Сводке: базовый вид или PBR с авторскими нормалями, металлом и шероховатостью. Экспозиция и свет меняют только просмотр.");
                 ui.label("Цвет, металл/шероховатость, нормали, окклюзия и свечение: встроенные PNG/JPEG до 8 бит/канал с независимыми переключателями. AO влияет только на заполняющий свет. Нормали используют авторские касательные либо приближённую UV-основу без MikkTSpace. Свечение не освещает соседние объекты; ореол, HDR-окружение и тени пока не отображаются. Обе стороны граней видимы.");
                 ui.collapsing("Лицензии встроенных шрифтов",|ui| {
@@ -419,10 +528,21 @@ mod tests {
             ad_analysis::Limits::default(),
             &ad_document::Cancellation::default(),
         );
+        let stamp = document.stamp();
         let asset = PreparedAsset {
-            document,
-            snapshot,
-            diagnostics,
+            session: std::sync::Arc::new(
+                ad_commands::Session::new(
+                    document,
+                    ad_commands::HistoryLimits::default(),
+                    ad_document::ImportLimits::default(),
+                )
+                .unwrap(),
+            ),
+            generation: crate::imports::Generation {
+                snapshot,
+                diagnostics,
+                stamp,
+            },
         };
         let (out, rect, _) = ui.layout(raw(1200., 1000.), Some(&asset), false);
         out.drop_without_applying_deltas();
@@ -455,8 +575,8 @@ mod tests {
         assert!(!ui.normal_maps);
         assert!(!ui.ao_maps);
         assert!(!ui.emission);
-        assert!(std::sync::Arc::ptr_eq(asset.document.source(), &source));
-        assert_eq!(asset.snapshot.fallback_normal_vertices, 6);
+        assert!(std::sync::Arc::ptr_eq(asset.document().source(), &source));
+        assert_eq!(asset.snapshot().fallback_normal_vertices, 6);
     }
     #[test]
     fn mr_switch_is_independent_of_color_texture_sampling() {
@@ -614,5 +734,194 @@ mod tests {
             assert_eq!(actions.open, !pressed);
             assert!(!actions.fit && !actions.cancel);
         }
+    }
+    /// Clicks the centre of a rect across two frames; returns release actions.
+    fn click(
+        ui: &mut ViewerUi,
+        asset: Option<&PreparedAsset>,
+        rect: egui::Rect,
+        size: (f32, f32),
+    ) -> Actions {
+        let mut last = Actions::default();
+        for pressed in [true, false] {
+            let mut input = raw(size.0, size.1);
+            input.events = vec![
+                egui::Event::PointerMoved(rect.center()),
+                egui::Event::PointerButton {
+                    pos: rect.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::default(),
+                },
+            ];
+            let (out, _, actions) = ui.layout(input, asset, false);
+            out.drop_without_applying_deltas();
+            last = actions;
+        }
+        last
+    }
+    fn preview_info() -> PreviewInfo {
+        PreviewInfo {
+            mesh: ad_document::MeshId(0),
+            before: 992,
+            after: 960,
+            references: 1,
+            complete: true,
+            g002_left: Some(0),
+            geometry_bytes: 261_504,
+        }
+    }
+    #[test]
+    fn apply_and_discard_are_offered_only_for_a_ready_preview() {
+        let mut ui = ViewerUi::default();
+        ui.edit.preview = Some(preview_info());
+        for _ in 0..3 {
+            let (out, _, _) = ui.layout(raw(1200., 900.), None, false);
+            out.drop_without_applying_deltas();
+        }
+        let (out, _, _) = ui.layout(raw(1200., 900.), None, false);
+        out.drop_without_applying_deltas();
+        assert!(ui.apply_rect.is_positive() && ui.discard_rect.is_positive());
+        let actions = {
+            let rect = ui.apply_rect;
+            click(&mut ui, None, rect, (1200., 900.))
+        };
+        assert!(actions.apply && !actions.discard_preview);
+        let actions = {
+            let rect = ui.discard_rect;
+            click(&mut ui, None, rect, (1200., 900.))
+        };
+        assert!(actions.discard_preview && !actions.apply);
+        // While another edit runs, the stale-prone Apply is disabled.
+        ui.edit.busy = Some("Подготовка".into());
+        let (out, _, _) = ui.layout(raw(1200., 900.), None, false);
+        out.drop_without_applying_deltas();
+        let actions = {
+            let rect = ui.apply_rect;
+            click(&mut ui, None, rect, (1200., 900.))
+        };
+        assert!(!actions.apply);
+    }
+    #[test]
+    fn undo_and_redo_buttons_follow_history_state() {
+        let mut ui = ViewerUi::default();
+        ui.edit.can_undo = true;
+        let (out, _, _) = ui.layout(raw(1200., 760.), None, false);
+        out.drop_without_applying_deltas();
+        let actions = {
+            let rect = ui.undo_rect;
+            click(&mut ui, None, rect, (1200., 760.))
+        };
+        assert!(actions.undo && !actions.redo);
+        let actions = {
+            let rect = ui.redo_rect;
+            click(&mut ui, None, rect, (1200., 760.))
+        };
+        assert!(!actions.redo, "redo disabled without a redo entry");
+        ui.edit.can_redo = true;
+        ui.edit.busy = Some("Отмена правки".into());
+        let actions = {
+            let rect = ui.redo_rect;
+            click(&mut ui, None, rect, (1200., 760.))
+        };
+        assert!(
+            !actions.redo && !actions.undo,
+            "history disabled while busy"
+        );
+    }
+    #[test]
+    fn g002_finding_offers_a_read_only_repair_preview() {
+        let asset = crate::imports::prepare(&crate::worker::Request {
+            ticket: 1,
+            input: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/Duplicate_Heal.glb"),
+            cancel: ad_document::Cancellation::default(),
+        })
+        .unwrap();
+        let mut ui = ViewerUi {
+            show_diagnostics: true,
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            let (out, _, _) = ui.layout(raw(1400., 1000.), Some(&asset), false);
+            out.drop_without_applying_deltas();
+        }
+        let (out, _, _) = ui.layout(raw(1400., 1000.), Some(&asset), false);
+        out.drop_without_applying_deltas();
+        assert!(ui.preview_rect.is_positive());
+        let actions = {
+            let rect = ui.preview_rect;
+            click(&mut ui, Some(&asset), rect, (1400., 1000.))
+        };
+        assert_eq!(actions.preview, Some(ad_document::MeshId(0)));
+        assert_eq!(
+            asset.document().revision(),
+            0,
+            "preview request changes nothing"
+        );
+    }
+    #[test]
+    fn save_copy_is_offered_when_idle_and_dirty_state_is_visible() {
+        let mut ui = ViewerUi::default();
+        ui.edit.can_save = true;
+        ui.edit.dirty = true;
+        let (out, _, _) = ui.layout(raw(1200., 760.), None, false);
+        out.drop_without_applying_deltas();
+        assert!(ui.save_rect.is_positive());
+        let actions = {
+            let rect = ui.save_rect;
+            click(&mut ui, None, rect, (1200., 760.))
+        };
+        assert!(actions.save_copy);
+        ui.edit.busy = Some("Сохранение копии".into());
+        let actions = {
+            let rect = ui.save_rect;
+            click(&mut ui, None, rect, (1200., 760.))
+        };
+        assert!(!actions.save_copy, "no second save or edit while busy");
+        ui.edit.busy = None;
+        ui.edit.can_save = false;
+        let actions = {
+            let rect = ui.save_rect;
+            click(&mut ui, None, rect, (1200., 760.))
+        };
+        assert!(!actions.save_copy);
+    }
+    /// Every non-ASCII character inside UI string literals must exist in the
+    /// bundled egui fonts; otherwise it renders as an empty box (found in the
+    /// manual G002 check: "992 → 960").
+    #[test]
+    fn ui_string_literals_use_only_glyphs_present_in_bundled_fonts() {
+        let mut ui = ViewerUi::default();
+        let (out, _, _) = ui.layout(raw(800., 600.), None, false);
+        out.drop_without_applying_deltas();
+        let sources = [
+            include_str!("viewer_ui.rs"),
+            include_str!("diagnostic_ui.rs"),
+            include_str!("main.rs"),
+        ];
+        let mut missing = std::collections::BTreeSet::new();
+        for source in sources {
+            for line in source.lines() {
+                let code = line.split("//").next().unwrap_or("");
+                for (i, literal) in code.split('"').enumerate() {
+                    if i % 2 == 0 {
+                        continue;
+                    }
+                    for c in literal.chars().filter(|c| !c.is_ascii()) {
+                        let present = ui
+                            .context
+                            .fonts_mut(|f| f.has_glyph(&egui::FontId::proportional(14.), c));
+                        if !present {
+                            missing.insert(c);
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "glyphs missing from bundled fonts: {missing:?}"
+        );
     }
 }

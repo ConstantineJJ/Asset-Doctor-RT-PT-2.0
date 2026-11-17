@@ -19,6 +19,47 @@ pub enum FrameResult {
     Suspended,
 }
 
+/// Injected failure point of `Renderer::stage_scene` for native smoke tests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SceneFault {
+    Upload,
+    Wait,
+}
+impl std::str::FromStr for SceneFault {
+    type Err = String;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "upload" => Ok(Self::Upload),
+            "wait" => Ok(Self::Wait),
+            _ => Err(format!("Unknown GPU fault stage: {value}")),
+        }
+    }
+}
+
+/// A fully uploaded scene after the idle wait. `activate` cannot fail: it
+/// replaces the current scene and drops the old one, whose GPU use ended.
+pub struct StagedScene<'a> {
+    renderer: &'a mut Renderer,
+    scene: GpuScene,
+    vertices: usize,
+    triangles: usize,
+    stage_ms: u128,
+}
+impl StagedScene<'_> {
+    pub fn tag(&self) -> (DocumentId, u64) {
+        (self.scene.document_id, self.scene.revision)
+    }
+    pub fn activate(self) {
+        let (document, revision) = self.tag();
+        let bytes = self.scene.geometry_bytes();
+        self.renderer.scene = Some(self.scene);
+        eprintln!(
+            "gpu_scene_published document={} revision={} vertices={} triangles={} stage_ms={} geometry_bytes={}",
+            document.0, revision, self.vertices, self.triangles, self.stage_ms, bytes
+        );
+    }
+}
+
 /// One in-flight frame for the lifecycle experiment. No asset/document ownership.
 pub struct Renderer {
     swapchain: Option<Swapchain>,
@@ -30,6 +71,7 @@ pub struct Renderer {
     presented: vk::Fence,
     presentation_pending: bool,
     scene: Option<GpuScene>,
+    scene_fault: Option<SceneFault>,
     overlay: Option<Overlay>,
     frame: Option<FrameBinding>,
     view_projection: [[f32; 4]; 4],
@@ -67,6 +109,7 @@ impl Renderer {
             presented: vk::Fence::null(),
             presentation_pending: false,
             scene: None,
+            scene_fault: None,
             sample_textures: true,
             sample_mr_maps: true,
             sample_normal_maps: true,
@@ -123,18 +166,38 @@ impl Renderer {
         self.gpu.surface.context.clone()
     }
 
+    /// Uploads and idles in one step: stage + activate.
     pub fn set_scene(&mut self, snapshot: &GeometrySnapshot) -> GpuResult<()> {
-        let candidate = GpuScene::new(self.gpu.clone(), snapshot)?;
-        self.wait_idle()?;
-        self.scene = Some(candidate);
-        eprintln!(
-            "gpu_scene_published document={} revision={} vertices={} triangles={}",
-            snapshot.document_id.0,
-            snapshot.revision,
-            snapshot.positions.len(),
-            snapshot.indices.len() / 3
-        );
+        self.stage_scene(snapshot)?.activate();
         Ok(())
+    }
+    /// Every fallible GPU step of a scene replacement (ADR-0031): candidate
+    /// upload, then an idle wait so the current scene is no longer in use.
+    /// The returned stage borrows the renderer mutably, so no frame can be
+    /// submitted before `activate`. Dropping it frees only the candidate.
+    pub fn stage_scene(&mut self, snapshot: &GeometrySnapshot) -> GpuResult<StagedScene<'_>> {
+        let started = std::time::Instant::now();
+        let fault = self.scene_fault.take();
+        let candidate = GpuScene::new(self.gpu.clone(), snapshot)?;
+        if fault == Some(SceneFault::Upload) {
+            return Err("Injected GPU upload failure; current GPU scene preserved".into());
+        }
+        self.wait_idle()?;
+        if fault == Some(SceneFault::Wait) {
+            return Err("Injected GPU idle-wait failure; current GPU scene preserved".into());
+        }
+        Ok(StagedScene {
+            renderer: self,
+            scene: candidate,
+            vertices: snapshot.positions.len(),
+            triangles: snapshot.indices.len() / 3,
+            stage_ms: started.elapsed().as_millis(),
+        })
+    }
+    /// Smoke/test seam: the next `stage_scene` fails at the given step after
+    /// the candidate was really uploaded. One-shot; never set by product UI.
+    pub fn inject_scene_fault(&mut self, fault: Option<SceneFault>) {
+        self.scene_fault = fault;
     }
     pub fn scene_tag(&self) -> Option<(DocumentId, u64)> {
         self.scene
@@ -589,5 +652,19 @@ impl Drop for Renderer {
             "renderer_shutdown frames={} recreations={}",
             self.frames, self.recreations
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SceneFault;
+
+    #[test]
+    fn scene_fault_names_are_explicit_and_unknown_names_refuse() {
+        assert_eq!("upload".parse(), Ok(SceneFault::Upload));
+        assert_eq!("wait".parse(), Ok(SceneFault::Wait));
+        for bad in ["", "Upload", "none", "device-lost"] {
+            assert!(bad.parse::<SceneFault>().is_err());
+        }
     }
 }

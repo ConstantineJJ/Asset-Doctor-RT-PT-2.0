@@ -55,6 +55,11 @@ and ad-commands; formats/analysis/storage are test/developer-probe dependencies.
 No registry version, OS/UI/GPU dependency or license exception is added. Repair
 planning remains replaceable independently of diagnostics, storage and renderer.
 
+ADR-0031 stage B4 makes ad-desktop depend on the existing local ad-commands and
+ad-heal crates for Session ownership and edit preparation. No registry package,
+version change or license exception is added; Cargo.lock lists only those edges.
+Stage D adds the existing local ad-storage crate to ad-desktop for Save Copy.
+
 cargo deny check passes for the Windows graph. deny.toml has two exact,
 documented duplicate exceptions: miniz_oxide 0.8.9 required directly by png while
 its current flate2 dependency requires miniz 0.9.1; syn 2.0.119 required by

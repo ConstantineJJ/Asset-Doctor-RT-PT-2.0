@@ -13,6 +13,15 @@ Full roadmap and all76function/request statuses:
 - [x] Static export/storage backend: ADR-0028/0029 and source slice14; source-primitive mapping, exact-copy/append-only index writer, bounded core metadata, independent reimport comparison, Windows new-path disk readback/no-replace publication and handle-bound cleanup.157tests and saved-copy/UV/normal/empty native regressions PASS. Report STATIC_EXPORT_REPORT_2026-11-16.md; no desktop controls added.
 - [x] Duplicate-plan CPU subset: ADR-0030/source slice15, complete oriented same-index removal plan for one source primitive, earliest survivors, all source-node reference count, independent precommit verifier and shared command history.170workspace tests; textured plan/apply/complete-analysis/Undo/Redo/export/disk/native readback PASS. Report DUPLICATE_PLAN_REPORT_2026-11-17.md; no native Heal controls.
 - [ ] First user-facing Heal/export: close remaining ADR-0027 source/material eligibility and atomic desktop/history/analysis/snapshot/GPU publication; add preview/apply/verify/Undo/Save Copy/dirty-close workflow. CPU plan/history/writer/storage exist; native repair/Save controls do not.
+  - [x] A: ADR-0031 publication protocol, state owners and owner decisions 1–7 (docs only, branch claude/g002-heal).
+  - [x] B1: CandidateIndices/DocumentView; DocumentView::snapshot and analyze_view equal post-commit results; current-view wrappers unchanged (173 tests).
+  - [x] B2: Session stage_commit/stage_undo/stage_redo + infallible publish; undo/redo candidates; dropped stage keeps redo (178 tests).
+  - [x] B3: Renderer stage_scene/activate; one-shot upload/wait fault injection via --smoke-gpu-fault keeps published scene (179 tests, native 0 validation errors).
+  - [x] B4: desktop Arc<Session>, shared latest-ticket worker, Generation, publish_edit with stale/busy/cancel/GPU-failure tests; native --smoke-edit Apply/Undo/Redo with upload/wait fault (185 tests, 0 validation errors). No Heal button.
+  - [x] C: preflight_changed_export before Apply (G002-06); Diagnostics → Preview → Apply, Undo/Redo buttons and Ctrl+Z/Ctrl+Y; native smoke and heavy 1.5M-triangle measurement (191 tests). Manual UI acceptance not done.
+  - [x] D: Save Copy UI with disk readback and fresh reimport, receipt-based dirty, close/open/drop guard, end-to-end demonstrator (197 tests). Report G002_HEAL_WORKFLOW_REPORT_2026-11-17.md.
+  - [x] Owner manual UI acceptance of the G002 workflow (2026-11-17, log-verified in artifacts/manual-ui-2/-3); fixed glyph boxes and the invisible close-guard dialog found during it.
+  - [ ] Owner: merge/PR decision for branch claude/g002-heal.
 
 - [x] A1a: Initial source inventory: 66 functions/scenarios, all 10 REQ IDs, exact evidence and source hashes. Verify: tools/audit_legacy.py. Full semantic UI/native audit remains open below.
 - [ ] A1b: Map all 197 UI declaration sites; classify 110 state candidates; complete parameter/error/native workflow acceptance. See reference/LEGACY_GAP_REGISTER.md.

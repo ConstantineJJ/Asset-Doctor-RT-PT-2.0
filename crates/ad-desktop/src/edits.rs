@@ -1,0 +1,274 @@
+//! Background edit preparation and atomic desktop publication (ADR-0031).
+//!
+//! Preparation (worker, read-only Session clone): complete plan, verified
+//! command, candidate snapshot and analysis at the future revision.
+//! Publication (UI thread): stale/busy checks, Session stage, GPU stage, then
+//! infallible publish of history, scene and one generation.
+use crate::imports::{Generation, PreparedAsset};
+use crate::worker::{Request, Worker};
+use ad_commands::Session;
+use ad_document::{
+    AssetError, AssetResult, Cancellation, CandidateIndices, DocumentStamp, DocumentTag,
+    GeometrySnapshot, ImportLimits, MeshId, PreparedRemoval,
+};
+use ad_heal::{DuplicatePreview, PlanLimits, VerificationLimits};
+use std::sync::Arc;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditKind {
+    /// G002 for one explicit source primitive and all its references.
+    RemoveDuplicates(MeshId),
+    Undo,
+    Redo,
+}
+pub struct EditInput {
+    pub session: Arc<Session>,
+    pub base: DocumentStamp,
+    pub kind: EditKind,
+}
+enum Change {
+    Remove(PreparedRemoval),
+    Undo,
+    Redo,
+}
+/// Fully prepared, not yet visible. Single use; bound to its base stamp.
+pub struct EditCandidate {
+    kind: EditKind,
+    base: DocumentStamp,
+    change: Change,
+    preview: Option<DuplicatePreview>,
+    snapshot: Arc<GeometrySnapshot>,
+    diagnostics: AssetResult<ad_analysis::Report>,
+}
+impl EditCandidate {
+    pub fn kind(&self) -> EditKind {
+        self.kind
+    }
+    pub fn preview(&self) -> Option<DuplicatePreview> {
+        self.preview
+    }
+    /// Read-only facts for the Preview window; None for Undo/Redo.
+    pub fn info(&self) -> Option<crate::viewer_ui::PreviewInfo> {
+        let preview = self.preview?;
+        let report = self.diagnostics.as_ref().ok();
+        Some(crate::viewer_ui::PreviewInfo {
+            mesh: preview.mesh,
+            before: preview.before_triangles,
+            after: preview.after_triangles,
+            references: preview.source_node_references,
+            complete: report.is_some_and(|r| r.is_complete()),
+            g002_left: report.map(|r| {
+                r.findings
+                    .iter()
+                    .filter(|f| {
+                        f.mesh == preview.mesh && f.code == ad_analysis::Code::DuplicateTriangle
+                    })
+                    .map(|f| f.count)
+                    .sum()
+            }),
+            geometry_bytes: ad_document::geometry_bytes(
+                self.snapshot.positions.len(),
+                self.snapshot.indices.len(),
+            )
+            .unwrap_or(usize::MAX),
+        })
+    }
+    pub fn tag_after(&self) -> DocumentTag {
+        DocumentTag {
+            document: self.snapshot.document_id,
+            revision: self.snapshot.revision,
+        }
+    }
+}
+pub enum EditOutcome {
+    /// Complete scan found nothing to remove: no revision, history or GPU work.
+    NoChange(DuplicatePreview),
+    Candidate(Box<EditCandidate>),
+}
+
+fn stale() -> AssetError {
+    AssetError::new(
+        ad_document::ErrorCode::Conflict,
+        "Edit was prepared for another document or revision",
+    )
+}
+
+/// Read-only preparation. Never mutates the Session.
+pub fn prepare_edit(
+    session: &Session,
+    base: &DocumentStamp,
+    kind: EditKind,
+    cancel: &Cancellation,
+) -> AssetResult<EditOutcome> {
+    cancel.check()?;
+    let document = session.document();
+    if !base.is_current(document) {
+        return Err(stale());
+    }
+    let (change, preview, removal);
+    match kind {
+        EditKind::RemoveDuplicates(mesh) => {
+            let plan = ad_heal::plan_duplicates(
+                document,
+                base.tag(),
+                mesh,
+                PlanLimits::default(),
+                cancel,
+            )?;
+            if plan.removed_triangles().is_empty() {
+                return Ok(EditOutcome::NoChange(plan.preview()));
+            }
+            removal = plan.prepare(session, VerificationLimits::default(), cancel)?;
+            preview = Some(plan.preview());
+            change = Change::Remove(removal);
+        }
+        EditKind::Undo => {
+            preview = None;
+            change = Change::Undo;
+        }
+        EditKind::Redo => {
+            preview = None;
+            change = Change::Redo;
+        }
+    }
+    let candidate: CandidateIndices<'_> = match &change {
+        Change::Remove(removal) => removal.candidate(document, cancel)?,
+        Change::Undo => session.undo_candidate()?,
+        Change::Redo => session.redo_candidate()?,
+    };
+    let view = document.candidate_view(candidate, cancel)?;
+    if matches!(kind, EditKind::RemoveDuplicates(_)) {
+        // G002-06: refuse before Apply if the result could not be saved by
+        // the verified static exporter (ADR-0028), with its exact reason.
+        ad_formats::preflight_changed_export(
+            &view,
+            ad_formats::ExportLimits::default(),
+            ImportLimits::default(),
+            cancel,
+        )?;
+    }
+    let snapshot = Arc::new(view.snapshot(ImportLimits::default(), cancel)?);
+    // Like import, an analysis resource refusal keeps a viewable result with
+    // an incomplete report; whole-job cancellation still discards everything.
+    let diagnostics = ad_analysis::analyze_view(&view, ad_analysis::Limits::default(), cancel);
+    cancel.check()?;
+    Ok(EditOutcome::Candidate(Box::new(EditCandidate {
+        kind,
+        base: base.clone(),
+        change,
+        preview,
+        snapshot,
+        diagnostics,
+    })))
+}
+
+pub type Edits = Worker<EditInput, EditOutcome>;
+pub fn new_edits() -> Edits {
+    Worker::new(
+        |request: &Request<EditInput>| {
+            let input = &request.input;
+            prepare_edit(&input.session, &input.base, input.kind, &request.cancel)
+        },
+        "Edit preparation stopped unexpectedly; the model was not changed",
+    )
+}
+
+/// GPU side of publication, implemented by the Vulkan renderer and by test fakes.
+pub trait SceneStage {
+    /// All fallible GPU work. The returned stage blocks further GPU use.
+    fn stage_scene<'a>(
+        &'a mut self,
+        snapshot: &GeometrySnapshot,
+    ) -> Result<Box<dyn StagedSceneSink + 'a>, String>;
+}
+pub trait StagedSceneSink {
+    /// Infallible scene replacement.
+    fn activate(self: Box<Self>);
+}
+impl SceneStage for ad_render_vulkan::renderer::Renderer {
+    fn stage_scene<'a>(
+        &'a mut self,
+        snapshot: &GeometrySnapshot,
+    ) -> Result<Box<dyn StagedSceneSink + 'a>, String> {
+        ad_render_vulkan::renderer::Renderer::stage_scene(self, snapshot)
+            .map(|staged| Box::new(staged) as Box<dyn StagedSceneSink + 'a>)
+            .map_err(|error| error.to_string())
+    }
+}
+impl StagedSceneSink for ad_render_vulkan::renderer::StagedScene<'_> {
+    fn activate(self: Box<Self>) {
+        ad_render_vulkan::renderer::StagedScene::activate(*self);
+    }
+}
+
+#[derive(Debug)]
+pub enum PublishError {
+    /// Document or revision changed since preparation.
+    Stale,
+    /// Another holder (e.g. a running worker) still reads the Session.
+    Busy,
+    /// A Session/document check refused the change before any GPU work.
+    Session(AssetError),
+    /// GPU upload or idle wait failed; the current scene is still shown.
+    Gpu(String),
+}
+impl std::fmt::Display for PublishError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stale => f.write_str("the model changed while the edit was prepared"),
+            Self::Busy => f.write_str("the model is still in use by a background task"),
+            Self::Session(error) => write!(f, "{error}"),
+            Self::Gpu(error) => write!(f, "GPU: {error}"),
+        }
+    }
+}
+
+/// Publishes a prepared edit or changes nothing. Order: stale → exclusive
+/// Session → Session stage → GPU stage → infallible publish (ADR-0031).
+pub fn publish_edit(
+    asset: &mut PreparedAsset,
+    scene: &mut dyn SceneStage,
+    candidate: EditCandidate,
+    cancel: &Cancellation,
+) -> Result<DocumentTag, PublishError> {
+    let PreparedAsset {
+        session,
+        generation,
+    } = asset;
+    if !candidate.base.is_current(session.document()) {
+        return Err(PublishError::Stale);
+    }
+    let session = Arc::get_mut(session).ok_or(PublishError::Busy)?;
+    let expected = candidate.tag_after();
+    let base = candidate.base.tag();
+    let staged = match candidate.change {
+        Change::Remove(removal) => session.stage_commit(removal, cancel),
+        Change::Undo => session.stage_undo(base, cancel),
+        Change::Redo => session.stage_redo(base, cancel),
+    }
+    .map_err(PublishError::Session)?;
+    if staged.tag_after() != expected
+        || candidate
+            .diagnostics
+            .as_ref()
+            .is_ok_and(|r| (r.document_id, r.revision) != (expected.document, expected.revision))
+    {
+        return Err(PublishError::Stale);
+    }
+    let staged_scene = scene
+        .stage_scene(&candidate.snapshot)
+        .map_err(PublishError::Gpu)?;
+    // Publication point: nothing below can fail or yield to other UI work.
+    let tag = staged.publish();
+    staged_scene.activate();
+    *generation = Generation {
+        snapshot: candidate.snapshot,
+        diagnostics: candidate.diagnostics,
+        stamp: session.document().stamp(),
+    };
+    Ok(tag)
+}
+
+#[cfg(test)]
+#[path = "edits_tests.rs"]
+mod edits_tests;

@@ -11,6 +11,9 @@ try {
     Remove-Item Env:RUSTUP_TOOLCHAIN,Env:CARGO_HOME,Env:RUSTUP_HOME -ErrorAction SilentlyContinue
     $cargoBin=Join-Path $env:USERPROFILE '.cargo\bin'
     $env:PATH="$cargoBin;"+[Environment]::GetEnvironmentVariable('Path','Machine')+';'+[Environment]::GetEnvironmentVariable('Path','User')+';'+$previous['PATH']
+    # Cargo progress goes to stderr; under Windows PowerShell 5.1 a caller's 2>&1
+    # would turn it into a terminating error. Success is decided by the exit code.
+    $ErrorActionPreference='Continue'
     & (Join-Path $cargoBin 'cargo.exe') @Command
     $cargoExitCode=$LASTEXITCODE
 } finally {

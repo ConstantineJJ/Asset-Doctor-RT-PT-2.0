@@ -16,6 +16,8 @@
 
 Новый **CPU G002-планировщик** по ADR-0030 собирает все дубли выбранного исходного примитива, сохраняет первый представитель и независимо проверяет подготовленную команду. Он использует общую историю; textured plan → Apply → полный анализ → Undo/Redo → export → запись → native readback проверены на авторских fixtures. Это ещё не desktop Heal: source/material eligibility и атомарная публикация остаются следующей работой. [Отчёт](DUPLICATE_PLAN_REPORT_2026-11-17.md).
 
+**17.11.2026, ветка `claude/g002-heal`:** первый пользовательский ремонт G002 доведён до сквозного сценария в desktop по ТЗ-G002 и [ADR-0031](DECISIONS/ADR-0031-atomic-edit-publication.md): Диагностика → «Предпросмотр ремонта…» → «Применить» → «Отменить/Вернуть правку» (Ctrl+Z/Ctrl+Y) → «Сохранить копию…» в новый GLB с полной проверкой и повторным импортом; индикатор несохранённых правок и вопрос при закрытии/замене модели. Доказательства — автоматические тесты, нативные smoke и ручная приёмка UI владельцем, сверенная по логу: REPAIR-06 и EXP-01 — «Готово в объёме», HEAL-01 — «Частично» (остальные виды ремонта). [Отчёт](G002_HEAL_WORKFLOW_REPORT_2026-11-17.md).
+
 В исходном каталоге есть **66 функций/сценариев Legacy и 10 отдельных требований владельца**. Это начальная инвентаризация, а не доказательство исчерпывающего аудита. Все 76 строк сохранены в разделах 11–12. Дополнительные направления из ТЗ — окружение, надёжность, RT/PT, Mixamo и прочие — также включены в дорожную карту ниже, даже когда отдельной строки Legacy для них нет.
 
 **Нельзя считать процент готовности по числу строк:** одна строка Rig/Export значительно крупнее переключателя панели. Статус «частично» означает только явно перечисленный работающий объём, а не почти завершённую функцию.
@@ -359,7 +361,7 @@
 | **Не реализовано** | Нет соответствующего пользовательского инструмента; контракт/данные сами по себе его не заменяют | `NOT_STARTED` |
 | **Изменено владельцем** | Старый UX не переносится буквально, вместо него указан новый; это не означает готовность замены | `CHANGED_BY_OWNER` |
 
-Матрица ниже и CSV используют одни и те же ID/статусы/границы. Сводка строк: **Готово в объёме — 4; Частично — 19; Не реализовано — 50; Изменено владельцем — 3**. Это статистика инвентаризации, не процент завершения продукта.
+Матрица ниже и CSV используют одни и те же ID/статусы/границы. Сводка строк: **Готово в объёме — 6; Частично — 20; Не реализовано — 47; Изменено владельцем — 3**. Это статистика инвентаризации, не процент завершения продукта.
 
 Обозначения источников в таблицах:
 
@@ -416,7 +418,7 @@
 | DIAG-08 | Transforms/performance диагностика | Не реализовано | Сводка/технические логи не являются специализированным analyzer | Draw/memory/profile metrics, transform checks, реальные замеры отдельно от estimates | E6 |
 | DIAG-09 | Диагностические профили | Не реализовано | Нет выбора профиля/health score | Определить профили, thresholds и тесты; не выдавать style advice за integrity fault | E6 |
 | DIAG-10 | Переход/фильтры/экспорт findings | Частично | Read-only список, code/severity/count/source samples и full/partial coverage | Фильтры, focus/highlight дефекта, save single/all reports и отмена диалога | E5 |
-| HEAL-01 | Preview/apply/verify/Undo ремонта | Не реализовано | CPU G002 plan/postcheck, общие guarded commands/history и проверенные authored export/disk probes; native Heal нет | Source/material eligibility, native preview/Apply/Undo и атомарная document/history/analysis/snapshot/GPU publication | E3,E6,E8,E9 |
+| HEAL-01 | Preview/apply/verify/Undo ремонта | Частично | Сквозной G002 в desktop принят владельцем вручную (предпросмотр, Применить, Отменить/Вернуть, Save Copy, вопрос при закрытии/открытии); атомарная публикация ADR-0031 | Остальные шесть видов ремонта и общая очередь Heal на той же публикации | E3,E6,E8,E9 |
 | HEAL-02 | Очередь безопасного ремонта | Не реализовано | Нет очереди ремонта | Переоценка кандидатов после шага, risk/confirm, cancel/stale/regression stop | E6 |
 | HEAL-03 | Сохранённые отчёты и история ремонта | Не реализовано | Нет продуктового хранилища repair history | Отделить historical report от текущей verification, обработать storage failure | E6 |
 | RIG-01 | Inspect/edit/pose | Не реализовано | Skeleton/skin не импортируются | Раздельные rest/bind/pose и режимы без повреждения clips | E6 |
@@ -430,7 +432,7 @@
 | ANIM-03 | Play/pause/stop/step/seek/loop/speed | Не реализовано | Нет проигрывателя | Timeline и корректное вычисление поз/длительности/loop без правки rest | E6 |
 | ANIM-04 | Rename и retime clip | Не реализовано | Нет редактора | Команды/Undo, ключи и export/reimport; preview speed отдельно от duration | E6 |
 | ANIM-05 | Измерение root motion и overlay | Не реализовано | Нет инструмента | Проверяемые translation/rotation и наложение на эталонном clip | E6 |
-| EXP-01 | Экспорт repaired GLB с re-open verification | Не реализовано | Внутренний static index-only exporter и Windows new-path storage проверены; пользовательского Export/Save Copy нет | Native Save/dirty-close, полный Heal workflow и независимая сертификация общего geometry/skin/clip writer | E6,E8 |
+| EXP-01 | Экспорт repaired GLB с re-open verification | Готово в объёме | Static index-only Save Copy: проверенный GLB только в новый файл, readback, независимый повторный импорт, квитанция ревизии, защита закрытия/открытия; принято владельцем вручную, копия открыта заново без G002 | Writer для изменённых вершин/материалов/skin/clips, «Сохранить» поверх рабочего файла по решению владельца | E6,E8 |
 | EXP-02 | Экспорт Rig и сочетания Rig+Heal | Не реализовано | Нет exporter или edits | Отдельная сертификация combinations/extensions, bind/animation/revision guards | E6 |
 | EXP-03 | Save cancel/failure/unsaved close | Не реализовано | Есть обычное закрытие read-only viewer, но не сценарий сохранения | Native Save/cancel/write failure, dirty protection и отказ от ложного success | E6 |
 | SYS-01 | Горячие клавиши, конфликты, reset | Частично | Фиксированные Ctrl+O/F/H/Esc | Настраиваемый registry, конфликты/зарезервированные chords/reset и text/modal context | E2 |
@@ -443,7 +445,7 @@
 | REPAIR-03 | Пересчитать normals | Не реализовано | Есть fallback просмотра, не ремонт исходника | Согласовать алгоритм/швы/дегенераты, preview/apply/Undo и export | E6 |
 | REPAIR-04 | Объединить exact duplicate vertices | Не реализовано | Welding не выполняется | Сравнение полных атрибутов/UV/skin и ограничений, preview/verify/Undo/export | E6 |
 | REPAIR-05 | Нормализовать skin weights | Не реализовано | Skin не поддержан | Валидация influences, preview/apply, deformation checks, Undo/roundtrip | E6 |
-| REPAIR-06 | Удалить exact duplicate triangles | Не реализовано | Полный CPU single-source G002 plan, earliest survivor, независимый prepared-index postcheck и roundtrip; desktop инструмента нет | Material/export eligibility и native preview/Apply/history/verification/Save workflow | E3,E6,E8,E9 |
+| REPAIR-06 | Удалить exact duplicate triangles | Готово в объёме | G002 для одного исходного примитива за действие: полный план, postcheck, preflight экспорта, desktop preview/Apply/Undo/Redo, Save Copy с проверкой диска и повторным импортом; приняты владельцем вручную и сверены по логу (artifacts/manual-ui-2, -3) | Несколько примитивов за одно действие, массовая очередь Heal | E3,E6,E8,E9 |
 | REPAIR-07 | Объединить повторные skin influences | Не реализовано | Skin не поддержан | Consolidation/normalization contract, сохранение joint mapping, Undo/deformation/roundtrip | E6 |
 
 ## 12. Все 10 требований владельца
@@ -468,7 +470,7 @@
 Следующая рекомендуемая последовательность без изменения общей цели:
 
 1. **Завершено:** G009–G011 и source/coverage/UI/native проверки по ADR-0025; следующая работа начинается с пункта 2.
-2. **Внутренние prerequisites выполнены:** CPU index-command/history ADR-0026, static export/storage ADR-0028/0029 и полный G002 plan/postcheck ADR-0030. Следом закрыть оставшуюся часть ADR-0027: source/material eligibility, native preview и атомарную desktop/history/analysis/snapshot/GPU publication. Не расширять бесконечно только просмотрщик, оставляя основные инструменты без движения.
+2. **Внутренние prerequisites выполнены:** CPU index-command/history ADR-0026, static export/storage ADR-0028/0029 и полный G002 plan/postcheck ADR-0030. Следом закрыть оставшуюся часть ADR-0027: source/material eligibility, native preview и атомарную desktop/history/analysis/snapshot/GPU publication. **17.11.2026:** протокол публикации и решения владельца приняты в [ADR-0031](DECISIONS/ADR-0031-atomic-edit-publication.md) (только документ, код не менялся); реализация по этапам B1–B4 → C → D из ТЗ-G002; B1 (снимок и анализ кандидата без мутации), B2 (проверка/публикация commit, Undo, Redo в Session) B3 (подготовка/включение GPU-сцены, инъекция отказа загрузки и ожидания) и B4 (desktop держит Session, фоновая подготовка правки и атомарная публикация; проверено тестами и нативным smoke без кнопки в UI) выполнены. Публикация из ADR-0027 реализована. Этап D выполнен: Save Copy с повторным импортом, dirty по квитанции и защита закрытия/замены; сквозной сценарий п. 3 проходит в desktop (без ручной приёмки владельцем). Этап C выполнен: preflight изменённого экспорта до Apply и desktop Preview/Apply/Undo/Redo для G002. Статусы HEAL-01/REPAIR-06 остаются «Не реализовано» до Save Copy и сквозной приёмки (этап D). Не расширять бесконечно только просмотрщик, оставляя основные инструменты без движения.
 3. Довести минимальный сквозной сценарий: известный дефект → preview → apply → verification → Undo/Redo → Save Copy → fresh reimport. Только после него считать первый Heal перенесённым.
 4. Последовательно расширять diagnostics/Heal и поддержанные форматы; затем skin/manual Rig/animation, auto-Compare и полный UX согласно зависимостям P1–P9.
 5. Закрыть release-quality raster и проверяемые P0/REQ, затем RT → PT → Mixamo/autorig/retargeting.

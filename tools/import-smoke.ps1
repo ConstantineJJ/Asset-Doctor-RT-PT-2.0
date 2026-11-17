@@ -1,12 +1,22 @@
 param(
     [ValidateSet('debug','release')][string]$Configuration='release',
-    [ValidateSet('static','color','pbr','mr','normal','ao','emission','geometry','edges','edge-limit','components','uv')][string]$Scene='static',
+    [ValidateSet('static','color','pbr','mr','normal','ao','emission','geometry','edges','edge-limit','components','uv','heal')][string]$Scene='static',
     [switch]$Pbr,
     [switch]$NoMrMaps,
     [switch]$NoNormalMaps,
     [switch]$NoAoMaps,
     [switch]$NoEmission,
-    [switch]$SynchronizationValidation
+    [switch]$SynchronizationValidation,
+    # ADR-0031 B3: replace the scene once more with an injected GPU stage failure.
+    [ValidateSet('none','upload','wait')][string]$GpuFault='none',
+    # ADR-0031 B4: Apply G002 (optionally after an injected GPU failure), Undo, Redo.
+    [switch]$Edit,
+    # ADR-0031 D: after Redo, refused Save Copy onto an existing file, a new
+    # verified copy, then reopen that copy in the app.
+    [switch]$Save,
+    # Close with unsaved edits: the guard dialog must become visible; answer
+    # Cancel (window stays), then No (window closes).
+    [switch]$Guard
 )
 $ErrorActionPreference='Stop'
 $repo=Split-Path $PSScriptRoot -Parent
@@ -14,6 +24,15 @@ $exe=Join-Path $repo "target\$Configuration\AssetDoctorRTPT.exe"
 if (!(Test-Path -LiteralPath $exe)) { throw 'Build the desktop executable first.' }
 $good=Join-Path $repo $(switch($Scene) {'color' {'tests\fixtures\Color_Checker.glb'} 'pbr' {'tests\fixtures\Pbr_Factors.glb'} 'mr' {'tests\fixtures\MR_Checker.glb'} 'normal' {'tests\fixtures\Normal_Checker.glb'} 'ao' {'tests\fixtures\AO_Checker.glb'} 'emission' {'tests\fixtures\Emission_Checker.glb'} 'geometry' {'tests\fixtures\Geometry_Findings.glb'} 'edges' {'tests\fixtures\Edge_Topology.glb'} 'components' {'tests\fixtures\Components_Checker.glb'} 'edge-limit' {'artifacts\Edge_Limit.glb'} default {'tests\fixtures\Twin_Cubes.glb'}})
 $bad=Join-Path $repo $(switch($Scene) {'color' {'tests\fixtures\Bad_Image.glb'} 'mr' {'tests\fixtures\Bad_MR_Image.glb'} 'normal' {'tests\fixtures\Bad_Normal_Image.glb'} 'ao' {'tests\fixtures\Bad_AO_Image.glb'} 'emission' {'tests\fixtures\Bad_Emission_Image.glb'} default {'tests\fixtures\Bad_Truncated.glb'}})
+if ($Scene -eq 'heal') {
+    $good=Join-Path $repo 'tests\fixtures\Duplicate_Heal.glb'
+    $bad=Join-Path $repo 'tests\fixtures\Bad_Normal_Image.glb'
+}
+if ($Edit -and $Scene -ne 'heal') {throw '-Edit requires -Scene heal.'}
+if ($Save -and !$Edit) {throw '-Save requires -Edit.'}
+if ($Guard -and (!$Edit -or $Save)) {throw '-Guard requires -Edit without -Save.'}
+$saveDir=$null
+$existingBytes=[byte[]](111,119,110,101,114,32,100,97,116,97)
 if ($Scene -eq 'uv') {
     $good=Join-Path $repo 'tests\fixtures\UV_Checker.glb'
     $bad=Join-Path $repo 'tests\fixtures\Bad_Unused_UV.glb'
@@ -32,12 +51,16 @@ if ($Scene -eq 'normal') {$suffix='-normal'+$suffix}
 if ($Scene -eq 'ao') {$suffix='-ao'+$suffix}
 if ($Scene -eq 'emission') {$suffix='-emission'+$suffix}
 if ($Scene -eq 'geometry') {$suffix='-geometry'+$suffix}
-if ($Scene -in @('edges','edge-limit','components','uv')) {$suffix='-'+$Scene+$suffix}
+if ($Scene -in @('edges','edge-limit','components','uv','heal')) {$suffix='-'+$Scene+$suffix}
+if ($Edit) {$suffix='-edit'+$suffix}
 if ($Pbr) {$suffix='-pbr'+$suffix}
 if ($NoMrMaps) {$suffix='-no-maps'+$suffix}
 if ($NoNormalMaps) {$suffix='-no-normal'+$suffix}
 if ($NoAoMaps) {$suffix='-no-ao'+$suffix}
 if ($NoEmission) {$suffix='-no-emission'+$suffix}
+if ($GpuFault -ne 'none') {$suffix='-gpu-'+$GpuFault+$suffix}
+if ($Save) {$suffix='-save'+$suffix}
+if ($Guard) {$suffix='-guard'+$suffix}
 $stdout=Join-Path $reports "$Configuration-import-smoke$suffix.stdout.log"
 $stderr=Join-Path $reports "$Configuration-import-smoke$suffix.stderr.log"
 # Start-Process joins arguments on Windows: quote each literal path containing spaces.
@@ -47,10 +70,22 @@ if ($NoMrMaps) {$arguments+='--no-mr-maps'}
 if ($NoNormalMaps) {$arguments+='--no-normal-maps'}
 if ($NoAoMaps) {$arguments+='--no-ao-maps'}
 if ($NoEmission) {$arguments+='--no-emission'}
+if ($GpuFault -ne 'none') {$arguments+=@('--smoke-gpu-fault',$GpuFault)}
+if ($Edit) {$arguments+='--smoke-edit'}
+if ($Save) {
+    $saveDir=Join-Path $reports ('save-smoke-'+[Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $saveDir | Out-Null
+    [IO.File]::WriteAllBytes((Join-Path $saveDir 'existing.glb'),$existingBytes)
+    $arguments+=@('--smoke-save',('"'+$saveDir+'"'))
+}
+if ($Guard) {$arguments+='--smoke-guard'}
+$sourceHash=(Get-FileHash -LiteralPath $good -Algorithm SHA256).Hash
 $previousSync=$env:VK_LAYER_VALIDATE_SYNC
 try {
     if ($SynchronizationValidation) { $env:VK_LAYER_VALIDATE_SYNC='1' }
     $process=Start-Process -FilePath $exe -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+    # Windows PowerShell 5.1 reports ExitCode only if the handle is cached before exit.
+    $null=$process.Handle
 } finally { $env:VK_LAYER_VALIDATE_SYNC=$previousSync }
 if (!$process.WaitForExit(30000)) {
     Stop-Process -Id $process.Id
@@ -83,6 +118,47 @@ if ($Scene -eq 'uv') {
     if ($log -notmatch 'analysis_coverage rule=G010 completed_primitives=2 .*excluded_triangles=1 .*retained_findings=1 retained_count=1 not_applicable_primitives=1') {throw 'Missing UV area/N-A scope.'}
     if ($log -notmatch 'analysis_coverage rule=G011 completed_primitives=2 .*retained_findings=1 retained_count=1 not_applicable_primitives=1') {throw 'Missing UV range/N-A scope.'}
 }
+if ($log -notmatch 'gpu_scene_published document=1 revision=0 vertices=\d+ triangles=\d+ stage_ms=\d+ geometry_bytes=\d+') {throw 'Missing staged GPU scene publication evidence.'}
+if ($GpuFault -ne 'none' -and !$Edit -and $log -notmatch "gpu_fault_smoke stage=$GpuFault preserved=true scene_document=1 scene_revision=0") {throw 'Injected GPU stage failure did not preserve the published scene.'}
+if ($Edit) {
+    if ($GpuFault -ne 'none' -and $log -notmatch 'edit_gpu_fault preserved=true revision=0 scene_revision=0 undo=0 redo=0') {throw 'Injected GPU failure during Apply was not fully preserved.'}
+    foreach ($line in @(
+        'edit_preview mesh=0 before=992 after=960 references=1 complete=true g002_left=0',
+        'edit_published kind=remove removed=32 revision=1 scene_revision=1 mesh_triangles=960 analysis=complete g002_in_mesh=0 undo=1 redo=0 consistent=true',
+        'edit_published kind=undo removed=0 revision=2 scene_revision=2 mesh_triangles=992 analysis=complete g002_in_mesh=1 undo=0 redo=1 consistent=true',
+        'edit_published kind=redo removed=0 revision=3 scene_revision=3 mesh_triangles=960 analysis=complete g002_in_mesh=0 undo=1 redo=0 consistent=true',
+        'edit_smoke_done=true')) {
+        if ($log -notmatch [regex]::Escape($line)) {throw "Missing edit evidence: $line"}
+    }
+}
+if ($Save) {
+    foreach ($line in @(
+        'unsaved_guard dirty=true decision=Ask',
+        'unsaved_guard dirty=false decision=Proceed',
+        'reopened_saved revision=0 primitives=4 mesh_triangles=960 analysis=complete g002_in_mesh=0 dirty=false')) {
+        if ($log -notmatch [regex]::Escape($line)) {throw "Missing Save Copy evidence: $line"}
+    }
+    if ($log -notmatch 'save_failed code=\w+ dirty=true') {throw 'Existing destination was not refused while keeping unsaved state.'}
+    if ($log -notmatch 'save_published revision=3 bytes=(\d+) exact_copy=false reimported_triangles=3840 cleanup_warning=false accepted=true dirty=false') {throw 'Missing verified Save Copy receipt evidence.'}
+    $savedBytes=[int64]$Matches[1]
+    $healed=Join-Path $saveDir 'healed.glb'
+    if (!(Test-Path -LiteralPath $healed) -or (Get-Item -LiteralPath $healed).Length -ne $savedBytes) {throw 'Saved copy is missing or has an unexpected size.'}
+    $after=[IO.File]::ReadAllBytes((Join-Path $saveDir 'existing.glb'))
+    if ([Convert]::ToBase64String($after) -ne [Convert]::ToBase64String($existingBytes)) {throw 'Existing destination was modified.'}
+    if (@(Get-ChildItem -LiteralPath $saveDir -Force | Where-Object {$_.Name -like '.asset-doctor-copy-*'}).Count -ne 0) {throw 'Staging file left behind.'}
+    "save_smoke_dir=$saveDir saved_bytes=$savedBytes"
+}
+if ($Guard) {
+    if ($log -notmatch 'guard_dialog found=true visible=true waited_ms=\d+ answer=Cancel') {throw 'Close guard dialog (Cancel) was not visible.'}
+    if ($log -notmatch 'guard_dialog found=true visible=true waited_ms=\d+ answer=Discard') {throw 'Close guard dialog (No) was not visible.'}
+    foreach ($line in @(
+        'unsaved_guard dirty=true choice=Cancel decision=Stay',
+        'unsaved_guard_stayed window_open=true dirty=true',
+        'unsaved_guard dirty=true choice=Discard decision=Proceed')) {
+        if ($log -notmatch [regex]::Escape($line)) {throw "Missing guard evidence: $line"}
+    }
+}
+if ((Get-FileHash -LiteralPath $good -Algorithm SHA256).Hash -ne $sourceHash) {throw 'Source model changed during smoke.'}
 $expectedBindings=if($Scene -in @('color','mr','emission')){2}else{1}
 if($log -notmatch "gpu_material_binding_sets=$expectedBindings\b"){throw 'Missing material descriptor tuple-sharing evidence.'}
 if ($Scene -eq 'color' -and $log -notmatch 'gpu_material_images=1 material_textures=2 mip_bytes=20 decoded_images=1 srgb_images=1 linear_images=0') {
@@ -96,9 +172,9 @@ if ($Scene -eq 'emission' -and $Pbr -and !$NoEmission -and $log -notmatch 'emiss
 if (($NoEmission -or !$Pbr -or $Scene -ne 'emission') -and $log -notmatch 'emission_frames=0\b') {throw 'Emission unexpectedly active.'}
 if ($Scene -eq 'ao' -and $Pbr -and !$NoAoMaps -and $log -notmatch 'ao_frames=(1[5-9]|[2-9]\d|\d{3,})\b') {throw 'Missing AO sampled frame evidence.'}
 if (($NoAoMaps -or !$Pbr -or $Scene -ne 'ao') -and $log -notmatch 'ao_frames=0\b') {throw 'AO sampling unexpectedly active.'}
-if ($Scene -eq 'normal' -and $Pbr -and !$NoNormalMaps -and $log -notmatch 'normal_frames=(1[5-9]|[2-9]\d|\d{3,})\b') {throw 'Missing normal-map sampled frame evidence.'}
-if (($NoNormalMaps -or !$Pbr -or $Scene -ne 'normal') -and $log -notmatch 'normal_frames=0\b') {throw 'Normal sampling unexpectedly active.'}
+if ($Scene -in @('normal','heal') -and $Pbr -and !$NoNormalMaps -and $log -notmatch 'normal_frames=(1[5-9]|[2-9]\d|\d{3,})\b') {throw 'Missing normal-map sampled frame evidence.'}
+if (($NoNormalMaps -or !$Pbr -or $Scene -notin @('normal','heal')) -and $log -notmatch 'normal_frames=0\b') {throw 'Normal sampling unexpectedly active.'}
 if ($Scene -eq 'mr' -and $Pbr -and !$NoMrMaps -and $log -notmatch 'mr_frames=(1[5-9]|[2-9]\d|\d{3,})\b') {throw 'Missing MR sampled frame evidence.'}
 if (($NoMrMaps -or !$Pbr) -and $log -notmatch 'mr_frames=0\b') {throw 'MR sampling unexpectedly active.'}
 if ($Pbr -and $log -notmatch 'lighting_smoke mode=DirectPbr pbr_frames=(1[5-9]|[2-9]\d|\d{3,})\b') {throw 'Missing PBR frame presentation evidence.'}
-($log -split "`n" | Where-Object { $_ -match '^analysis_complete|^analysis_partial|^analysis_coverage|^gpu_material_images|^asset_smoke|^lighting_smoke|^SMOKE_PASS' }).Trim()
+($log -split "`n" | Where-Object { $_ -match '^guard_dialog|^unsaved_guard|^save_|^reopened_saved|^edit_preview|^edit_gpu_fault|^edit_published|^edit_smoke_done|^gpu_fault_smoke|^gpu_scene_published|^analysis_complete|^analysis_partial|^analysis_coverage|^gpu_material_images|^asset_smoke|^lighting_smoke|^SMOKE_PASS' }).Trim()

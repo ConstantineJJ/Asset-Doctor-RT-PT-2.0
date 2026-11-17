@@ -158,3 +158,16 @@ verification before the command is returned. Source/material/export eligibility
 and atomic native document/history/analysis/snapshot/GPU publication remain open.
 No second history or UI repair controller is introduced. Evidence and limits:
 DUPLICATE_PLAN_REPORT_2026-11-17.md.
+
+ADR-0031 (accepted protocol, not yet implemented) defines native edit
+publication. Desktop will hold `Arc<Session>`; workers prepare plan, candidate
+snapshot and analysis from a non-mutating candidate index view. The UI thread
+stages every fallible Session check and GPU upload/idle wait behind two `&mut`
+borrows, then publishes history, scene and one snapshot/report/stamp generation
+without fallible steps between. Undo/Redo use the same path; no compensation.
+Stages B1–B4 implement it: desktop's current model is `PreparedAsset { session:
+Arc<Session>, generation }`, import and edit preparation share one latest-ticket
+worker, and `publish_edit` drives Session and GPU stages. Stages C–D add the
+G002 preview/Apply/Undo/Redo UI, changed-export preflight and Save Copy: verified
+new-path write, disk readback and fresh reimport; `saving::Confirmed` binds the
+unsaved state to the last import or receipt, and a guard protects close/replace.

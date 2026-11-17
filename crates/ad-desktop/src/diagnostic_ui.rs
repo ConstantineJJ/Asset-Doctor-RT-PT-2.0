@@ -1,17 +1,22 @@
 use crate::imports::PreparedAsset;
 use egui::Color32;
 
+/// Returns a requested G002 repair preview (source primitive) and, for tests,
+/// the rectangle of the first preview button.
 pub fn show(
     context: &egui::Context,
     open: &mut bool,
     asset: Option<&PreparedAsset>,
     viewport_height: f32,
-) {
+    can_preview: bool,
+) -> (Option<ad_document::MeshId>, egui::Rect) {
+    let mut preview = None;
+    let mut preview_rect = egui::Rect::NOTHING;
     egui::Window::new("Диагностика геометрии и UV").open(open).default_size([620.,420.]).show(context,|ui| {
                 ui.label("Исходные примитивы, включая неактивные; каждый проверен один раз. Экземпляры и преобразования просмотра не учитываются.");
                 ui.weak("Геометрия и все исходные UV-каналы. Границы, группы и UV вне 0…1 могут быть намеренными. Ремонт не выполняется.");
                 ui.separator();
-                match asset.map(|a|(&a.document,&a.diagnostics)) {
+                match asset.map(|a|(a.document(),a.diagnostics())) {
                     None=>{ui.label("Откройте модель для анализа.");}
                     Some((document,Ok(report))) if report.matches(document)=>{
                         ui.strong(format!("{} · {} примитивов · {} треугольников",document.name(),report.primitives,report.triangles));
@@ -49,7 +54,16 @@ pub fn show(
                                     let title=format!("{code} · {severity} · {label}");
                                     ui.add(egui::Label::new(&title).truncate()).on_hover_text(title);
                                     let metadata=format!("Примитив #{} · количество {}",finding.mesh.0,finding.count);
-                                    ui.add(egui::Label::new(&metadata).truncate()).on_hover_text(metadata);
+                                    if finding.code==ad_analysis::Code::DuplicateTriangle {
+                                        ui.horizontal(|ui| {
+                                            ui.label(&metadata);
+                                            let button=ui.add_enabled(can_preview,egui::Button::new("Предпросмотр ремонта…").small()).on_hover_text("Полный расчёт удаления всех повторов этого исходного примитива. Модель не изменяется до «Применить».");
+                                            if preview_rect==egui::Rect::NOTHING {preview_rect=button.rect;}
+                                            if button.clicked() {preview=Some(finding.mesh);}
+                                        });
+                                    } else {
+                                        ui.add(egui::Label::new(&metadata).truncate()).on_hover_text(metadata);
+                                    }
                                     let samples=match &finding.samples {
                                         ad_analysis::Samples::Indices {element,indices}=>format!("{}: {indices:?} (с нуля, до 16 примеров)",match element {ad_analysis::Element::Vertex=>"Вершины",ad_analysis::Element::Triangle=>"Треугольники"}),
                                         ad_analysis::Samples::Edges(pairs)=>format!("Рёбра: {} (пары вершин, с нуля)",pairs.iter().map(|p|format!("{}–{}",p[0],p[1])).collect::<Vec<_>>().join(", ")),
@@ -67,6 +81,7 @@ pub fn show(
                 }
                 ui.separator();ui.weak("Связность — по индексам, без склеивания позиций и подсчёта физических деталей. UV: наличие UV0, точная площадь, диапазон всех каналов. Перекрытия UV, ориентация, материалы и скелет не проверяются.");
             });
+    (preview, preview_rect)
 }
 
 fn coverage_text(c: &ad_analysis::Coverage, total: usize) -> String {

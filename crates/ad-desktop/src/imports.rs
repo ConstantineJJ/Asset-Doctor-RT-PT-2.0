@@ -1,137 +1,62 @@
+use crate::worker::{Request, Worker};
+use ad_commands::{HistoryLimits, Session};
 use ad_document::{
-    AssetDocument, AssetError, AssetResult, Cancellation, DocumentId, ErrorCode, GeometrySnapshot,
+    AssetDocument, AssetError, AssetResult, DocumentId, DocumentStamp, ErrorCode, GeometrySnapshot,
     ImportLimits,
 };
-use std::{
-    io::Read,
-    path::PathBuf,
-    sync::{Arc, Condvar, Mutex},
-    thread,
-};
+use std::{io::Read, path::PathBuf, sync::Arc};
 
-pub struct PreparedAsset {
-    pub document: AssetDocument,
+/// Derived data published together for one document revision (ADR-0031):
+/// replaced only as a whole, never field by field.
+pub struct Generation {
     pub snapshot: Arc<GeometrySnapshot>,
     pub diagnostics: AssetResult<ad_analysis::Report>,
+    pub stamp: DocumentStamp,
 }
-pub struct Completion {
-    pub ticket: u64,
-    pub result: AssetResult<PreparedAsset>,
+/// The current model: one Session (document + history) and its generation.
+/// Workers may hold read-only clones of the Session; only the UI thread
+/// mutates it, through exclusive access at publication.
+pub struct PreparedAsset {
+    pub session: Arc<Session>,
+    pub generation: Generation,
 }
-struct Request {
-    ticket: u64,
-    path: PathBuf,
-    cancel: Cancellation,
+impl PreparedAsset {
+    pub fn document(&self) -> &AssetDocument {
+        self.session.document()
+    }
+    pub fn snapshot(&self) -> &Arc<GeometrySnapshot> {
+        &self.generation.snapshot
+    }
+    pub fn diagnostics(&self) -> &AssetResult<ad_analysis::Report> {
+        &self.generation.diagnostics
+    }
+    /// Generation, document and scene must describe the same revision.
+    pub fn is_consistent(&self) -> bool {
+        self.generation.stamp.is_current(self.document())
+            && (
+                self.generation.snapshot.document_id,
+                self.generation.snapshot.revision,
+            ) == (self.document().id(), self.document().revision())
+            && self
+                .generation
+                .diagnostics
+                .as_ref()
+                .is_ok_and(|r| r.matches(self.document()))
+                == self.generation.diagnostics.is_ok()
+    }
 }
-#[derive(Default)]
-struct State {
-    pending: Option<Request>,
-    result: Option<Completion>,
-    ticket: u64,
-    stop: bool,
-    active: bool,
+pub type Imports = Worker<PathBuf, PreparedAsset>;
+pub fn new_imports() -> Imports {
+    Worker::new(prepare, "Importer could not safely decode this model")
 }
-pub struct Imports {
-    shared: Arc<(Mutex<State>, Condvar)>,
-    cancel: Cancellation,
-    ticket: u64,
-}
+#[cfg(test)]
+pub type Completion = crate::worker::Completion<PreparedAsset>;
 
-impl Imports {
-    pub fn new() -> Self {
-        let shared = Arc::new((Mutex::new(State::default()), Condvar::new()));
-        let worker = shared.clone();
-        thread::spawn(move || {
-            loop {
-                let request = {
-                    let (lock, ready) = &*worker;
-                    let mut state = lock.lock().expect("Import worker lock");
-                    while state.pending.is_none() && !state.stop {
-                        state = ready.wait(state).expect("Import wake lock");
-                    }
-                    if state.stop {
-                        return;
-                    }
-                    state.active = true;
-                    state.pending.take().expect("Pending request checked")
-                };
-                // A third-party parser failure must not strand every future
-                // request. Known malformed inputs are rejected before readers;
-                // this boundary also keeps the worker usable after an unwind.
-                let result = std::panic::catch_unwind(|| prepare(&request)).unwrap_or_else(|_| {
-                    Err(AssetError::new(
-                        ErrorCode::InvalidFormat,
-                        "Importer could not safely decode this model",
-                    ))
-                });
-                let mut state = worker.0.lock().expect("Import completion lock");
-                state.active = false;
-                if state.ticket == request.ticket && !state.stop {
-                    state.result = Some(Completion {
-                        ticket: request.ticket,
-                        result,
-                    });
-                }
-            }
-        });
-        Self {
-            shared,
-            cancel: Cancellation::default(),
-            ticket: 0,
-        }
-    }
-    pub fn request(&mut self, path: PathBuf) -> u64 {
-        self.cancel.cancel();
-        self.cancel = Cancellation::default();
-        self.ticket += 1;
-        let mut state = self.shared.0.lock().expect("Import request lock");
-        state.ticket = self.ticket;
-        state.result = None;
-        state.pending = Some(Request {
-            ticket: self.ticket,
-            path,
-            cancel: self.cancel.clone(),
-        });
-        self.shared.1.notify_one();
-        self.ticket
-    }
-    pub fn cancel(&mut self) {
-        self.cancel.cancel();
-        self.ticket += 1;
-        let mut state = self.shared.0.lock().expect("Import cancel lock");
-        state.ticket = self.ticket;
-        state.pending = None;
-        state.result = None;
-    }
-    pub fn ticket(&self) -> u64 {
-        self.ticket
-    }
-    pub fn poll(&mut self) -> Option<Completion> {
-        self.shared
-            .0
-            .lock()
-            .expect("Import poll lock")
-            .result
-            .take()
-    }
-}
-impl Drop for Imports {
-    fn drop(&mut self) {
-        self.cancel.cancel();
-        let mut state = self.shared.0.lock().expect("Import shutdown lock");
-        state.stop = true;
-        state.pending = None;
-        state.result = None;
-        self.shared.1.notify_one();
-        // No UI-thread join on slow filesystem reads; worker owns only read data
-        // and cooperatively exits. No user files can be written by this worker.
-    }
-}
-fn prepare(request: &Request) -> AssetResult<PreparedAsset> {
+pub(crate) fn prepare(request: &Request<PathBuf>) -> AssetResult<PreparedAsset> {
     prepare_with_analysis_limits(request, ad_analysis::Limits::default())
 }
 fn prepare_with_analysis_limits(
-    request: &Request,
+    request: &Request<PathBuf>,
     analysis_limits: ad_analysis::Limits,
 ) -> AssetResult<PreparedAsset> {
     let limits = ImportLimits::default();
@@ -139,7 +64,7 @@ fn prepare_with_analysis_limits(
     let io = |error: std::io::Error| {
         AssetError::new(ErrorCode::Io, format!("Cannot read model: {error}"))
     };
-    let mut file = std::fs::File::open(&request.path).map_err(io)?;
+    let mut file = std::fs::File::open(&request.input).map_err(io)?;
     if file.metadata().map_err(io)?.len() > limits.source_bytes as u64 {
         return Err(AssetError::new(
             ErrorCode::ResourceLimit,
@@ -170,7 +95,7 @@ fn prepare_with_analysis_limits(
         source.extend_from_slice(&chunk[..count]);
     }
     let name = request
-        .path
+        .input
         .file_name()
         .unwrap_or_default()
         .to_string_lossy()
@@ -228,16 +153,23 @@ fn prepare_with_analysis_limits(
             );
         }
     }
+    let stamp = document.stamp();
+    let session = Session::new(document, HistoryLimits::default(), limits)?;
     Ok(PreparedAsset {
-        document,
-        snapshot,
-        diagnostics,
+        session: Arc::new(session),
+        generation: Generation {
+            snapshot,
+            diagnostics,
+            stamp,
+        },
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ad_document::Cancellation;
+    use std::thread;
     use std::time::{Duration, Instant};
     fn fixture(name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -257,7 +189,7 @@ mod tests {
     #[test]
     fn worker_latest_request_wins_and_preserves_fixture_source() {
         let original = std::fs::read(fixture("Twin_Cubes.glb")).unwrap();
-        let mut imports = Imports::new();
+        let mut imports = new_imports();
         imports.request(fixture("Twin_Cubes.glb"));
         let ticket = imports.request(fixture("Bad_Truncated.glb"));
         let result = completion(&mut imports);
@@ -271,10 +203,10 @@ mod tests {
         let result = completion(&mut imports);
         assert_eq!(result.ticket, ticket);
         let asset = result.result.unwrap();
-        assert_eq!(&**asset.document.source(), original);
-        assert_eq!(asset.snapshot.indices.len() / 3, 24);
-        let report = asset.diagnostics.as_ref().unwrap();
-        assert!(report.matches(&asset.document));
+        assert_eq!(&**asset.document().source(), original);
+        assert_eq!(asset.snapshot().indices.len() / 3, 24);
+        let report = asset.diagnostics().as_ref().unwrap();
+        assert!(report.matches(asset.document()));
         assert_eq!((report.primitives, report.triangles), (2, 24));
         imports.request(fixture("Bad_Image.glb"));
         assert!(completion(&mut imports).result.is_err());
@@ -283,7 +215,7 @@ mod tests {
             completion(&mut imports)
                 .result
                 .unwrap()
-                .document
+                .document()
                 .texture_stats()
                 .images,
             1
@@ -293,17 +225,17 @@ mod tests {
     fn authored_uv_fixture_keeps_source_channels_and_not_applicable_scope() {
         let request = Request {
             ticket: 1,
-            path: fixture("UV_Checker.glb"),
+            input: fixture("UV_Checker.glb"),
             cancel: Cancellation::default(),
         };
         let asset = prepare(&request).unwrap();
-        let report = asset.diagnostics.unwrap();
+        let report = asset.diagnostics().as_ref().unwrap();
         assert!(report.is_complete());
         assert_eq!(
             (report.primitives, report.triangles, report.findings.len()),
             (3, 4, 9)
         );
-        assert_eq!(asset.snapshot.indices.len() / 3, 6);
+        assert_eq!(asset.snapshot().indices.len() / 3, 6);
         let area = report.coverage[ad_analysis::Code::ZeroUvArea as usize];
         assert_eq!(
             (
@@ -339,7 +271,7 @@ mod tests {
     fn malformed_unused_uv_replacement_is_an_explicit_import_error() {
         let request = Request {
             ticket: 1,
-            path: fixture("Bad_Unused_UV.glb"),
+            input: fixture("Bad_Unused_UV.glb"),
             cancel: Cancellation::default(),
         };
         assert!(matches!(prepare(&request),Err(e) if e.code==ErrorCode::InvalidFormat));
@@ -348,16 +280,16 @@ mod tests {
     fn authored_diagnostic_fixture_has_eleven_source_findings_and_eleven_displayed_triangles() {
         let request = Request {
             ticket: 1,
-            path: fixture("Geometry_Findings.glb"),
+            input: fixture("Geometry_Findings.glb"),
             cancel: Cancellation::default(),
         };
         let asset = prepare(&request).unwrap();
-        let report = asset.diagnostics.unwrap();
+        let report = asset.diagnostics().as_ref().unwrap();
         assert_eq!(
             (report.primitives, report.triangles, report.findings.len()),
             (2, 6, 11)
         );
-        assert_eq!(asset.snapshot.indices.len() / 3, 11);
+        assert_eq!(asset.snapshot().indices.len() / 3, 11);
         assert_eq!(
             report.findings[0].samples,
             ad_analysis::Samples::Indices {
@@ -384,17 +316,17 @@ mod tests {
     fn authored_edge_fixture_counts_topology_without_multiplying_instances() {
         let request = Request {
             ticket: 1,
-            path: fixture("Edge_Topology.glb"),
+            input: fixture("Edge_Topology.glb"),
             cancel: Cancellation::default(),
         };
         let asset = prepare(&request).unwrap();
-        let report = asset.diagnostics.unwrap();
+        let report = asset.diagnostics().as_ref().unwrap();
         assert!(report.is_complete());
         assert_eq!(
             (report.primitives, report.triangles, report.findings.len()),
             (7, 13, 24)
         );
-        assert_eq!(asset.snapshot.indices.len() / 3, 16);
+        assert_eq!(asset.snapshot().indices.len() / 3, 16);
         let count = |code| {
             report
                 .findings
@@ -419,17 +351,17 @@ mod tests {
     fn component_fixture_counts_source_groups_and_typed_sizes_without_instances() {
         let request = Request {
             ticket: 1,
-            path: fixture("Components_Checker.glb"),
+            input: fixture("Components_Checker.glb"),
             cancel: Cancellation::default(),
         };
         let asset = prepare(&request).unwrap();
-        let report = asset.diagnostics.unwrap();
+        let report = asset.diagnostics().as_ref().unwrap();
         assert!(report.is_complete());
         assert_eq!(
             (report.primitives, report.triangles, report.findings.len()),
             (3, 7, 11)
         );
-        assert_eq!(asset.snapshot.indices.len() / 3, 11);
+        assert_eq!(asset.snapshot().indices.len() / 3, 11);
         let f = report
             .findings
             .iter()
@@ -457,7 +389,7 @@ mod tests {
     fn analysis_refusal_keeps_the_valid_viewable_asset_and_incomplete_status() {
         let request = Request {
             ticket: 1,
-            path: fixture("Twin_Cubes.glb"),
+            input: fixture("Twin_Cubes.glb"),
             cancel: Cancellation::default(),
         };
         let asset = prepare_with_analysis_limits(
@@ -468,20 +400,17 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(asset.snapshot.indices.len(), 72);
-        assert!(matches!(asset.diagnostics,Err(e) if e.code==ErrorCode::ResourceLimit));
+        assert_eq!(asset.snapshot().indices.len(), 72);
+        assert!(matches!(asset.diagnostics(),Err(e) if e.code==ErrorCode::ResourceLimit));
     }
     #[test]
     fn cancellation_clears_pending_and_blocks_late_publication() {
-        let mut imports = Imports::new();
+        let mut imports = new_imports();
         imports.request(fixture("Twin_Cubes.glb"));
         imports.cancel();
         let start = Instant::now();
         loop {
-            let state = imports.shared.0.lock().unwrap();
-            let idle = !state.active && state.pending.is_none();
-            drop(state);
-            if idle {
+            if imports.is_idle() {
                 break;
             }
             assert!(start.elapsed() < Duration::from_secs(5));
