@@ -1,5 +1,15 @@
 # Project pulse
 
+## 2026-11-17 — G002 этап B1: снимок и анализ будущих индексов без мутации
+
+- Ветка claude/g002-heal. ad-document: новые CandidateIndices и DocumentView (view.rs). PreparedRemoval::candidate отдаёт будущие индексы одного MeshId с тегом revision+1; no-op отклоняется (Unsupported), потому что не меняет ревизию. AssetDocument::candidate_view заново проверяет текущий тег, приватный origin, существование примитива, кратность трём, непустоту и диапазон каждого индекса, с отменой каждые 4096 индексов. Конструктор кандидата crate-private.
+- AssetDocument::snapshot теперь обёртка над DocumentView::snapshot; ad_analysis::analyze — обёртка над analyze_view. Подмодули edges/components/uv читают индексы через view. Поведение для текущего документа не менялось; в desktop, heal, formats, storage и renderer правок нет.
+- RED→GREEN: сначала тесты не компилировались из-за отсутствующего API, затем прошли. Новые тесты: снимок кандидата полностью совпадает со снимком после настоящего apply, документ при этом не меняется; кандидат отклоняется для чужого документа с тем же публичным тегом, при отмене, после реального commit, для no-op и для враждебных индексов (вне диапазона, неполный треугольник, пусто); отчёт анализа кандидата равен отчёту после commit (findings и coverage), до публикации Report::matches=false, после — true.
+- 173 теста PASS (35→36 analysis, 23→25 document, остальные как в базе). fmt --check, clippy all-targets -D warnings, release-сборка, cargo-deny 0.20.2 (advisories/bans/licenses/sources) PASS.
+- Нативные регрессии с запрошенной sync-validation (фактическое значение настройки отдельно не проверялось): import-smoke uv/normal/geometry/static и heal-smoke — SMOKE_PASS, 15 кадров, lifecycle, сохранение при плохой замене, 0 ошибок validation; DUPLICATE_HEAL_PASS 992→960, revision 3, 79364 байт. Окна закрывались сами, ввода и захвата экрана не было.
+- Инструменты: под Windows PowerShell 5.1 (pwsh 7 не установлен) smoke-скрипты ложно падали — пустой ExitCode у Start-Process и stderr cargo как исключение при 2>&1. Исправлено отдельным коммитом: кэш handle процесса в import/heal-smoke, ErrorActionPreference=Continue вокруг вызова cargo в dev.ps1; решение об успехе по-прежнему по коду выхода и маркерам лога.
+- Ограничения: фикстуры B1 — один исходный примитив; изоляция соседних примитивов покрыта логикой view.indices, отдельный многопримитивный тест добавлю в B2/B4. Кандидатный снимок — полная копия сцены (пик RAM = текущий + кандидатный снимок). Следующий шаг: B2 — stage_commit/stage_undo/stage_redo с publish без Result и read-only цели Undo/Redo.
+
 ## 2026-11-17 — G002 этап A: аудит и ADR-0031 атомарной публикации правки
 
 - Исполнитель Claude (Клодиус), ветка claude/g002-heal от 24f9fc6. Только документы: ADR-0031, строки ADR-0027, ARCHITECTURE, мастер-план §13, tasks/todo. Код, тесты, фикстуры и матрица FEATURE_PARITY_MATRIX.csv не менялись (статусы HEAL-01/REPAIR-06/EXP-01 прежние).

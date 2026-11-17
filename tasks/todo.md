@@ -14,7 +14,7 @@ Full roadmap and all76function/request statuses:
 - [x] Duplicate-plan CPU subset: ADR-0030/source slice15, complete oriented same-index removal plan for one source primitive, earliest survivors, all source-node reference count, independent precommit verifier and shared command history.170workspace tests; textured plan/apply/complete-analysis/Undo/Redo/export/disk/native readback PASS. Report DUPLICATE_PLAN_REPORT_2026-11-17.md; no native Heal controls.
 - [ ] First user-facing Heal/export: close remaining ADR-0027 source/material eligibility and atomic desktop/history/analysis/snapshot/GPU publication; add preview/apply/verify/Undo/Save Copy/dirty-close workflow. CPU plan/history/writer/storage exist; native repair/Save controls do not.
   - [x] A: ADR-0031 publication protocol, state owners and owner decisions 1–7 (docs only, branch claude/g002-heal).
-  - [ ] B1: candidate index view; snapshot_with/analyze_with equal to post-commit results.
+  - [x] B1: CandidateIndices/DocumentView; DocumentView::snapshot and analyze_view equal post-commit results; current-view wrappers unchanged (173 tests).
   - [ ] B2: Session stage_commit/stage_undo/stage_redo + infallible publish; undo/redo targets.
   - [ ] B3: Renderer stage_scene/activate, smoke-only upload/wait fault injection.
   - [ ] B4: desktop Arc<Session>, edit worker, Generation, publication failure tests (no Heal button).
