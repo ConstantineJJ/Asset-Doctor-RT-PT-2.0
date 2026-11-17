@@ -38,6 +38,22 @@ pub struct PreparedRemoval {
     retained_bytes: usize,
 }
 impl PreparedRemoval {
+    /// Immutable candidate for independent checks; never publishes an edit.
+    /// Both borrows keep the proposal and current document alive for the slice.
+    pub fn indices_after<'a>(
+        &'a self,
+        document: &'a AssetDocument,
+        cancel: &Cancellation,
+    ) -> AssetResult<&'a [u32]> {
+        document.verify_tag(self.preview.tag, cancel)?;
+        if !Arc::ptr_eq(&self.owner, &document.origin) {
+            return Err(conflict());
+        }
+        Ok(self
+            .replacement
+            .as_deref()
+            .unwrap_or(&document.parts.meshes[self.preview.mesh.0].indices))
+    }
     pub fn preview(&self) -> RemovalPreview {
         self.preview
     }

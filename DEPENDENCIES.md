@@ -50,6 +50,11 @@ The owner-supplied icon is branding for this application; it does not establish
 redistribution rights for unrelated assets. Private machine paths in audit
 provenance need review before any later public publication.
 
+ADR-0030 adds the local ad-heal crate only. Runtime dependencies are ad-document
+and ad-commands; formats/analysis/storage are test/developer-probe dependencies.
+No registry version, OS/UI/GPU dependency or license exception is added. Repair
+planning remains replaceable independently of diagnostics, storage and renderer.
+
 cargo deny check passes for the Windows graph. deny.toml has two exact,
 documented duplicate exceptions: miniz_oxide 0.8.9 required directly by png while
 its current flate2 dependency requires miniz 0.9.1; syn 2.0.119 required by

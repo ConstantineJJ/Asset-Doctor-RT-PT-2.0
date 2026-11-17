@@ -65,6 +65,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ad-heal"
+version = "0.1.0"
+dependencies = [
+ "ad-analysis",
+ "ad-commands",
+ "ad-document",
+ "ad-formats",
+ "ad-storage",
+]
+
+[[package]]
 name = "ad-render-vulkan"
 version = "0.1.0"
 dependencies = [

@@ -4,6 +4,10 @@ Status: PARTIALLY DECIDED, 2026-11-16. ADR-0028/0029accept internal static index
 export and new-path storage subsets. Full first-Heal/native publication remains
 PROPOSED; no user operation approved by this proposal alone.
 
+ADR-0030 accepts the internal complete single-primitive G002 plan and independent
+command-candidate postcheck. Native source/material eligibility and publication
+still require separate decisions and verification.
+
 Target first complete workflow: oriented same-index duplicate findingG002 →
 read-only preview of full removal set → explicit apply → independent postcheck →
 Undo/Redo → Save Copy → fresh reimport and structural verification. Never use

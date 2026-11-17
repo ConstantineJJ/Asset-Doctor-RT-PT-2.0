@@ -1,0 +1,17 @@
+[package]
+name = "ad-heal"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+ad-document = { path = "../ad-document", version = "=0.1.0" }
+ad-commands = { path = "../ad-commands", version = "=0.1.0" }
+
+[dev-dependencies]
+ad-formats = { path = "../ad-formats", version = "=0.1.0" }
+ad-analysis = { path = "../ad-analysis", version = "=0.1.0" }
+ad-storage = { path = "../ad-storage", version = "=0.1.0" }
+
+[lints]
+workspace = true

@@ -7,6 +7,36 @@ fn doc() -> AssetDocument {
 }
 
 #[test]
+fn candidate_indices_are_read_only_guarded_and_do_not_mutate_the_document() {
+    let mut d = doc();
+    let c = Cancellation::default();
+    let plan = d
+        .prepare_triangle_removal(d.tag(), MeshId(0), &[1], ImportLimits::default(), &c)
+        .unwrap();
+    assert_eq!(plan.indices_after(&d, &c).unwrap(), [0, 1, 2, 0, 2, 1]);
+    assert_eq!(d.primitives()[0].indices, [0, 1, 2, 1, 2, 0, 0, 2, 1]);
+    let foreign = doc();
+    assert_eq!(foreign.tag(), d.tag());
+    assert!(matches!(plan.indices_after(&foreign,&c),Err(e) if e.code==ErrorCode::Conflict));
+    let noop = d
+        .prepare_triangle_removal(d.tag(), MeshId(0), &[], ImportLimits::default(), &c)
+        .unwrap();
+    assert!(std::ptr::eq(
+        noop.indices_after(&d, &c).unwrap(),
+        d.primitives()[0].indices.as_slice()
+    ));
+    let c2 = Cancellation::default();
+    c2.cancel();
+    assert!(matches!(plan.indices_after(&d,&c2),Err(e) if e.code==ErrorCode::Cancelled));
+    let other = d
+        .prepare_triangle_removal(d.tag(), MeshId(0), &[1], ImportLimits::default(), &c)
+        .unwrap();
+    d.apply_triangle_removal(other, ImportLimits::default(), &c)
+        .unwrap();
+    assert!(matches!(plan.indices_after(&d,&c),Err(e) if e.code==ErrorCode::Conflict));
+}
+
+#[test]
 fn prepared_triangle_removal_keeps_source_and_attributes_and_revisions_never_go_back() {
     let mut doc = doc();
     let source = doc.source().clone();
