@@ -15,7 +15,7 @@ Full roadmap and all76function/request statuses:
 - [ ] First user-facing Heal/export: close remaining ADR-0027 source/material eligibility and atomic desktop/history/analysis/snapshot/GPU publication; add preview/apply/verify/Undo/Save Copy/dirty-close workflow. CPU plan/history/writer/storage exist; native repair/Save controls do not.
   - [x] A: ADR-0031 publication protocol, state owners and owner decisions 1–7 (docs only, branch claude/g002-heal).
   - [x] B1: CandidateIndices/DocumentView; DocumentView::snapshot and analyze_view equal post-commit results; current-view wrappers unchanged (173 tests).
-  - [ ] B2: Session stage_commit/stage_undo/stage_redo + infallible publish; undo/redo targets.
+  - [x] B2: Session stage_commit/stage_undo/stage_redo + infallible publish; undo/redo candidates; dropped stage keeps redo (178 tests).
   - [ ] B3: Renderer stage_scene/activate, smoke-only upload/wait fault injection.
   - [ ] B4: desktop Arc<Session>, edit worker, Generation, publication failure tests (no Heal button).
   - [ ] C: changed-export eligibility preflight; G002 Preview/Apply/Undo/Redo UI and native smoke.
