@@ -1,8 +1,8 @@
 # Asset Doctor RT-PT 2.0 — полный план и состояние реализации
 
-**Дата сверки:** 16 ноября 2026 года, Europe/Riga.
+**Дата сверки:** 17 ноября 2026 года, Europe/Riga.
 
-**Проверяемая версия приложения:** `7fe1f05e27146a3b4b1d8bc9c9246ba9c9f91108`.
+**Проверяемая версия приложения:** `dbd6091fb40c768117fbf550388172cfb30951fb`.
 
 **Назначение документа:** единый план всего продукта, перечень уже работающих функций и оставшихся обязательств. Это снимок состояния указанного коммита; будущая реализация обновляет статусы здесь и в [матрице функций](FEATURE_PARITY_MATRIX.csv).
 
@@ -13,6 +13,8 @@
 Сейчас получился **работающий нативный просмотрщик статических GLB с материалами и ограниченной диагностикой геометрии**. Он ещё не является полноценной заменой старого Asset Doctor. Основная работа по редактированию, ремонту и сохранению модели впереди.
 
 Внутри ядра уже появился **работающий index-command/history модуль**: подготовка удаления явно указанных треугольников, guarded apply, Undo/Redo, ветвление и бюджеты. Это CPU API; в desktop нет новых кнопок редактирования, Heal или экспорта. Контракт ADR-0026 принят. Добавлен внутренний static GLB exporter и Windows Save Copy backend по ADR-0028/0029: fresh reimport, сравнение и проверенная запись нового файла без замены существующего. Полный Heal/Save Copy в desktop остаётся следующим milestone по ADR-0027; [отчёт экспорта](STATIC_EXPORT_REPORT_2026-11-16.md) фиксирует границы.
+
+Новый **CPU G002-планировщик** по ADR-0030 собирает все дубли выбранного исходного примитива, сохраняет первый представитель и независимо проверяет подготовленную команду. Он использует общую историю; textured plan → Apply → полный анализ → Undo/Redo → export → запись → native readback проверены на авторских fixtures. Это ещё не desktop Heal: source/material eligibility и атомарная публикация остаются следующей работой. [Отчёт](DUPLICATE_PLAN_REPORT_2026-11-17.md).
 
 В исходном каталоге есть **66 функций/сценариев Legacy и 10 отдельных требований владельца**. Это начальная инвентаризация, а не доказательство исчерпывающего аудита. Все 76 строк сохранены в разделах 11–12. Дополнительные направления из ТЗ — окружение, надёжность, RT/PT, Mixamo и прочие — также включены в дорожную карту ниже, даже когда отдельной строки Legacy для них нет.
 
@@ -66,7 +68,7 @@
 | **4. Raster MVP** | Базовый просмотр работает | Геометрия, depth, камеры, авторские transforms, материалы, загрузка GPU-ресурсов и управление жизненным циклом | Измерения пиков/кадров, fault injection, расширенная сцена/оверлеи и регрессии на разных устройствах |
 | **5. glTF + PBR** | Частично | Статический GLB/BIN, иерархия, UV, normals/tangents, PNG/JPEG, base color/MR/normal/AO/emission, OPAQUE/MASK, предварительный direct PBR | JSON glTF, согласованные расширения/сжатие, skin/animation/morph, BLEND, double-sided/culling parity, HDR/IBL, тени, точная визуальная калибровка |
 | **6. Product core и native UX** | Частично | Независимый source-retaining документ, задачи/guards, дерево/сводка, 11 диагностик; внутренний index-command/history модуль | Desktop edit publication, UI Undo/Redo и общие команды, настройки/проекты/recovery, полный набор диагностик, лампы/gizmo/окружение/полы |
-| **7. Heal / ручной Rig / Export / auto-Compare / анимации** | Не реализован | Каталог требований, внутренние CPU index commands/history и verified static export/new-path storage; пользовательского workflow ещё нет | Все пользовательские операции данного этапа, их история, preview/verification и roundtrip |
+| **7. Heal / ручной Rig / Export / auto-Compare / анимации** | Не реализован | Каталог требований, CPU G002 plan/postcheck, общие commands/history и verified static export/new-path storage; пользовательского workflow ещё нет | Все пользовательские операции данного этапа, их история, preview/verification и roundtrip |
 | **8. Качество raster-релиза Windows** | Не завершён | Локальные и CI-проверки, инженерный EXE, синтетические fixtures и первые нативные регрессии | Установщик/обновление/удаление, чистая машина, доступность/DPI, восстановление, профилирование и продуктовая приёмка |
 | **9. Hardware Ray Tracing** | Не начат | В probe ранее наблюдались имена RT-расширений GPU | Реальное включение features, BLAS/TLAS, эффект/режим, синхронизация, бюджеты, fallback и проверки |
 | **10. Progressive Path Tracing** | Не начат | Требования зафиксированы | Интегратор, выборка света/BRDF, bounces, accumulation/reset, denoising, качество и экспорт кадра |
@@ -178,7 +180,7 @@
 | formats | `ad-formats`: ограниченный GLB importer и static index-only exporter с independent reimport/compare | Остальные варианты glTF, расширения, общий attribute/skin/animation writer |
 | assets | CPU image/sampler identity, sharing и admission в документе/importer | Общий жизненный цикл ресурсов по мере появления реальной необходимости |
 | diagnostics | Независимый `ad-analysis`, 11 правил | Полный каталог диагностик, расширенные UV/materials/rig/animation/profiles |
-| heal | Не реализован | План ремонта → preview → команда → verification → запись отчёта |
+| heal | `ad-heal`: полный CPU G002-план одного source-примитива, source references и независимая проверка prepared command | Source/material eligibility, native preview/apply, атомарная публикация, остальные repairs/queue/report |
 | rig | Не реализован | Skeleton/skin/rest/pose/weights и ручные операции |
 | animation | Не реализован | Данные clips, вычисление позы, timeline/playback/editing |
 | commands | `ad-commands`: CPU explicit triangle removal, guarded commit, bounded linear Undo/Redo/branching | Подключение к desktop; общие geometry/rig/gesture commands, reset/eviction, проекты и safe save |
@@ -187,7 +189,7 @@
 | desktop | `ad-desktop`: winit/egui, панели, ввод, диалоги, камера | Native UX, gizmo, настройки, accessibility/DPI и дальнейшая проверка выбора UI |
 | persistence | `ad-storage`: внутренний Windows new-path Save Copy, полное disk readback, no-replace publication и очистка через дескриптор | Native Save/dirty-close, проекты/настройки/recovery, версии схем и сохранение состояния |
 
-В workspace семь пакетов, включая пока не подключённые к desktop модули команд и файловой записи. Наличие отдельного пустого crate не считается выполненной подсистемой. Рекомендательная схема не требует немедленно создавать все будущие пакеты. У renderer нет права стать владельцем авторских данных; анализ не зависит от Vulkan/UI.
+В workspace восемь пакетов, включая пока не подключённые к desktop модули команд, Heal-планирования и файловой записи. Наличие отдельного пустого crate не считается выполненной подсистемой. Рекомендательная схема не требует немедленно создавать все будущие пакеты. У renderer нет права стать владельцем авторских данных; анализ не зависит от Vulkan/UI.
 
 ## 7. Подробный оставшийся план и критерии готовности
 
@@ -238,7 +240,7 @@
 - Безопасная очередь перечитывает кандидатов после каждого шага, прекращается при регрессии/cancel/stale и не выполняет молча рискованные действия.
 - Отчёт текущего подтверждённого ремонта отделён от сохранённой истории отчётов.
 
-**Готовность каждой операции:** preview не меняет документ; apply устраняет целевой дефект без новых несогласованных потерь; Undo точен; результат проходит export/reimport. Ни одна из семи операций сейчас не выполнена.
+**Готовность каждой операции:** preview не меняет документ; apply устраняет целевой дефект без новых несогласованных потерь; Undo точен; результат проходит export/reimport. Ни одна из семи операций пока не завершена как desktop workflow. Для REPAIR-06 реализован CPU plan/postcheck и проверена цепочка с общей историей/экспортом; eligibility и native-публикация остаются обязательными.
 
 ### P6. Модели, лампы, полы, окружение и управление
 
@@ -315,16 +317,16 @@
 
 | Доказательство | Состояние и область |
 |---|---|
-| Workspace tests | 157 PASS: analysis 35, commands 14, desktop 23, document 22, formats 38, renderer 12, storage 13 |
+| Workspace tests | 170 PASS: analysis 35, commands 14, desktop 23, document 23, formats 38, heal 12, renderer 12, storage 13 |
 | Форматирование/lint/build | fmt check, all-target clippy с запретом warnings, Windows MSVC release build PASS |
-| Зависимости | cargo-deny advisories/bans/licenses/sources PASS; новых registry versions нет, существующие serde/serde_json/windows-sys используются экспортом/записью |
-| Native regression текущего этапа | Сохранённая изменённая копия + UV/normal-PBR/empty viewer: применимые import/rejected replacement/lifecycle, 15 presents и 0 validation errors. Это не Heal/Save UI acceptance; детали в static-export report |
+| Зависимости | cargo-deny advisories/bans/licenses/sources PASS; новый ad-heal зависит от local document/commands, новых registry versions нет |
+| Native regression текущего этапа | Textured G002 plan/Apply/полный анализ/Undo/Redo/export/disk → native PBR/normal + UV/empty: 15 presents и 0 validation errors. Это не Heal/Save UI acceptance; детали в duplicate-plan report |
 | Geometry/edge/component UI | В предшествующих отчётах есть нативные проверки полного/частичного результата, scroll/footer и примеров групп; это не новая проверка всех будущих инструментов |
 | Пользовательские примеры | В диалоге приняты несколько GLB/base-color/PBR-примеров; это свидетельство конкретных моделей и сборок, не всего parity |
 | Heavy-model наблюдения | В отчёте components: Tire 402 361 vertices / 702 558 triangles; Vanguard 852 516 / 1 559 826; оригинальные SHA не изменились |
-| GitHub | Предыдущий command/docs checkpoint `14189f0`: [Windows CI run 43857372910](https://github.com/ConstantineJJ/Asset-Doctor-RT-PT-2.0/actions/runs/43857372910) success. CI нового export-кода проверяется отдельно; это не hosted GPU acceptance |
+| GitHub | Предыдущий export/docs checkpoint `7a7eb26`: [Windows CI run 43866128041](https://github.com/ConstantineJJ/Asset-Doctor-RT-PT-2.0/actions/runs/43866128041) success. CI нового Heal-кода проверяется отдельно; это не hosted GPU acceptance |
 
-Таблица обновлена после static export/storage этапа; [static-export report](STATIC_EXPORT_REPORT_2026-11-16.md) и [command report](COMMAND_HISTORY_REPORT_2026-11-16.md) отделяют внутренние API от desktop/Heal. Исторические отчёты сохраняют свой scope. Из предшествующей UV-проверки Tire: 702 558 triangles / 147 ms / 2 findings; Vanguard: 1 559 826 / 338 ms / 3 findings, из них 32 zero-UV-area triangles. Оригинальные SHA не изменились, обе модели проходят import/rejected replacement/lifecycle с 0 validation errors. Единичные timings не являются benchmark; размер GLB не измеряет пик памяти. Синхронизационная validation запрашивалась переменной окружения, её фактическая настройка отдельно не подтверждалась. Подробности: [UV report](UV_DIAGNOSTICS_REPORT_2026-11-16.md).
+Таблица обновлена после CPU G002-плана; [duplicate-plan report](DUPLICATE_PLAN_REPORT_2026-11-17.md), [static-export report](STATIC_EXPORT_REPORT_2026-11-16.md) и [command report](COMMAND_HISTORY_REPORT_2026-11-16.md) отделяют внутренние API от desktop/Heal. Исторические отчёты сохраняют свой scope. Из предшествующей UV-проверки Tire: 702 558 triangles / 147 ms / 2 findings; Vanguard: 1 559 826 / 338 ms / 3 findings, из них 32 zero-UV-area triangles. Оригинальные SHA не изменились, обе модели проходят import/rejected replacement/lifecycle с 0 validation errors. Единичные timings не являются benchmark; размер GLB не измеряет пик памяти. Синхронизационная validation запрашивалась переменной окружения, её фактическая настройка отдельно не подтверждалась. Подробности: [UV report](UV_DIAGNOSTICS_REPORT_2026-11-16.md).
 
 ### 8.2. Обязательная готовность каждой следующей функции
 
@@ -371,6 +373,8 @@
 
 - **E8** — [static export](../crates/ad-formats/src/export.rs), [Windows storage](../crates/ad-storage/src/lib.rs), [static-export report](STATIC_EXPORT_REPORT_2026-11-16.md). Это внутренние API; не доказательство готового desktop Export/Heal.
 
+- **E9** — [Heal plan](../crates/ad-heal/src/lib.rs), [postcheck](../crates/ad-heal/src/verify.rs), [duplicate-plan report](DUPLICATE_PLAN_REPORT_2026-11-17.md), [pipeline probe](../tools/heal-smoke.ps1). Это CPU subset; native Heal ещё отсутствует.
+
 ## 11. Все 66 функций Legacy
 
 | ID | Функция | Статус | Что есть в новом приложении | Что осталось / граница | Источники |
@@ -412,7 +416,7 @@
 | DIAG-08 | Transforms/performance диагностика | Не реализовано | Сводка/технические логи не являются специализированным analyzer | Draw/memory/profile metrics, transform checks, реальные замеры отдельно от estimates | E6 |
 | DIAG-09 | Диагностические профили | Не реализовано | Нет выбора профиля/health score | Определить профили, thresholds и тесты; не выдавать style advice за integrity fault | E6 |
 | DIAG-10 | Переход/фильтры/экспорт findings | Частично | Read-only список, code/severity/count/source samples и full/partial coverage | Фильтры, focus/highlight дефекта, save single/all reports и отмена диалога | E5 |
-| HEAL-01 | Preview/apply/verify/Undo ремонта | Не реализовано | Нет изменений модели | Revision-checked preview/apply/verify, точный Undo и export roundtrip | E6 |
+| HEAL-01 | Preview/apply/verify/Undo ремонта | Не реализовано | CPU G002 plan/postcheck, общие guarded commands/history и проверенные authored export/disk probes; native Heal нет | Source/material eligibility, native preview/Apply/Undo и атомарная document/history/analysis/snapshot/GPU publication | E3,E6,E8,E9 |
 | HEAL-02 | Очередь безопасного ремонта | Не реализовано | Нет очереди ремонта | Переоценка кандидатов после шага, risk/confirm, cancel/stale/regression stop | E6 |
 | HEAL-03 | Сохранённые отчёты и история ремонта | Не реализовано | Нет продуктового хранилища repair history | Отделить historical report от текущей verification, обработать storage failure | E6 |
 | RIG-01 | Inspect/edit/pose | Не реализовано | Skeleton/skin не импортируются | Раздельные rest/bind/pose и режимы без повреждения clips | E6 |
@@ -433,13 +437,13 @@
 | SYS-02 | Язык интерфейса | Частично | Основные панели на русском, часть ошибок/заголовков на английском | Выбор en/ru, полная локализация, storage/reset/fallback | E2 |
 | SYS-03 | Просмотр/save/clear системного лога | Частично | Есть технический stderr и developer smoke logs | Продуктовый UI логов, save/clear/verbosity, limits/rotation/retention и sanitization | E2,E7 |
 | SYS-04 | Нативный shell и startup trace | Частично | Windows window/bootstrap, Vulkan diagnostics и штатный shutdown | Ограниченный дисковый startup/crash trace, retention и failure-before-UI | E2,E7 |
-| SYS-05 | Ресурсные бюджеты и отмена worker | Частично | Source/decoded/snapshot/texture/analysis/export admission, cancel/tickets; внутренние bounded history и Windows Save Copy | Whole-process peaks, UI/general history, multi-model budgets, GPU fault recovery и измеренная latency | E1,E3,E5,E7,E8 |
+| SYS-05 | Ресурсные бюджеты и отмена worker | Частично | Source/decoded/snapshot/texture/analysis/export/Heal-plan admission, cancel/tickets; bounded history и Windows Save Copy | Whole-process peaks, UI/general history, multi-model budgets, GPU fault recovery и измеренная latency | E1,E3,E5,E7,E8,E9 |
 | REPAIR-01 | Удалить degenerate triangles | Не реализовано | Только диагностика G001 | Preview/remap/apply/verify/Undo/export без потери атрибутов | E6 |
 | REPAIR-02 | Удалить unused vertices | Не реализовано | Только диагностика G003 | Безопасный remap всех attributes/indices, Undo и roundtrip | E6 |
 | REPAIR-03 | Пересчитать normals | Не реализовано | Есть fallback просмотра, не ремонт исходника | Согласовать алгоритм/швы/дегенераты, preview/apply/Undo и export | E6 |
 | REPAIR-04 | Объединить exact duplicate vertices | Не реализовано | Welding не выполняется | Сравнение полных атрибутов/UV/skin и ограничений, preview/verify/Undo/export | E6 |
 | REPAIR-05 | Нормализовать skin weights | Не реализовано | Skin не поддержан | Валидация influences, preview/apply, deformation checks, Undo/roundtrip | E6 |
-| REPAIR-06 | Удалить exact duplicate triangles | Не реализовано | Только диагностика G002 | Winding/source-fidelity contract, index patch, Undo/verify/export | E6 |
+| REPAIR-06 | Удалить exact duplicate triangles | Не реализовано | Полный CPU single-source G002 plan, earliest survivor, независимый prepared-index postcheck и roundtrip; desktop инструмента нет | Material/export eligibility и native preview/Apply/history/verification/Save workflow | E3,E6,E8,E9 |
 | REPAIR-07 | Объединить повторные skin influences | Не реализовано | Skin не поддержан | Consolidation/normalization contract, сохранение joint mapping, Undo/deformation/roundtrip | E6 |
 
 ## 12. Все 10 требований владельца
@@ -464,7 +468,7 @@
 Следующая рекомендуемая последовательность без изменения общей цели:
 
 1. **Завершено:** G009–G011 и source/coverage/UI/native проверки по ADR-0025; следующая работа начинается с пункта 2.
-2. **Внутренние prerequisites выполнены:** CPU index-command/history ADR-0026 и static export/storage ADR-0028/0029. Следом закрыть оставшуюся часть ADR-0027: полный G002 removal planner/postcheck, preview и атомарную desktop/history/analysis/GPU publication. Не расширять бесконечно только просмотрщик, оставляя основные инструменты без движения.
+2. **Внутренние prerequisites выполнены:** CPU index-command/history ADR-0026, static export/storage ADR-0028/0029 и полный G002 plan/postcheck ADR-0030. Следом закрыть оставшуюся часть ADR-0027: source/material eligibility, native preview и атомарную desktop/history/analysis/snapshot/GPU publication. Не расширять бесконечно только просмотрщик, оставляя основные инструменты без движения.
 3. Довести минимальный сквозной сценарий: известный дефект → preview → apply → verification → Undo/Redo → Save Copy → fresh reimport. Только после него считать первый Heal перенесённым.
 4. Последовательно расширять diagnostics/Heal и поддержанные форматы; затем skin/manual Rig/animation, auto-Compare и полный UX согласно зависимостям P1–P9.
 5. Закрыть release-quality raster и проверяемые P0/REQ, затем RT → PT → Mixamo/autorig/retargeting.

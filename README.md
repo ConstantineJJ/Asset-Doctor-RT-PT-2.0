@@ -4,7 +4,7 @@
 
 > **Status:** Native Vulkan GLB viewer with Open/Fit, scene tree, summary and optional direct PBR with color/MR/normal/occlusion/emission maps and authored normals/tangents. Read-only source geometry/UV diagnostics are available. User-facing editing, environment, rig/animation, RT and PT remain planned. This is an engineering prototype.
 
-**Full plan and implementation status (Russian, 2026-11-16):**
+**Full plan and implementation status (Russian, 2026-11-17):**
 [MASTER_PLAN_AND_STATUS_RU.md](docs/MASTER_PLAN_AND_STATUS_RU.md) covers all original
 stages, all66Legacy scenarios, all10owner requirements, completed subsets and
 remaining acceptance criteria. It is the consolidated progress document.
@@ -15,6 +15,9 @@ copying all geometry. The internal [static export/storage backend](docs/STATIC_E
 now verifies changed GLB bytes by independent reimport and saves new Windows copies
 with disk readback and no replacement of existing files. These APIs are not yet
 connected to desktop editing/Save controls; the application remains a read-only viewer.
+The new internal [G002 duplicate-removal planner](docs/DUPLICATE_PLAN_REPORT_2026-11-17.md)
+scans a complete source primitive, verifies its prepared command and uses the same
+history/export/storage path in authored probes. Native Heal/Save controls remain planned.
 
 ## Planned Features
 

@@ -9,20 +9,22 @@ flowchart TD
   UI[Native desktop UI and input] --> Commands[Revision-checked commands]
   Commands --> Document[Authoritative asset document]
   Formats[Import and verified export] --> Document
-  Analysis[Diagnostics and repair planning] --> Snapshot[Immutable snapshots]
+  Analysis[Diagnostics] --> Snapshot[Immutable snapshots]
   Document --> Snapshot
   Snapshot --> GPU[Vulkan renderer]
   Snapshot --> Jobs[Bounded cancellable workers]
   Jobs --> Commands
   Commands --> History[Undo/Redo transactions]
+  Heal[Repair planning] --> Commands
 ```
 
 The diagram is a logical target, not all existing crates. Present workspace has
 ad-document (authoritative domain data/snapshot), ad-formats (bounded GLB import
 and verified static export), ad-render-vulkan (GPU lifetime/presentation/geometry),
 ad-analysis (read-only source geometry findings), ad-commands (bounded index history),
-ad-storage (Windows new-path verified file IO) and ad-desktop (window, input/camera,
-native dialogs and one bounded import worker). Commands/storage are internal APIs;
+ad-storage (Windows new-path verified file IO), ad-heal (complete oriented duplicate
+planning) and ad-desktop (window, input/camera,
+native dialogs and one bounded import worker). Commands/heal/storage are internal APIs;
 desktop still owns a read-only viewer workflow.
 Renderer accepts raw-handle targets retained by Arc; it does not import winit.
 Desktop prepares egui paint primitives/texture deltas and a physical scene rectangle;
@@ -145,3 +147,14 @@ Windows handle-bound deletion owns cleanup; publication is the commit point.
 Both proof and receipt retain origin/revision identity. Filesystem IO stays outside
 document, commands, analysis and renderer. No Save UI or saved-state clearing exists.
 See STATIC_EXPORT_REPORT_2026-11-16.md for tested subsets and memory/filesystem limits.
+
+
+ADR-0030 adds a complete single-source-primitive duplicate plan in ad-heal. It owns
+no diagnostic report, graphics or file IO; document/commands are its only runtime
+dependencies. A private origin/revision plan retains all removal ordinals, counts
+source-node references and prepares through existing history admission. Guarded
+immutable candidate indices permit independent deletion/coverage/earliest-survivor
+verification before the command is returned. Source/material/export eligibility
+and atomic native document/history/analysis/snapshot/GPU publication remain open.
+No second history or UI repair controller is introduced. Evidence and limits:
+DUPLICATE_PLAN_REPORT_2026-11-17.md.

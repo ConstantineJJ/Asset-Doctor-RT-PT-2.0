@@ -1,10 +1,10 @@
 # Initial implementation plan — 2026-11-15
 
-## Consolidated plan and status — 2026-11-16
+## Consolidated plan and status — 2026-11-17
 
 The complete current roadmap is [MASTER_PLAN_AND_STATUS_RU.md](../docs/MASTER_PLAN_AND_STATUS_RU.md).
 It retains the original stages0–11 and all66Legacy/10owner IDs, records implemented
-scope against code7fe1f05, and defines remaining acceptance/dependencies. Read it
+scope against code `dbd6091`, and defines remaining acceptance/dependencies. Read it
 with [todo.md](todo.md) before continuing. The initial startup plan below is kept
 as history; it is not the complete long-term product backlog.
 

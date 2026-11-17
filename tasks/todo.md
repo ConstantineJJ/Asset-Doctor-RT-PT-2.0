@@ -4,14 +4,15 @@ Owner authorizes autonomous development and runtime/visual/input verification;
 per-increment owner acceptance is not a gate. Keep source/audit/verification limits explicit.
 
 Full roadmap and all76function/request statuses:
-[MASTER_PLAN_AND_STATUS_RU.md](../docs/MASTER_PLAN_AND_STATUS_RU.md), code7fe1f05.
+[MASTER_PLAN_AND_STATUS_RU.md](../docs/MASTER_PLAN_AND_STATUS_RU.md), code `dbd6091`.
 
 - [x] UV-data: Preserve all declared source TEXCOORD_n (up to8), explicit material role IDs, integer/finite/count/binding validation and decoded admission;99tests and material native regressions PASS.
 - [x] UV-analysis: ADR-0025 G009/G010/G011, atomic multichannel result admission, checked/not-applicable/omitted coverage;113tests/native full/partial UI/limits/heavy-model regressions PASS. No full UV-quality/edit/repair claim. See UV_DIAGNOSTICS_REPORT_2026-11-16.md.
 - [ ] Next product milestone after UV: accepted command/history/static-export/first-Heal contracts and end-to-end preview→apply→verify→Undo→Save Copy→reimport. Full remaining scope is in master plan P1–P12.
 - [x] Command foundation: ADR-0026/source slice13; guarded explicit triangle-removal proposals, monotonic revisions, bounded linear Undo/Redo and origin/source/attribute preservation.133workspace tests and viewer native regressions PASS. Internal CPU API only; report COMMAND_HISTORY_REPORT_2026-11-16.md.
 - [x] Static export/storage backend: ADR-0028/0029 and source slice14; source-primitive mapping, exact-copy/append-only index writer, bounded core metadata, independent reimport comparison, Windows new-path disk readback/no-replace publication and handle-bound cleanup.157tests and saved-copy/UV/normal/empty native regressions PASS. Report STATIC_EXPORT_REPORT_2026-11-16.md; no desktop controls added.
-- [ ] First user-facing Heal/export: close remaining ADR-0027 full-scope G002 planner/postcheck and atomic desktop-publication contracts; implement preview/apply/verify/Undo/Save Copy/dirty-close workflow. Internal writer/storage exist; native repair/Save controls do not.
+- [x] Duplicate-plan CPU subset: ADR-0030/source slice15, complete oriented same-index removal plan for one source primitive, earliest survivors, all source-node reference count, independent precommit verifier and shared command history.170workspace tests; textured plan/apply/complete-analysis/Undo/Redo/export/disk/native readback PASS. Report DUPLICATE_PLAN_REPORT_2026-11-17.md; no native Heal controls.
+- [ ] First user-facing Heal/export: close remaining ADR-0027 source/material eligibility and atomic desktop/history/analysis/snapshot/GPU publication; add preview/apply/verify/Undo/Save Copy/dirty-close workflow. CPU plan/history/writer/storage exist; native repair/Save controls do not.
 
 - [x] A1a: Initial source inventory: 66 functions/scenarios, all 10 REQ IDs, exact evidence and source hashes. Verify: tools/audit_legacy.py. Full semantic UI/native audit remains open below.
 - [ ] A1b: Map all 197 UI declaration sites; classify 110 state candidates; complete parameter/error/native workflow acceptance. See reference/LEGACY_GAP_REGISTER.md.
