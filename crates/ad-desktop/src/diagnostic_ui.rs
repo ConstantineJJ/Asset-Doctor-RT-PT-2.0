@@ -9,7 +9,10 @@ pub fn show(
     asset: Option<&PreparedAsset>,
     viewport_height: f32,
     can_preview: bool,
-) -> (Option<ad_document::MeshId>, egui::Rect) {
+) -> (
+    Option<(ad_document::MeshId, ad_heal::RepairKind)>,
+    egui::Rect,
+) {
     let mut preview = None;
     let mut preview_rect = egui::Rect::NOTHING;
     egui::Window::new("Диагностика геометрии и UV").open(open).default_size([620.,420.]).show(context,|ui| {
@@ -54,12 +57,17 @@ pub fn show(
                                     let title=format!("{code} · {severity} · {label}");
                                     ui.add(egui::Label::new(&title).truncate()).on_hover_text(title);
                                     let metadata=format!("Примитив #{} · количество {}",finding.mesh.0,finding.count);
-                                    if finding.code==ad_analysis::Code::DuplicateTriangle {
+                                    let repair=match finding.code {
+                                        ad_analysis::Code::DuplicateTriangle=>Some((ad_heal::RepairKind::DuplicateTriangles,"Полный расчёт удаления всех повторов этого исходного примитива. Модель не изменяется до «Применить».")),
+                                        ad_analysis::Code::ZeroArea=>Some((ad_heal::RepairKind::DegenerateTriangles,"Полный расчёт удаления всех треугольников нулевой площади этого исходного примитива. Модель не изменяется до «Применить».")),
+                                        _=>None,
+                                    };
+                                    if let Some((kind,hint))=repair {
                                         ui.horizontal(|ui| {
                                             ui.label(&metadata);
-                                            let button=ui.add_enabled(can_preview,egui::Button::new("Предпросмотр ремонта…").small()).on_hover_text("Полный расчёт удаления всех повторов этого исходного примитива. Модель не изменяется до «Применить».");
+                                            let button=ui.add_enabled(can_preview,egui::Button::new("Предпросмотр ремонта…").small()).on_hover_text(hint);
                                             if preview_rect==egui::Rect::NOTHING {preview_rect=button.rect;}
-                                            if button.clicked() {preview=Some(finding.mesh);}
+                                            if button.clicked() {preview=Some((finding.mesh,kind));}
                                         });
                                     } else {
                                         ui.add(egui::Label::new(&metadata).truncate()).on_hover_text(metadata);

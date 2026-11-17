@@ -11,15 +11,46 @@ use ad_document::{
     AssetError, AssetResult, Cancellation, CandidateIndices, DocumentStamp, DocumentTag,
     GeometrySnapshot, ImportLimits, MeshId, PreparedRemoval,
 };
-use ad_heal::{DuplicatePreview, PlanLimits, VerificationLimits};
+use ad_heal::{DuplicatePreview, PlanLimits, RepairKind, VerificationLimits};
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditKind {
     /// G002 for one explicit source primitive and all its references.
     RemoveDuplicates(MeshId),
+    /// G001 for one explicit source primitive and all its references.
+    RemoveDegenerate(MeshId),
     Undo,
     Redo,
+}
+impl EditKind {
+    /// The source primitive and repair kind of a repair edit.
+    pub fn repair(self) -> Option<(MeshId, RepairKind)> {
+        match self {
+            Self::RemoveDuplicates(mesh) => Some((mesh, RepairKind::DuplicateTriangles)),
+            Self::RemoveDegenerate(mesh) => Some((mesh, RepairKind::DegenerateTriangles)),
+            Self::Undo | Self::Redo => None,
+        }
+    }
+    pub fn from_repair(mesh: MeshId, kind: RepairKind) -> Self {
+        match kind {
+            RepairKind::DuplicateTriangles => Self::RemoveDuplicates(mesh),
+            RepairKind::DegenerateTriangles => Self::RemoveDegenerate(mesh),
+        }
+    }
+}
+/// Diagnostic rule a repair kind removes.
+pub fn target_code(kind: RepairKind) -> ad_analysis::Code {
+    match kind {
+        RepairKind::DuplicateTriangles => ad_analysis::Code::DuplicateTriangle,
+        RepairKind::DegenerateTriangles => ad_analysis::Code::ZeroArea,
+    }
+}
+pub fn repair_label(kind: RepairKind) -> &'static str {
+    match kind {
+        RepairKind::DuplicateTriangles => "G002",
+        RepairKind::DegenerateTriangles => "G001",
+    }
 }
 pub struct EditInput {
     pub session: Arc<Session>,
@@ -50,19 +81,20 @@ impl EditCandidate {
     /// Read-only facts for the Preview window; None for Undo/Redo.
     pub fn info(&self) -> Option<crate::viewer_ui::PreviewInfo> {
         let preview = self.preview?;
+        let (_, kind) = self.kind.repair()?;
+        let code = target_code(kind);
         let report = self.diagnostics.as_ref().ok();
         Some(crate::viewer_ui::PreviewInfo {
+            kind,
             mesh: preview.mesh,
             before: preview.before_triangles,
             after: preview.after_triangles,
             references: preview.source_node_references,
             complete: report.is_some_and(|r| r.is_complete()),
-            g002_left: report.map(|r| {
+            target_left: report.map(|r| {
                 r.findings
                     .iter()
-                    .filter(|f| {
-                        f.mesh == preview.mesh && f.code == ad_analysis::Code::DuplicateTriangle
-                    })
+                    .filter(|f| f.mesh == preview.mesh && f.code == code)
                     .map(|f| f.count)
                     .sum()
             }),
@@ -107,14 +139,23 @@ pub fn prepare_edit(
     }
     let (change, preview, removal);
     match kind {
-        EditKind::RemoveDuplicates(mesh) => {
-            let plan = ad_heal::plan_duplicates(
-                document,
-                base.tag(),
-                mesh,
-                PlanLimits::default(),
-                cancel,
-            )?;
+        EditKind::RemoveDuplicates(mesh) | EditKind::RemoveDegenerate(mesh) => {
+            let plan = match kind {
+                EditKind::RemoveDegenerate(_) => ad_heal::plan_degenerate(
+                    document,
+                    base.tag(),
+                    mesh,
+                    PlanLimits::default(),
+                    cancel,
+                )?,
+                _ => ad_heal::plan_duplicates(
+                    document,
+                    base.tag(),
+                    mesh,
+                    PlanLimits::default(),
+                    cancel,
+                )?,
+            };
             if plan.removed_triangles().is_empty() {
                 return Ok(EditOutcome::NoChange(plan.preview()));
             }
@@ -137,7 +178,7 @@ pub fn prepare_edit(
         Change::Redo => session.redo_candidate()?,
     };
     let view = document.candidate_view(candidate, cancel)?;
-    if matches!(kind, EditKind::RemoveDuplicates(_)) {
+    if kind.repair().is_some() {
         // G002-06: refuse before Apply if the result could not be saved by
         // the verified static exporter (ADR-0028), with its exact reason.
         ad_formats::preflight_changed_export(

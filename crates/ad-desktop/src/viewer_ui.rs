@@ -12,8 +12,8 @@ pub struct Actions {
     pub open: bool,
     pub fit: bool,
     pub cancel: bool,
-    /// Start a read-only G002 repair preview for this source primitive.
-    pub preview: Option<ad_document::MeshId>,
+    /// Start a read-only repair preview for this source primitive.
+    pub preview: Option<(ad_document::MeshId, ad_heal::RepairKind)>,
     pub apply: bool,
     pub discard_preview: bool,
     pub undo: bool,
@@ -21,16 +21,18 @@ pub struct Actions {
     pub cancel_edit: bool,
     pub save_copy: bool,
 }
-/// Facts of a prepared, not yet applied G002 repair (ADR-0031 Preview).
+/// Facts of a prepared, not yet applied repair (ADR-0031 Preview).
 #[derive(Clone)]
 pub struct PreviewInfo {
+    pub kind: ad_heal::RepairKind,
     pub mesh: ad_document::MeshId,
     pub before: usize,
     pub after: usize,
     /// Source node references, including inactive nodes; not visible copies.
     pub references: usize,
     pub complete: bool,
-    pub g002_left: Option<usize>,
+    /// Findings of the repaired rule left on this primitive after the edit.
+    pub target_left: Option<usize>,
     pub geometry_bytes: usize,
 }
 /// Edit state shown by the UI; owned and refreshed by the application.
@@ -391,20 +393,24 @@ impl ViewerUi {
             actions.preview=preview;
             if let Some(info)=self.edit.preview.clone() {
                 let ready=!loading && self.edit.busy.is_none();
-                egui::Window::new("Ремонт G002 · предпросмотр").collapsible(false).resizable(false).default_width(420.).show(&context,|ui| {
+                let code=crate::edits::repair_label(info.kind);
+                egui::Window::new(format!("Ремонт {code} · предпросмотр")).id(egui::Id::new("repair_preview")).collapsible(false).resizable(false).default_width(420.).show(&context,|ui| {
                     ui.strong(format!("Исходный примитив #{}",info.mesh.0));
                     ui.label(format!("Ссылок из узлов: {} (включая неактивные; это не число видимых копий).",info.references));
                     ui.label("Правка меняет общий примитив: все узлы, которые его используют, получат одинаковые индексы.");
                     ui.separator();
                     ui.label(format!("Треугольники: было {}, станет {} (удаляется {}).",info.before,info.after,info.before-info.after));
-                    ui.weak("Удаляются только точные повторы с тем же обходом; первый экземпляр, порядок и все атрибуты сохраняются.");
-                    match (info.complete,info.g002_left) {
-                        (true,Some(0))=>ui.label("Проверка результата: полный анализ, G002 в этом примитиве не останется."),
-                        (true,Some(n))=>ui.colored_label(Color32::from_rgb(255,190,120),format!("Проверка результата: полный анализ, G002 останется: {n}.")),
-                        _=>ui.colored_label(Color32::from_rgb(255,190,120),"Проверка результата неполная: отсутствие G002 не доказано."),
+                    ui.weak(match info.kind {
+                        ad_heal::RepairKind::DuplicateTriangles=>"Удаляются только точные повторы с тем же обходом; первый экземпляр, порядок и все атрибуты сохраняются.",
+                        ad_heal::RepairKind::DegenerateTriangles=>"Удаляются только треугольники точно нулевой площади (повторяющийся индекс или три вершины на одной прямой); остальные треугольники, их порядок, вершины и атрибуты сохраняются. Освободившиеся вершины остаются (G003).",
+                    });
+                    match (info.complete,info.target_left) {
+                        (true,Some(0))=>ui.label(format!("Проверка результата: полный анализ, {code} в этом примитиве не останется.")),
+                        (true,Some(n))=>ui.colored_label(Color32::from_rgb(255,190,120),format!("Проверка результата: полный анализ, {code} останется: {n}.")),
+                        _=>ui.colored_label(Color32::from_rgb(255,190,120),format!("Проверка результата неполная: отсутствие {code} не доказано.")),
                     };
                     ui.label("Сохранение: результат совместим с проверенным экспортом копии GLB.");
-                    ui.weak(format!("Новая сцена на GPU: {:.1} МиБ геометрии; текстуры загружаются заново. Новые G006 после удаления дублей — не обязательно новые дыры.",info.geometry_bytes as f64/1048576.));
+                    ui.weak(format!("Новая сцена на GPU: {:.1} МиБ геометрии; текстуры загружаются заново. Новые G006 после удаления треугольников — не обязательно новые дыры.",info.geometry_bytes as f64/1048576.));
                     ui.separator();
                     ui.horizontal(|ui| {
                         let apply=ui.add_enabled(ready,egui::Button::new("Применить")).on_hover_text("Опубликовать правку целиком: индексы, история, анализ и сцена. Отменяется через «Отменить правку».");
@@ -420,7 +426,7 @@ impl ViewerUi {
                 ui.label("Открыть: Ctrl+O или перетащить GLB в окно.");
                 ui.label("ЛКМ — вращение; ПКМ / средняя — перемещение; колесо — масштаб.");
                 ui.label("F — вписать модель; Esc — отменить загрузку или подготовку правки; H — справка.");
-                ui.label("Ремонт G002: «Диагностика», затем «Предпросмотр ремонта…», затем «Применить». Ctrl+Z — отменить правку, Ctrl+Y — вернуть.");
+                ui.label("Ремонт G001 и G002: «Диагностика», затем «Предпросмотр ремонта…» в строке замечания, затем «Применить». Ctrl+Z — отменить правку, Ctrl+Y — вернуть.");
                 ui.label("«Сохранить копию…» (Ctrl+Shift+S) пишет проверенный GLB только в новый файл и заново открывает его для сверки. При закрытии или открытии другой модели с несохранёнными правками программа спросит, что делать.");
                 ui.separator();ui.label("Выбор узла показывает сведения. Подсветка узлов появится позднее.");
                 ui.label("В Сводке: базовый вид или PBR с авторскими нормалями, металлом и шероховатостью. Экспозиция и свет меняют только просмотр.");
@@ -762,12 +768,13 @@ mod tests {
     }
     fn preview_info() -> PreviewInfo {
         PreviewInfo {
+            kind: ad_heal::RepairKind::DuplicateTriangles,
             mesh: ad_document::MeshId(0),
             before: 992,
             after: 960,
             references: 1,
             complete: true,
-            g002_left: Some(0),
+            target_left: Some(0),
             geometry_bytes: 261_504,
         }
     }
@@ -853,7 +860,13 @@ mod tests {
             let rect = ui.preview_rect;
             click(&mut ui, Some(&asset), rect, (1400., 1000.))
         };
-        assert_eq!(actions.preview, Some(ad_document::MeshId(0)));
+        assert_eq!(
+            actions.preview,
+            Some((
+                ad_document::MeshId(0),
+                ad_heal::RepairKind::DuplicateTriangles
+            ))
+        );
         assert_eq!(
             asset.document().revision(),
             0,
@@ -922,6 +935,36 @@ mod tests {
         assert!(
             missing.is_empty(),
             "glyphs missing from bundled fonts: {missing:?}"
+        );
+    }
+    #[test]
+    fn g001_finding_offers_a_degenerate_repair_preview() {
+        let asset = crate::imports::prepare(&crate::worker::Request {
+            ticket: 1,
+            input: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/Geometry_Findings.glb"),
+            cancel: ad_document::Cancellation::default(),
+        })
+        .unwrap();
+        let mut ui = ViewerUi {
+            show_diagnostics: true,
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            let (out, _, _) = ui.layout(raw(1400., 1000.), Some(&asset), false);
+            out.drop_without_applying_deltas();
+        }
+        let actions = {
+            let rect = ui.preview_rect;
+            click(&mut ui, Some(&asset), rect, (1400., 1000.))
+        };
+        assert_eq!(
+            actions.preview,
+            Some((
+                ad_document::MeshId(0),
+                ad_heal::RepairKind::DegenerateTriangles
+            )),
+            "the first repairable row is G001"
         );
     }
 }
