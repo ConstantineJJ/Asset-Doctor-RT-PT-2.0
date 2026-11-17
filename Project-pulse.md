@@ -1,5 +1,15 @@
 # Project pulse
 
+## 2026-11-17 — G002 этап B3: подготовка и включение GPU-сцены разделены, инъекция отказа
+
+- Ветка claude/g002-heal. Renderer::stage_scene выполняет всё, что может упасть: загрузку кандидата GpuScene::new (включая все текстуры) и wait_idle. Возвращает StagedScene, который держит &mut Renderer, поэтому до activate() нельзя отправить кадр. activate() без Result: присваивает сцену, старая освобождается после уже выполненного ожидания простоя. set_scene = stage + activate; путь импорта не изменился.
+- Шов для smoke: Renderer::inject_scene_fault(Some(Upload|Wait)) — одноразовый отказ после реальной загрузки кандидата (Upload) или после реального wait_idle (Wait). Desktop принимает --smoke-gpu-fault upload|wait только вместе с --smoke-import и --smoke-bad; иначе отказ при запуске. Сценарий: после проверки плохой замены та же хорошая модель импортируется ещё раз с инъекцией; проверяется, что тег GPU-сцены и текущий документ остались прежними (document=1, revision=0), затем идут resize/minimize/restore/close на старой сцене.
+- Замеры (addendum 4, без оптимизации): лог gpu_scene_published теперь содержит stage_ms и учётные байты геометрических буферов. Normal_Checker: 2244 вершины, 3840 треугольников, 261504 байт, 5–6 мс; текстуры по-прежнему перезаливаются при каждой сцене (mip_bytes в отдельной строке). VRAM драйвера не измерялась: VK_EXT_memory_budget нет. Тяжёлая синтетическая модель не замерялась — перенесено в C, где появится реальный Apply.
+- RED→GREEN: unit-тест разбора SceneFault не компилировался; import-smoke с -GpuFault падал с «Unknown argument: --smoke-gpu-fault». После реализации оба проходят.
+- 179 тестов PASS (13 renderer, остальные как в B2). fmt --check, clippy all-targets -D warnings, release-сборка, cargo-deny PASS. Нативные smoke с запрошенной sync-validation: normal+PBR с upload и wait, uv с wait — gpu_fault_smoke preserved=true, SMOKE_PASS 26 кадров, 0 ошибок validation; без инъекции normal/geometry/static/uv и heal-smoke — SMOKE_PASS, 0 ошибок.
+- Предупреждение: при ручной проверке отказа флага я запустил exe без --smoke, и у владельца появился нативный диалог ошибки (процесс закрылся после OK). Впредь ручные запуски — только со smoke-флагами, которые подавляют диалоги.
+- Ограничения: DEVICE_LOST и реальные отказы драйвера не воспроизводятся — инъекция моделирует только точку отказа. Следующий шаг: B4 — desktop Arc<Session>, фоновая подготовка правки, Generation и публикация stage_commit + stage_scene с тестами отказов, без кнопки Heal.
+
 ## 2026-11-17 — G002 этап B2: проверка и публикация правки разделены в Session
 
 - Ветка claude/g002-heal. ad-document: stage_triangle_removal и stage_exchange выполняют все проверки (тег и отмена, приватный origin, бюджет индексов, ёмкость, переполнение ревизии) без мутации и возвращают StagedRemoval/StagedExchange, которые держат &mut документа. publish() без Result: только обмен буферов и запись уже проверенной ревизии. apply_triangle_removal и exchange_indices стали обёртками stage+publish; no-op по-прежнему проверяется и возвращает «без изменений». IndexExchange::candidate — read-only цель Undo/Redo с тегом revision+1.
