@@ -257,7 +257,7 @@ impl ViewerUi {
                         #[cfg(test)]
                         {self.save_rect=save.rect;}
                         actions.save_copy|=save.clicked();
-                        if self.edit.dirty {ui.colored_label(Color32::from_rgb(255,190,120),"● не сохранено").on_hover_text("Есть правки, которых нет ни в исходном файле, ни в последней проверенной копии.");}
+                        if self.edit.dirty {ui.colored_label(Color32::from_rgb(255,190,120),"* не сохранено").on_hover_text("Есть правки, которых нет ни в исходном файле, ни в последней проверенной копии.");}
                     }
                     if width>=680. {
                         ui.add_enabled_ui(width>=780.,|ui|{ui.toggle_value(&mut self.show_tree,"Дерево");});
@@ -396,7 +396,7 @@ impl ViewerUi {
                     ui.label(format!("Ссылок из узлов: {} (включая неактивные; это не число видимых копий).",info.references));
                     ui.label("Правка меняет общий примитив: все узлы, которые его используют, получат одинаковые индексы.");
                     ui.separator();
-                    ui.label(format!("Треугольники: {} → {} (удаляется {}).",info.before,info.after,info.before-info.after));
+                    ui.label(format!("Треугольники: было {}, станет {} (удаляется {}).",info.before,info.after,info.before-info.after));
                     ui.weak("Удаляются только точные повторы с тем же обходом; первый экземпляр, порядок и все атрибуты сохраняются.");
                     match (info.complete,info.g002_left) {
                         (true,Some(0))=>ui.label("Проверка результата: полный анализ, G002 в этом примитиве не останется."),
@@ -420,7 +420,7 @@ impl ViewerUi {
                 ui.label("Открыть: Ctrl+O или перетащить GLB в окно.");
                 ui.label("ЛКМ — вращение; ПКМ / средняя — перемещение; колесо — масштаб.");
                 ui.label("F — вписать модель; Esc — отменить загрузку или подготовку правки; H — справка.");
-                ui.label("Ремонт G002: Диагностика → «Предпросмотр ремонта…» → «Применить». Ctrl+Z — отменить правку, Ctrl+Y — вернуть.");
+                ui.label("Ремонт G002: «Диагностика», затем «Предпросмотр ремонта…», затем «Применить». Ctrl+Z — отменить правку, Ctrl+Y — вернуть.");
                 ui.label("«Сохранить копию…» (Ctrl+Shift+S) пишет проверенный GLB только в новый файл и заново открывает его для сверки. При закрытии или открытии другой модели с несохранёнными правками программа спросит, что делать.");
                 ui.separator();ui.label("Выбор узла показывает сведения. Подсветка узлов появится позднее.");
                 ui.label("В Сводке: базовый вид или PBR с авторскими нормалями, металлом и шероховатостью. Экспозиция и свет меняют только просмотр.");
@@ -886,5 +886,42 @@ mod tests {
             click(&mut ui, None, rect, (1200., 760.))
         };
         assert!(!actions.save_copy);
+    }
+    /// Every non-ASCII character inside UI string literals must exist in the
+    /// bundled egui fonts; otherwise it renders as an empty box (found in the
+    /// manual G002 check: "992 → 960").
+    #[test]
+    fn ui_string_literals_use_only_glyphs_present_in_bundled_fonts() {
+        let mut ui = ViewerUi::default();
+        let (out, _, _) = ui.layout(raw(800., 600.), None, false);
+        out.drop_without_applying_deltas();
+        let sources = [
+            include_str!("viewer_ui.rs"),
+            include_str!("diagnostic_ui.rs"),
+            include_str!("main.rs"),
+        ];
+        let mut missing = std::collections::BTreeSet::new();
+        for source in sources {
+            for line in source.lines() {
+                let code = line.split("//").next().unwrap_or("");
+                for (i, literal) in code.split('"').enumerate() {
+                    if i % 2 == 0 {
+                        continue;
+                    }
+                    for c in literal.chars().filter(|c| !c.is_ascii()) {
+                        let present = ui
+                            .context
+                            .fonts_mut(|f| f.has_glyph(&egui::FontId::proportional(14.), c));
+                        if !present {
+                            missing.insert(c);
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "glyphs missing from bundled fonts: {missing:?}"
+        );
     }
 }

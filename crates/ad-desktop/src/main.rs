@@ -291,7 +291,7 @@ impl App {
             let title = if let Some(asset) = self.current.as_ref() {
                 format!(
                     "{}Asset Doctor RT-PT 2.0 — {} | {} vertices · {} triangles | Ctrl+O: open · F: fit · H: help",
-                    if self.is_dirty() { "● " } else { "" },
+                    if self.is_dirty() { "* " } else { "" },
                     asset.document().name(),
                     asset.snapshot().positions.len(),
                     asset.snapshot().indices.len() / 3
