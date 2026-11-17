@@ -19,7 +19,8 @@ Full roadmap and all76function/request statuses:
   - [x] B3: Renderer stage_scene/activate; one-shot upload/wait fault injection via --smoke-gpu-fault keeps published scene (179 tests, native 0 validation errors).
   - [x] B4: desktop Arc<Session>, shared latest-ticket worker, Generation, publish_edit with stale/busy/cancel/GPU-failure tests; native --smoke-edit Apply/Undo/Redo with upload/wait fault (185 tests, 0 validation errors). No Heal button.
   - [x] C: preflight_changed_export before Apply (G002-06); Diagnostics → Preview → Apply, Undo/Redo buttons and Ctrl+Z/Ctrl+Y; native smoke and heavy 1.5M-triangle measurement (191 tests). Manual UI acceptance not done.
-  - [ ] D: Save Copy UI, receipt-based dirty, close/replace guard, end-to-end demonstrator.
+  - [x] D: Save Copy UI with disk readback and fresh reimport, receipt-based dirty, close/open/drop guard, end-to-end demonstrator (197 tests). Report G002_HEAL_WORKFLOW_REPORT_2026-11-17.md.
+  - [ ] Owner: manual UI acceptance of the G002 workflow, then merge/PR decision.
 
 - [x] A1a: Initial source inventory: 66 functions/scenarios, all 10 REQ IDs, exact evidence and source hashes. Verify: tools/audit_legacy.py. Full semantic UI/native audit remains open below.
 - [ ] A1b: Map all 197 UI declaration sites; classify 110 state candidates; complete parameter/error/native workflow acceptance. See reference/LEGACY_GAP_REGISTER.md.

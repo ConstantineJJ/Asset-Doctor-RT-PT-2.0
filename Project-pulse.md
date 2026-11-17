@@ -1,5 +1,17 @@
 # Project pulse
 
+## 2026-11-17 — G002 этап D: Save Copy, несохранённые правки, сквозной демонстратор
+
+- Ветка claude/g002-heal. saving.rs: save_copy_job — prepare_glb (VerifiedGlb) → ad_storage::save_copy только в новый путь → побайтный readback файла с диска → независимый import_glb и ad_formats::compare_reimported (новая публичная обёртка над существующим roundtrip::compare). После публикации файла проверка идёт со своим токеном: поздняя отмена не превращает успех в отказ. Фоновый воркер тот же, вход (клон Session) освобождается до результата; Worker::interrupt отменяет без потери квитанции.
+- Dirty (решение 2): Confirmed = импорт или квитанция SavedCopy; «не сохранено», если ревизия/origin отличаются. Квитанция принимается только для текущей ревизии; устаревшая — файл есть, но правки по-прежнему не сохранены. Рабочий путь не меняется.
+- UI: «Сохранить копию…» (Ctrl+Shift+S) с нативным диалогом без перезаписи, «● не сохранено» в панели и «●» в заголовке, статус сохранения с отменой. Защита закрытия, Ctrl+O/кнопки «Открыть» и перетаскивания файла: при несохранённых правках MessageBox «Да — сохранить копию и продолжить / Нет — без сохранения / Отмена»; при неудачном или отменённом сохранении действие не выполняется. Во время сохранения закрытие откладывается.
+- RED→GREEN: 4 теста saving и UI-тест кнопки не компилировались без API; 1 тест formats на compare_reimported. Тест устаревшего сохранения сначала был написан с ошибкой (держал клон Session и получил правильный отказ «занято») — переписан, поведение кода не менялось.
+- 197 тестов PASS (36/17/38/27/41/12/13/13). fmt --check, clippy all-targets -D warnings, release, cargo-deny PASS. Cargo.lock: только связь ad-desktop → ad-storage.
+- Нативный демонстратор import-smoke -Scene heal -Edit -Save -Pbr с sync-validation, без отказа и с -GpuFault upload: Apply/Undo/Redo → unsaved_guard dirty=true Ask → запись поверх existing.glb отклонена (os error 183), файл не изменён, dirty остаётся → новая копия 79364 байт, readback и повторный импорт, accepted=true dirty=false → unsaved_guard Proceed → копия открыта заново: 960 треугольников, анализ полный, G002 нет. Исходник по SHA256 не изменён, staging-файлов не осталось, 0 ошибок validation. Регрессии static/uv/normal/geometry/color/components, heal-smoke и пустое окно (smoke.ps1) — PASS.
+- Инструменты: smoke.ps1 получил ту же правку для PowerShell 5.1 (кэш handle). В import-smoke хеш исходника сначала считался до выбора сцены uv — ложная ошибка на uv, исправлено.
+- Статусы HEAL-01, REPAIR-06, EXP-01: NOT_STARTED → PARTIAL (сводка: Частично 22, Не реализовано 47). Не IMPLEMENTED_SCOPED: нет ручной приёмки UI владельцем. Отчёт G002_HEAL_WORKFLOW_REPORT_2026-11-17.md с картой AT-01…AT-16 и ограничениями.
+- Не проверено: ручное нажатие кнопок и нативных диалогов (решение 7), инъекция отказа snapshot/анализа в desktop, физический сбой записи в desktop (есть в ad-storage). Следующий шаг — решение владельца: ручная приёмка UI, слияние ветки/PR, затем следующий вид ремонта.
+
 ## 2026-11-17 — G002 этап C: preflight экспорта и Preview/Apply/Undo/Redo в UI
 
 - Ветка claude/g002-heal. ad-formats::preflight_changed_export(view) — проверка G002-06 до Apply по DocumentView: те же bindings, что и у экспорта (порядок и только удаление), строгие чанки, core-only метаданные, лимиты output/metadata/changed-primitives, с учётом уже сделанных правок и кандидата. Без сериализации и повторного импорта; полный VerifiedGlb остаётся за Save Copy. Общие проверки вынесены в changed_admission, prepare_glb использует их же — второго пути нет.

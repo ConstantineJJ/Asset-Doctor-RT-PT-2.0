@@ -167,4 +167,7 @@ borrows, then publishes history, scene and one snapshot/report/stamp generation
 without fallible steps between. Undo/Redo use the same path; no compensation.
 Stages B1–B4 implement it: desktop's current model is `PreparedAsset { session:
 Arc<Session>, generation }`, import and edit preparation share one latest-ticket
-worker, and `publish_edit` drives Session and GPU stages. No user Heal control yet.
+worker, and `publish_edit` drives Session and GPU stages. Stages C–D add the
+G002 preview/Apply/Undo/Redo UI, changed-export preflight and Save Copy: verified
+new-path write, disk readback and fresh reimport; `saving::Confirmed` binds the
+unsaved state to the last import or receipt, and a guard protects close/replace.
