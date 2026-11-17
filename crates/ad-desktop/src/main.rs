@@ -106,8 +106,12 @@ struct App {
     editing: bool,
     edit_busy: String,
     edit_started: Instant,
-    /// Open was requested from the UI; resolved with the unsaved guard in tick.
-    pending_open: bool,
+    /// Close/open/drop requested; resolved with the unsaved guard in tick.
+    /// Modal dialogs shown from inside a winit window-event handler stay
+    /// invisible while the owner window is disabled (observed as a hang).
+    pending_guard: Option<AfterSave>,
+    /// Save Copy requested; the native dialog opens from tick, not an event.
+    pending_save: bool,
     /// Prepared, verified but unpublished G002 repair shown in Preview.
     pending_preview: Option<EditCandidate>,
     /// ADR-0031 B4 smoke without UI controls: queued edits on the G002 mesh,
@@ -125,6 +129,8 @@ struct App {
     after_save: Option<AfterSave>,
     /// Smoke-only Save Copy sequence: refused existing target, new copy, reopen.
     save_smoke: Option<(PathBuf, u8)>,
+    /// Smoke-only close guard: 1 = answer Cancel, 2 = answer No, 3 = done.
+    smoke_guard: u8,
     ui: viewer_ui::ViewerUi,
 }
 
@@ -199,6 +205,7 @@ impl App {
                     || !self.failed_replacement_preserved
                     || (self.smoke_gpu_fault.is_some() && !self.gpu_fault_preserved)
                     || (self.smoke_edit && !self.edit_smoke_done)
+                    || !matches!(self.smoke_guard, 0 | 3)
                     || mesh_frames < 15
                     || (pbr_required && pbr_frames < 15)
                     || (mr_required && mr_frames < 15)
@@ -791,7 +798,15 @@ impl App {
             let Some(window) = self.window.as_ref() else {
                 return;
             };
+            match self.smoke_guard {
+                1 => native::answer_next_dialog(saving::UnsavedChoice::Cancel),
+                2 => native::answer_next_dialog(saving::UnsavedChoice::Discard),
+                _ => (),
+            }
             let choice = native::ask_unsaved(window, after.verb());
+            if self.smoke_guard == 2 {
+                self.smoke_guard = 3;
+            }
             decision = guard(dirty, Some(choice));
             eprintln!("unsaved_guard dirty=true choice={choice:?} decision={decision:?}");
         }
@@ -800,6 +815,17 @@ impl App {
             Guard::SaveThenProceed => self.start_save(Some(after)),
             Guard::Stay | Guard::Ask => {
                 self.ui.status = "Действие отменено; модель и правки сохранены в окне".into();
+                if self.smoke_guard == 1 && after == AfterSave::Close {
+                    eprintln!(
+                        "unsaved_guard_stayed window_open={} dirty={}",
+                        !self.closed,
+                        self.is_dirty()
+                    );
+                    self.smoke_guard = 2;
+                    if let Some(window) = self.window.as_ref() {
+                        let _ = native::request_close(window);
+                    }
+                }
             }
         }
     }
@@ -871,10 +897,10 @@ impl App {
         }
         // Open native dialogs only after the acquired image has been submitted.
         if actions.open {
-            self.pending_open = true;
+            self.pending_guard = Some(AfterSave::Choose);
         }
         if actions.save_copy {
-            self.start_save(None);
+            self.pending_save = true;
         }
         if let Some(mesh) = actions.preview {
             self.request_edit(EditKind::RemoveDuplicates(mesh));
@@ -941,8 +967,14 @@ impl App {
         self.poll_import()?;
         self.poll_edit()?;
         self.poll_save(event_loop)?;
-        if std::mem::take(&mut self.pending_open) {
-            self.guarded(AfterSave::Choose, event_loop);
+        if std::mem::take(&mut self.pending_save) {
+            self.start_save(None);
+        }
+        if let Some(after) = self.pending_guard.take() {
+            self.guarded(after, event_loop);
+            if self.closed {
+                return Ok(());
+            }
         }
         self.advance_edit_smoke()?;
         if self.smoke_import
@@ -1086,7 +1118,7 @@ impl ApplicationHandler for App {
                 Ok(())
             }
             WindowEvent::DroppedFile(path) => {
-                self.guarded(AfterSave::Open(path), event_loop);
+                self.pending_guard = Some(AfterSave::Open(path));
                 Ok(())
             }
             WindowEvent::ModifiersChanged(modifiers) => {
@@ -1103,12 +1135,12 @@ impl ApplicationHandler for App {
             {
                 match event.physical_key {
                     PhysicalKey::Code(KeyCode::KeyO) if self.modifiers.control_key() => {
-                        self.guarded(AfterSave::Choose, event_loop)
+                        self.pending_guard = Some(AfterSave::Choose)
                     }
                     PhysicalKey::Code(KeyCode::KeyS)
                         if self.modifiers.control_key() && self.modifiers.shift_key() =>
                     {
-                        self.start_save(None)
+                        self.pending_save = true
                     }
                     PhysicalKey::Code(KeyCode::KeyF) => {
                         if let Some(asset) = self.current.as_ref() {
@@ -1179,11 +1211,11 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CloseRequested => {
                 eprintln!("native_close_requested");
-                if self.smoke.is_some() {
+                if self.smoke.is_some() && self.smoke_guard == 0 {
                     self.close_requested = true;
                     self.finish(event_loop);
                 } else {
-                    self.guarded(AfterSave::Close, event_loop);
+                    self.pending_guard = Some(AfterSave::Close);
                 }
                 Ok(())
             }
@@ -1243,6 +1275,7 @@ fn run() -> GpuResult<()> {
     let mut smoke_gpu_fault = None;
     let mut smoke_edit = false;
     let mut smoke_save = None;
+    let mut smoke_guard = 0u8;
     let mut ui = viewer_ui::ViewerUi::default();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -1274,6 +1307,7 @@ fn run() -> GpuResult<()> {
                 ))
             }
             "--smoke-edit" => smoke_edit = true,
+            "--smoke-guard" => smoke_guard = 1,
             "--smoke-save" => {
                 smoke_save = Some(PathBuf::from(
                     args.next()
@@ -1295,6 +1329,9 @@ fn run() -> GpuResult<()> {
             }
             _ => return Err(format!("Unknown argument: {arg}").into()),
         }
+    }
+    if smoke_guard > 0 && (!smoke_edit || smoke_save.is_some()) {
+        return Err("--smoke-guard requires --smoke-edit without --smoke-save".into());
     }
     if smoke_save.is_some() && !smoke_edit {
         return Err("--smoke-save requires --smoke-edit".into());
@@ -1345,7 +1382,8 @@ fn run() -> GpuResult<()> {
         editing: false,
         edit_busy: String::new(),
         edit_started: Instant::now(),
-        pending_open: false,
+        pending_guard: None,
+        pending_save: false,
         pending_preview: None,
         smoke_edit,
         edit_fault,
@@ -1358,6 +1396,7 @@ fn run() -> GpuResult<()> {
         confirmed: None,
         after_save: None,
         save_smoke: smoke_save.map(|dir| (dir, 0)),
+        smoke_guard,
         ui,
     };
     event_loop.run_app(&mut app)?;
