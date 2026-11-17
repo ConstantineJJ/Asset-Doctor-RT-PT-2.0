@@ -75,6 +75,17 @@ impl IndexExchange {
     pub fn retained_bytes(&self) -> usize {
         self.retained_bytes
     }
+    /// Read-only indices this exchange would publish next (Undo or Redo
+    /// target), tagged with the revision that publication would produce.
+    pub fn candidate<'a>(
+        &'a self,
+        document: &'a AssetDocument,
+    ) -> AssetResult<crate::CandidateIndices<'a>> {
+        if !Arc::ptr_eq(&self.owner, &document.origin) {
+            return Err(conflict());
+        }
+        crate::CandidateIndices::new(document, self.mesh, &self.alternate)
+    }
 }
 pub struct AppliedRemoval {
     pub tag: DocumentTag,
@@ -240,38 +251,59 @@ impl AssetDocument {
         Ok(())
     }
     /// Low-level command commit. Application history must admit before calling.
+    /// A no-op plan is verified and returns no change; otherwise stage + publish.
     pub fn apply_triangle_removal(
         &mut self,
         plan: PreparedRemoval,
         limits: ImportLimits,
         cancel: &Cancellation,
     ) -> AssetResult<AppliedRemoval> {
-        self.verify_tag(plan.preview.tag, cancel)?;
-        if !Arc::ptr_eq(&self.origin, &plan.owner) {
-            return Err(conflict());
-        }
-        let Some(mut replacement) = plan.replacement else {
+        if plan.replacement.is_none() {
+            self.verify_tag(plan.preview.tag, cancel)?;
+            if !Arc::ptr_eq(&self.origin, &plan.owner) {
+                return Err(conflict());
+            }
             return Ok(AppliedRemoval {
                 tag: self.tag(),
                 change: None,
             });
+        }
+        let change = self.stage_triangle_removal(plan, limits, cancel)?.publish();
+        Ok(AppliedRemoval {
+            tag: self.tag(),
+            change: Some(change),
+        })
+    }
+    /// Runs every check of a non-empty removal without mutation (ADR-0031).
+    /// Dropping the stage leaves the document untouched; `publish` cannot fail.
+    pub fn stage_triangle_removal(
+        &mut self,
+        plan: PreparedRemoval,
+        limits: ImportLimits,
+        cancel: &Cancellation,
+    ) -> AssetResult<StagedRemoval<'_>> {
+        self.verify_tag(plan.preview.tag, cancel)?;
+        if !Arc::ptr_eq(&self.origin, &plan.owner) {
+            return Err(conflict());
+        }
+        let Some(replacement) = plan.replacement else {
+            return Err(AssetError::new(
+                ErrorCode::Unsupported,
+                "A no-op command has nothing to publish",
+            ));
         };
         self.check_index_budget(plan.preview.mesh, replacement.len(), limits, cancel)?;
         let next = self.revision.checked_add(1).ok_or_else(budget)?;
         cancel.check()?;
-        std::mem::swap(
-            &mut self.parts.meshes[plan.preview.mesh.0].indices,
-            &mut replacement,
-        );
-        self.revision = next;
-        Ok(AppliedRemoval {
-            tag: self.tag(),
-            change: Some(IndexExchange {
+        Ok(StagedRemoval {
+            document: self,
+            change: IndexExchange {
                 owner: plan.owner,
                 mesh: plan.preview.mesh,
                 alternate: replacement,
                 retained_bytes: plan.retained_bytes,
-            }),
+            },
+            next,
         })
     }
     /// Exchange an applied alternate buffer for Undo/Redo. No geometry allocation.
@@ -284,6 +316,18 @@ impl AssetDocument {
         limits: ImportLimits,
         cancel: &Cancellation,
     ) -> AssetResult<DocumentTag> {
+        Ok(self
+            .stage_exchange(expected, change, limits, cancel)?
+            .publish())
+    }
+    /// Runs every check of an Undo/Redo exchange without mutation (ADR-0031).
+    pub fn stage_exchange<'a>(
+        &'a mut self,
+        expected: DocumentTag,
+        change: &'a mut IndexExchange,
+        limits: ImportLimits,
+        cancel: &Cancellation,
+    ) -> AssetResult<StagedExchange<'a>> {
         self.verify_tag(expected, cancel)?;
         if !Arc::ptr_eq(&self.origin, &change.owner) {
             return Err(conflict());
@@ -301,12 +345,59 @@ impl AssetDocument {
         self.check_index_budget(change.mesh, change.alternate.len(), limits, cancel)?;
         let next = self.revision.checked_add(1).ok_or_else(budget)?;
         cancel.check()?;
+        Ok(StagedExchange {
+            document: self,
+            change,
+            next,
+        })
+    }
+}
+
+/// A fully checked removal. Holding it borrows the document mutably, so no
+/// other change can intervene; `publish` only swaps buffers and sets revision.
+pub struct StagedRemoval<'a> {
+    document: &'a mut AssetDocument,
+    change: IndexExchange,
+    next: u64,
+}
+impl StagedRemoval<'_> {
+    pub fn tag_after(&self) -> DocumentTag {
+        DocumentTag {
+            document: self.document.id(),
+            revision: self.next,
+        }
+    }
+    /// Infallible: no allocation, no checks. Returns the Undo payload.
+    pub fn publish(mut self) -> IndexExchange {
         std::mem::swap(
-            &mut self.parts.meshes[change.mesh.0].indices,
-            &mut change.alternate,
+            &mut self.document.parts.meshes[self.change.mesh.0].indices,
+            &mut self.change.alternate,
         );
-        self.revision = next;
-        Ok(self.tag())
+        self.document.revision = self.next;
+        self.change
+    }
+}
+/// A fully checked Undo/Redo exchange; see [`StagedRemoval`].
+pub struct StagedExchange<'a> {
+    document: &'a mut AssetDocument,
+    change: &'a mut IndexExchange,
+    next: u64,
+}
+impl StagedExchange<'_> {
+    pub fn tag_after(&self) -> DocumentTag {
+        DocumentTag {
+            document: self.document.id(),
+            revision: self.next,
+        }
+    }
+    /// Infallible: swaps the alternate buffer and sets the checked revision.
+    pub fn publish(self) -> DocumentTag {
+        std::mem::swap(
+            &mut self.document.parts.meshes[self.change.mesh.0].indices,
+            &mut self.change.alternate,
+        );
+        self.document.revision = self.next;
+        self.document.tag()
     }
 }
 

@@ -6,6 +6,7 @@ mod uv;
 mod view;
 pub use indices::{
     AppliedRemoval, DocumentStamp, DocumentTag, IndexExchange, PreparedRemoval, RemovalPreview,
+    StagedExchange, StagedRemoval,
 };
 pub use view::{CandidateIndices, DocumentView};
 #[cfg(test)]

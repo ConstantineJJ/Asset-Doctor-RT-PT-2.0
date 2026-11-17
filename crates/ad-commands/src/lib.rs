@@ -1,7 +1,7 @@
 //! Revision-checked CPU command sessions; no renderer, UI, file IO or repair planner.
 use ad_document::{
-    AssetDocument, AssetError, AssetResult, Cancellation, DocumentTag, ErrorCode, ImportLimits,
-    IndexExchange, MeshId, PreparedRemoval,
+    AssetDocument, AssetError, AssetResult, Cancellation, CandidateIndices, DocumentTag, ErrorCode,
+    ImportLimits, IndexExchange, MeshId, PreparedRemoval, StagedExchange, StagedRemoval,
 };
 
 #[derive(Clone, Copy)]
@@ -162,8 +162,8 @@ impl Session {
         plan: PreparedRemoval,
         cancel: &Cancellation,
     ) -> AssetResult<CommandOutcome> {
-        self.document.verify_tag(plan.preview().tag, cancel)?;
         if plan.preview().before_triangles == plan.preview().after_triangles {
+            self.document.verify_tag(plan.preview().tag, cancel)?;
             let applied = self
                 .document
                 .apply_triangle_removal(plan, self.import_limits, cancel)?;
@@ -172,66 +172,202 @@ impl Session {
                 changed: false,
             });
         }
-        let payload = self.admit(plan.retained_bytes())?;
-        let next = self.next_state.checked_add(1).ok_or_else(budget)?;
-        let applied = self
-            .document
-            .apply_triangle_removal(plan, self.import_limits, cancel)?;
-        if let Some(change) = applied.change {
-            // Capacity was reserved at construction; no allocation/fallible work
-            // remains after document commit. Discard redo only on actual success.
-            self.history.truncate(self.cursor);
-            self.history.push(Entry {
-                change,
-                before: self.state,
-                after: next,
-            });
-            self.cursor += 1;
-            self.state = next;
-            self.next_state = next;
-            self.payload_bytes = payload;
-        }
         Ok(CommandOutcome {
-            tag: applied.tag,
+            tag: self.stage_commit(plan, cancel)?.publish(),
             changed: true,
         })
+    }
+    /// Every history and document check of a new command, without mutation
+    /// (ADR-0031). Dropping the stage keeps document, cursor and redo intact;
+    /// only `StagedEdit::publish` discards redo. No-op plans are refused.
+    pub fn stage_commit(
+        &mut self,
+        plan: PreparedRemoval,
+        cancel: &Cancellation,
+    ) -> AssetResult<StagedEdit<'_>> {
+        self.document.verify_tag(plan.preview().tag, cancel)?;
+        let payload = self.admit(plan.retained_bytes())?;
+        let next = self.next_state.checked_add(1).ok_or_else(budget)?;
+        let before = self.state;
+        let Self {
+            document,
+            history,
+            cursor,
+            state,
+            next_state,
+            payload_bytes,
+            import_limits,
+            ..
+        } = self;
+        let change = document.stage_triangle_removal(plan, *import_limits, cancel)?;
+        Ok(StagedEdit(Stage::Commit {
+            change,
+            history,
+            cursor,
+            state,
+            next_state,
+            payload_bytes,
+            payload,
+            before,
+            next,
+        }))
     }
     pub fn undo(
         &mut self,
         expected: DocumentTag,
         cancel: &Cancellation,
     ) -> AssetResult<DocumentTag> {
-        self.document.verify_tag(expected, cancel)?;
-        let index = self.cursor.checked_sub(1).ok_or_else(empty)?;
-        let entry = &mut self.history[index];
-        let tag = self.document.exchange_indices(
-            expected,
-            &mut entry.change,
-            self.import_limits,
-            cancel,
-        )?;
-        self.state = entry.before;
-        self.cursor = index;
-        Ok(tag)
+        Ok(self.stage_undo(expected, cancel)?.publish())
     }
     pub fn redo(
         &mut self,
         expected: DocumentTag,
         cancel: &Cancellation,
     ) -> AssetResult<DocumentTag> {
+        Ok(self.stage_redo(expected, cancel)?.publish())
+    }
+    pub fn stage_undo(
+        &mut self,
+        expected: DocumentTag,
+        cancel: &Cancellation,
+    ) -> AssetResult<StagedEdit<'_>> {
         self.document.verify_tag(expected, cancel)?;
-        let entry = self.history.get_mut(self.cursor).ok_or_else(empty)?;
-        let tag = self.document.exchange_indices(
-            expected,
-            &mut entry.change,
-            self.import_limits,
-            cancel,
-        )?;
-        self.state = entry.after;
-        self.cursor += 1;
-        Ok(tag)
+        let index = self.cursor.checked_sub(1).ok_or_else(empty)?;
+        self.stage_move(expected, index, index, false, cancel)
+    }
+    pub fn stage_redo(
+        &mut self,
+        expected: DocumentTag,
+        cancel: &Cancellation,
+    ) -> AssetResult<StagedEdit<'_>> {
+        self.document.verify_tag(expected, cancel)?;
+        let index = self.cursor;
+        if index >= self.history.len() {
+            return Err(empty());
+        }
+        self.stage_move(expected, index, index + 1, true, cancel)
+    }
+    fn stage_move(
+        &mut self,
+        expected: DocumentTag,
+        index: usize,
+        cursor_to: usize,
+        forward: bool,
+        cancel: &Cancellation,
+    ) -> AssetResult<StagedEdit<'_>> {
+        let Self {
+            document,
+            history,
+            cursor,
+            state,
+            import_limits,
+            ..
+        } = self;
+        let entry = &mut history[index];
+        let state_to = if forward { entry.after } else { entry.before };
+        let change =
+            document.stage_exchange(expected, &mut entry.change, *import_limits, cancel)?;
+        Ok(StagedEdit(Stage::Move {
+            change,
+            cursor,
+            state,
+            cursor_to,
+            state_to,
+        }))
+    }
+    /// Read-only indices the next Undo would publish, tagged with its revision.
+    pub fn undo_candidate(&self) -> AssetResult<CandidateIndices<'_>> {
+        let index = self.cursor.checked_sub(1).ok_or_else(empty)?;
+        self.history[index].change.candidate(&self.document)
+    }
+    /// Read-only indices the next Redo would publish, tagged with its revision.
+    pub fn redo_candidate(&self) -> AssetResult<CandidateIndices<'_>> {
+        self.history
+            .get(self.cursor)
+            .ok_or_else(empty)?
+            .change
+            .candidate(&self.document)
     }
 }
 
+/// A fully checked command, Undo or Redo. It borrows the Session mutably, so
+/// nothing can change between the checks and `publish` (ADR-0031).
+pub struct StagedEdit<'a>(Stage<'a>);
+enum Stage<'a> {
+    Commit {
+        change: StagedRemoval<'a>,
+        history: &'a mut Vec<Entry>,
+        cursor: &'a mut usize,
+        state: &'a mut u64,
+        next_state: &'a mut u64,
+        payload_bytes: &'a mut usize,
+        payload: usize,
+        before: u64,
+        next: u64,
+    },
+    Move {
+        change: StagedExchange<'a>,
+        cursor: &'a mut usize,
+        state: &'a mut u64,
+        cursor_to: usize,
+        state_to: u64,
+    },
+}
+impl StagedEdit<'_> {
+    pub fn tag_after(&self) -> DocumentTag {
+        match &self.0 {
+            Stage::Commit { change, .. } => change.tag_after(),
+            Stage::Move { change, .. } => change.tag_after(),
+        }
+    }
+    /// Infallible publication: buffer swap, revision, cursor/state, and for a
+    /// new command redo truncation plus a push into capacity reserved at
+    /// Session construction and checked by admission.
+    pub fn publish(self) -> DocumentTag {
+        match self.0 {
+            Stage::Commit {
+                change,
+                history,
+                cursor,
+                state,
+                next_state,
+                payload_bytes,
+                payload,
+                before,
+                next,
+            } => {
+                let tag = change.tag_after();
+                let change = change.publish();
+                history.truncate(*cursor);
+                debug_assert!(history.len() < history.capacity());
+                history.push(Entry {
+                    change,
+                    before,
+                    after: next,
+                });
+                *cursor += 1;
+                *state = next;
+                *next_state = next;
+                *payload_bytes = payload;
+                tag
+            }
+            Stage::Move {
+                change,
+                cursor,
+                state,
+                cursor_to,
+                state_to,
+            } => {
+                let tag = change.publish();
+                *cursor = cursor_to;
+                *state = state_to;
+                tag
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod stage_tests;
 #[cfg(test)]
 mod tests;
