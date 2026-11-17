@@ -22,7 +22,7 @@ Full roadmap and all76function/request statuses:
   - [x] D: Save Copy UI with disk readback and fresh reimport, receipt-based dirty, close/open/drop guard, end-to-end demonstrator (197 tests). Report G002_HEAL_WORKFLOW_REPORT_2026-11-17.md.
   - [x] Owner manual UI acceptance of the G002 workflow (2026-11-17, log-verified in artifacts/manual-ui-2/-3); fixed glyph boxes and the invisible close-guard dialog found during it.
   - [x] Owner: PR #1 merged into main (d034177).
-- [ ] REPAIR-01 G001 degenerate removal (ADR-0032, branch claude/g001-degenerate): planner/postcheck, desktop preview/Apply/Undo/Redo/Save Copy, native smoke DONE (205 tests); owner manual UI check and PR pending.
+- [x] REPAIR-01 G001 degenerate removal (ADR-0032, branch claude/g001-degenerate): planner/postcheck, desktop preview/Apply/Undo/Redo/Save Copy, native smoke, owner manual check log-verified (205 tests). PR pending.
 
 - [x] A1a: Initial source inventory: 66 functions/scenarios, all 10 REQ IDs, exact evidence and source hashes. Verify: tools/audit_legacy.py. Full semantic UI/native audit remains open below.
 - [ ] A1b: Map all 197 UI declaration sites; classify 110 state candidates; complete parameter/error/native workflow acceptance. See reference/LEGACY_GAP_REGISTER.md.
