@@ -2,19 +2,23 @@
 
 mod camera;
 mod diagnostic_ui;
+mod edits;
 mod imports;
 mod native;
 mod ui_model;
 mod viewer_ui;
+mod worker;
 
-use ad_document::{DocumentId, ErrorCode};
+use ad_document::{Cancellation, DocumentId, ErrorCode, MeshId};
 use ad_render_vulkan::{
     SurfaceSize,
     context::GpuResult,
     renderer::{FrameResult, Renderer, SceneFault},
 };
 use camera::Camera;
-use imports::{Imports, PreparedAsset};
+use edits::{EditInput, EditKind, EditOutcome, Edits, PublishError, new_edits, publish_edit};
+use imports::{Imports, PreparedAsset, new_imports};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::{
     io::Cursor,
@@ -94,6 +98,16 @@ struct App {
     smoke_good: Option<PathBuf>,
     gpu_fault_armed: bool,
     gpu_fault_preserved: bool,
+    edits: Edits,
+    editing: bool,
+    /// ADR-0031 B4 smoke without UI controls: queued edits on the G002 mesh,
+    /// the first optionally with an injected GPU failure.
+    smoke_edit: bool,
+    edit_fault: Option<SceneFault>,
+    edit_queue: VecDeque<EditKind>,
+    edit_mesh: Option<MeshId>,
+    edit_fault_expected: bool,
+    edit_smoke_done: bool,
     ui: viewer_ui::ViewerUi,
 }
 
@@ -129,7 +143,7 @@ impl App {
                 && self.ui.mr_maps
                 && self.current.as_ref().is_some_and(|asset| {
                     asset
-                        .snapshot
+                        .snapshot()
                         .draws
                         .iter()
                         .any(|d| d.metallic_roughness_texture.is_some())
@@ -138,7 +152,7 @@ impl App {
                 && self.ui.normal_maps
                 && self.current.as_ref().is_some_and(|asset| {
                     asset
-                        .snapshot
+                        .snapshot()
                         .draws
                         .iter()
                         .any(|d| d.normal_texture.is_some())
@@ -147,7 +161,7 @@ impl App {
                 && self.ui.ao_maps
                 && self.current.as_ref().is_some_and(|asset| {
                     asset
-                        .snapshot
+                        .snapshot()
                         .draws
                         .iter()
                         .any(|d| d.occlusion_texture.is_some())
@@ -156,7 +170,7 @@ impl App {
                 && self.ui.emission
                 && self.current.as_ref().is_some_and(|asset| {
                     asset
-                        .snapshot
+                        .snapshot()
                         .draws
                         .iter()
                         .any(|d| d.emissive_factor.iter().any(|&v| v > 0.))
@@ -167,6 +181,7 @@ impl App {
                 && (self.current.is_none()
                     || !self.failed_replacement_preserved
                     || (self.smoke_gpu_fault.is_some() && !self.gpu_fault_preserved)
+                    || (self.smoke_edit && !self.edit_smoke_done)
                     || mesh_frames < 15
                     || (pbr_required && pbr_frames < 15)
                     || (mr_required && mr_frames < 15)
@@ -242,6 +257,9 @@ impl App {
     }
 
     fn start_import(&mut self, path: PathBuf) {
+        // A new model supersedes any edit still being prepared (decision 5).
+        self.edits.cancel();
+        self.editing = false;
         let ticket = self.imports.request(path);
         self.importing = true;
         self.ui.error = None;
@@ -255,9 +273,9 @@ impl App {
             let title = if let Some(asset) = self.current.as_ref() {
                 format!(
                     "Asset Doctor RT-PT 2.0 — {} | {} vertices · {} triangles | Ctrl+O: open · F: fit · H: help",
-                    asset.document.name(),
-                    asset.snapshot.positions.len(),
-                    asset.snapshot.indices.len() / 3
+                    asset.document().name(),
+                    asset.snapshot().positions.len(),
+                    asset.snapshot().indices.len() / 3
                 )
             } else {
                 "Asset Doctor RT-PT 2.0 — Ctrl+O: open GLB · Drop GLB into window · H: help".into()
@@ -279,7 +297,7 @@ impl App {
                     .renderer
                     .as_mut()
                     .ok_or("No renderer for imported asset")?
-                    .set_scene(&asset.snapshot)
+                    .set_scene(asset.snapshot())
                 {
                     if std::mem::take(&mut self.gpu_fault_armed) {
                         let actual = self.renderer.as_ref().and_then(Renderer::scene_tag);
@@ -288,7 +306,7 @@ impl App {
                         };
                         if actual != Some(expected)
                             || self.current.as_ref().is_none_or(|current| {
-                                (current.document.id(), current.document.revision()) != expected
+                                (current.document().id(), current.document().revision()) != expected
                             })
                         {
                             return Err("Injected GPU failure replaced the published scene".into());
@@ -314,9 +332,9 @@ impl App {
                     self.title();
                     return Ok(());
                 }
-                self.camera.fit(asset.snapshot.bounds);
-                self.ui.tree.replace(&asset.document);
-                self.ui.status = format!("Открыт {}", asset.document.name());
+                self.camera.fit(asset.snapshot().bounds);
+                self.ui.tree.replace(asset.document());
+                self.ui.status = format!("Открыт {}", asset.document().name());
                 self.ui.error = None;
                 self.current = Some(asset);
                 eprintln!("import_published ticket={}", completion.ticket);
@@ -332,7 +350,7 @@ impl App {
                         || self
                             .current
                             .as_ref()
-                            .is_none_or(|asset| asset.document.id() != expected.0)
+                            .is_none_or(|asset| asset.document().id() != expected.0)
                     {
                         return Err("Failed import replaced the previous document/GPU scene".into());
                     }
@@ -349,6 +367,165 @@ impl App {
             }
         }
         self.title();
+        Ok(())
+    }
+    fn request_edit(&mut self, kind: EditKind) -> bool {
+        let Some(asset) = self.current.as_ref() else {
+            return false;
+        };
+        if self.importing || self.editing {
+            return false;
+        }
+        let ticket = self.edits.request(EditInput {
+            session: asset.session.clone(),
+            base: asset.generation.stamp.clone(),
+            kind,
+        });
+        self.editing = true;
+        eprintln!("edit_started ticket={ticket} kind={kind:?}");
+        true
+    }
+    fn poll_edit(&mut self) -> GpuResult<()> {
+        let Some(completion) = self.edits.poll() else {
+            return Ok(());
+        };
+        if completion.ticket != self.edits.ticket() {
+            return Ok(());
+        }
+        self.editing = false;
+        let candidate = match completion.result {
+            Ok(EditOutcome::NoChange(preview)) => {
+                eprintln!(
+                    "edit_no_change mesh={} triangles={}",
+                    preview.mesh.0, preview.before_triangles
+                );
+                self.ui.status = "Повторных треугольников нет; модель не изменена".into();
+                return Ok(());
+            }
+            Ok(EditOutcome::Candidate(candidate)) => *candidate,
+            Err(error) => {
+                eprintln!("edit_failed code={:?}", error.code);
+                if self.smoke_edit {
+                    return Err(error.into());
+                }
+                self.ui.status = format!("Правка не выполнена: {error}");
+                return Ok(());
+            }
+        };
+        let kind = candidate.kind();
+        let removed = candidate
+            .preview()
+            .map_or(0, |p| p.before_triangles - p.after_triangles);
+        let (Some(asset), Some(renderer)) = (self.current.as_mut(), self.renderer.as_mut()) else {
+            return Ok(());
+        };
+        match publish_edit(asset, renderer, candidate, &Cancellation::default()) {
+            Ok(tag) => {
+                let report = asset.diagnostics().as_ref().ok();
+                let mesh = match kind {
+                    EditKind::RemoveDuplicates(mesh) => mesh,
+                    _ => self.edit_mesh.unwrap_or(MeshId(0)),
+                };
+                eprintln!(
+                    "edit_published kind={} removed={removed} revision={} scene_revision={} mesh_triangles={} analysis={} g002_in_mesh={} undo={} redo={} consistent={}",
+                    edit_name(kind),
+                    tag.revision,
+                    renderer.scene_tag().map_or(u64::MAX, |t| t.1),
+                    asset
+                        .document()
+                        .primitives()
+                        .get(mesh.0)
+                        .map_or(0, |m| m.indices.len() / 3),
+                    match report {
+                        Some(r) if r.is_complete() => "complete",
+                        Some(_) => "partial",
+                        None => "incomplete",
+                    },
+                    report.map_or(0, |r| {
+                        r.findings
+                            .iter()
+                            .filter(|f| {
+                                f.mesh == mesh && f.code == ad_analysis::Code::DuplicateTriangle
+                            })
+                            .count()
+                    }),
+                    asset.session.history_usage().undo,
+                    asset.session.history_usage().redo,
+                    asset.is_consistent()
+                );
+                self.ui.status = format!("Правка применена; ревизия {}", tag.revision);
+            }
+            Err(error) => {
+                let revision = asset.document().revision();
+                eprintln!(
+                    "edit_refused kind={} reason={error:?} revision={revision}",
+                    edit_name(kind)
+                );
+                if std::mem::take(&mut self.edit_fault_expected)
+                    && matches!(error, PublishError::Gpu(_))
+                {
+                    let usage = asset.session.history_usage();
+                    let scene = renderer.scene_tag();
+                    if scene != Some((asset.document().id(), revision)) || !asset.is_consistent() {
+                        return Err("Injected GPU failure changed the published edit state".into());
+                    }
+                    eprintln!(
+                        "edit_gpu_fault preserved=true revision={revision} scene_revision={} undo={} redo={}",
+                        scene.map_or(u64::MAX, |t| t.1),
+                        usage.undo,
+                        usage.redo
+                    );
+                    // Retry the same edit without the injected failure.
+                    self.edit_queue.push_front(kind);
+                    return Ok(());
+                }
+                if self.smoke_edit {
+                    return Err(format!("Smoke edit refused: {error}").into());
+                }
+                self.ui.status = format!("Правка не применена, модель прежняя: {error}");
+            }
+        }
+        self.title();
+        Ok(())
+    }
+    /// Smoke sequence on the first G002 mesh: [fault Apply,] Apply, Undo, Redo.
+    fn advance_edit_smoke(&mut self) -> GpuResult<()> {
+        if !self.smoke_edit || self.importing || self.editing || !self.failed_replacement_preserved
+        {
+            return Ok(());
+        }
+        if self.edit_mesh.is_none() {
+            let mesh = self
+                .current
+                .as_ref()
+                .and_then(|asset| asset.diagnostics().as_ref().ok())
+                .and_then(|report| {
+                    report
+                        .findings
+                        .iter()
+                        .find(|f| f.code == ad_analysis::Code::DuplicateTriangle)
+                })
+                .map(|finding| finding.mesh)
+                .ok_or("Edit smoke model has no G002 finding")?;
+            self.edit_mesh = Some(mesh);
+            self.edit_queue = VecDeque::from([
+                EditKind::RemoveDuplicates(mesh),
+                EditKind::Undo,
+                EditKind::Redo,
+            ]);
+        }
+        let Some(kind) = self.edit_queue.pop_front() else {
+            if !self.edit_smoke_done {
+                self.edit_smoke_done = true;
+                eprintln!("edit_smoke_done=true");
+            }
+            return Ok(());
+        };
+        if let (Some(fault), Some(renderer)) = (self.edit_fault.take(), self.renderer.as_mut()) {
+            renderer.inject_scene_fault(Some(fault));
+            self.edit_fault_expected = true;
+        }
+        self.request_edit(kind);
         Ok(())
     }
     fn choose_model(&mut self) {
@@ -384,7 +561,7 @@ impl App {
         if actions.fit
             && let Some(asset) = &self.current
         {
-            self.camera.fit(asset.snapshot.bounds);
+            self.camera.fit(asset.snapshot().bounds);
         }
         let renderer = self.renderer.as_mut().expect("Drawable renderer checked");
         let (width, height) = frame.scene.map_or((1, 1), |r| (r.width, r.height));
@@ -418,6 +595,8 @@ impl App {
             return Ok(());
         }
         self.poll_import()?;
+        self.poll_edit()?;
+        self.advance_edit_smoke()?;
         if self.smoke_import
             && matches!(self.smoke, Some(SmokeStage::Initial))
             && self.current.is_some()
@@ -472,7 +651,8 @@ impl App {
             && (self.current.is_none()
                 || self.importing
                 || !self.failed_replacement_preserved
-                || (self.smoke_gpu_fault.is_some() && !self.gpu_fault_preserved))
+                || (self.smoke_gpu_fault.is_some() && !self.gpu_fault_preserved)
+                || (self.smoke_edit && !self.edit_smoke_done))
         {
             if self.started.elapsed() > Duration::from_secs(20) {
                 return Err("Import smoke timed out".into());
@@ -579,7 +759,7 @@ impl ApplicationHandler for App {
                     }
                     PhysicalKey::Code(KeyCode::KeyF) => {
                         if let Some(asset) = self.current.as_ref() {
-                            self.camera.fit(asset.snapshot.bounds);
+                            self.camera.fit(asset.snapshot().bounds);
                         }
                     }
                     PhysicalKey::Code(KeyCode::Escape) => {
@@ -677,6 +857,14 @@ impl ApplicationHandler for App {
     }
 }
 
+fn edit_name(kind: EditKind) -> &'static str {
+    match kind {
+        EditKind::RemoveDuplicates(_) => "remove",
+        EditKind::Undo => "undo",
+        EditKind::Redo => "redo",
+    }
+}
+
 fn run() -> GpuResult<()> {
     let mut validation = false;
     let mut smoke = false;
@@ -684,6 +872,7 @@ fn run() -> GpuResult<()> {
     let mut smoke_import = false;
     let mut smoke_bad = None;
     let mut smoke_gpu_fault = None;
+    let mut smoke_edit = false;
     let mut ui = viewer_ui::ViewerUi::default();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -714,6 +903,7 @@ fn run() -> GpuResult<()> {
                     args.next().ok_or("--smoke-bad needs a damaged GLB path")?,
                 ))
             }
+            "--smoke-edit" => smoke_edit = true,
             "--smoke-gpu-fault" => {
                 smoke_gpu_fault = Some(
                     args.next()
@@ -723,16 +913,22 @@ fn run() -> GpuResult<()> {
             }
             "--help" => {
                 println!(
-                    "AssetDoctorRTPT [--require-validation] [--pbr] [--no-mr-maps] [--no-normal-maps] [--no-ao-maps] [--no-emission] [--open model.glb] [--smoke] [--smoke-import model.glb --smoke-bad bad.glb [--smoke-gpu-fault upload|wait]]"
+                    "AssetDoctorRTPT [--require-validation] [--pbr] [--no-mr-maps] [--no-normal-maps] [--no-ao-maps] [--no-emission] [--open model.glb] [--smoke] [--smoke-import model.glb --smoke-bad bad.glb [--smoke-edit] [--smoke-gpu-fault upload|wait]]"
                 );
                 return Ok(());
             }
             _ => return Err(format!("Unknown argument: {arg}").into()),
         }
     }
-    if smoke_gpu_fault.is_some() && (!smoke_import || smoke_bad.is_none()) {
-        return Err("--smoke-gpu-fault requires --smoke-import and --smoke-bad".into());
+    if (smoke_gpu_fault.is_some() || smoke_edit) && (!smoke_import || smoke_bad.is_none()) {
+        return Err("--smoke-gpu-fault/--smoke-edit require --smoke-import and --smoke-bad".into());
     }
+    // With --smoke-edit the injected GPU failure targets the first edit, not a re-import.
+    let (smoke_gpu_fault, edit_fault) = if smoke_edit {
+        (None, smoke_gpu_fault)
+    } else {
+        (smoke_gpu_fault, None)
+    };
     let smoke_good = smoke_gpu_fault.and(initial_path.clone());
     let event_loop = EventLoop::new()?;
     let mut app = App {
@@ -750,7 +946,7 @@ fn run() -> GpuResult<()> {
         close_requested: false,
         suspended: false,
         closed: false,
-        imports: Imports::new(),
+        imports: new_imports(),
         importing: false,
         current: None,
         camera: Camera::default(),
@@ -766,6 +962,14 @@ fn run() -> GpuResult<()> {
         smoke_good,
         gpu_fault_armed: false,
         gpu_fault_preserved: false,
+        edits: new_edits(),
+        editing: false,
+        smoke_edit,
+        edit_fault,
+        edit_queue: VecDeque::new(),
+        edit_mesh: None,
+        edit_fault_expected: false,
+        edit_smoke_done: false,
         ui,
     };
     event_loop.run_app(&mut app)?;

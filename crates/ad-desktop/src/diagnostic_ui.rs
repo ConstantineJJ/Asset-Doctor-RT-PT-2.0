@@ -11,7 +11,7 @@ pub fn show(
                 ui.label("Исходные примитивы, включая неактивные; каждый проверен один раз. Экземпляры и преобразования просмотра не учитываются.");
                 ui.weak("Геометрия и все исходные UV-каналы. Границы, группы и UV вне 0…1 могут быть намеренными. Ремонт не выполняется.");
                 ui.separator();
-                match asset.map(|a|(&a.document,&a.diagnostics)) {
+                match asset.map(|a|(a.document(),a.diagnostics())) {
                     None=>{ui.label("Откройте модель для анализа.");}
                     Some((document,Ok(report))) if report.matches(document)=>{
                         ui.strong(format!("{} · {} примитивов · {} треугольников",document.name(),report.primitives,report.triangles));

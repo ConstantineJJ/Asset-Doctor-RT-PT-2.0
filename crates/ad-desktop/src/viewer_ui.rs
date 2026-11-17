@@ -263,25 +263,25 @@ impl ViewerUi {
                             ui.weak("Металл и шероховатость: параметры × карты. Заполнение приблизительное; без HDR-окружения и теней.");
                         }
                         if let Some(asset)=asset {
-                            ui.strong(asset.document.name());
-                            ui.label(format!("Исходный файл: {:.2} МиБ",asset.document.source().len() as f64/1048576.));
-                            ui.label(format!("Узлов в документе: {}",asset.document.nodes().len()));
-                            let textures=asset.document.texture_stats();
+                            ui.strong(asset.document().name());
+                            ui.label(format!("Исходный файл: {:.2} МиБ",asset.document().source().len() as f64/1048576.));
+                            ui.label(format!("Узлов в документе: {}",asset.document().nodes().len()));
+                            let textures=asset.document().texture_stats();
                             ui.label(format!("Изображений материалов: {}",textures.images));
                             ui.label(format!("RGBA с mip-уровнями: {:.2} МиБ",textures.mip_bytes as f64/1048576.));
                             ui.add_space(12.);ui.strong("Отображаемая геометрия");
-                            ui.label(format!("Вершины: {}",asset.snapshot.positions.len()));
-                            ui.label(format!("Треугольники: {}",asset.snapshot.indices.len()/3));
-                            ui.label(format!("Примитивы с повторами: {}",asset.snapshot.draws.len()));
-                            ui.label(format!("Нормаль грани: {} вершин",asset.snapshot.fallback_normal_vertices)).on_hover_text("Авторская нормаль отсутствует, нулевая или преобразование вырождено. Источник не исправляется.");
-                            if asset.snapshot.fallback_tangent_vertices>0 {
-                                ui.label(format!("UV-основа нормалей: {} вершин",asset.snapshot.fallback_tangent_vertices)).on_hover_text("Нет пригодных авторских касательных. Используется основа по производным геометрии/UV; на сложных швах возможно отличие от MikkTSpace.");
+                            ui.label(format!("Вершины: {}",asset.snapshot().positions.len()));
+                            ui.label(format!("Треугольники: {}",asset.snapshot().indices.len()/3));
+                            ui.label(format!("Примитивы с повторами: {}",asset.snapshot().draws.len()));
+                            ui.label(format!("Нормаль грани: {} вершин",asset.snapshot().fallback_normal_vertices)).on_hover_text("Авторская нормаль отсутствует, нулевая или преобразование вырождено. Источник не исправляется.");
+                            if asset.snapshot().fallback_tangent_vertices>0 {
+                                ui.label(format!("UV-основа нормалей: {} вершин",asset.snapshot().fallback_tangent_vertices)).on_hover_text("Нет пригодных авторских касательных. Используется основа по производным геометрии/UV; на сложных швах возможно отличие от MikkTSpace.");
                             }
                             ui.weak("С учётом экземпляров в сцене");
-                            let b=asset.snapshot.bounds;
+                            let b=asset.snapshot().bounds;
                             ui.add_space(12.);ui.strong("Габариты · метры");
                             for (i,axis) in ["X","Y","Z"].into_iter().enumerate() {ui.label(format!("{axis}   {:.3}",b.max[i]-b.min[i]));}
-                            if let Some(id)=self.tree.selected && let Some(node)=asset.document.nodes().get(id.0) {
+                            if let Some(id)=self.tree.selected && let Some(node)=asset.document().nodes().get(id.0) {
                                 ui.separator();ui.strong("Выбранный узел");
                                 if let Some(row)=self.tree.rows.iter().find(|row|row.id==id) {ui.label(&row.label);}
                                 ui.label(format!("Дочерние узлы: {}",node.children.len()));
@@ -291,7 +291,7 @@ impl ViewerUi {
                                 });
                             }
                             ui.collapsing("Ограничения просмотра",|ui| {
-                                for note in asset.document.notes() {ui.weak(note);}
+                                for note in asset.document().notes() {ui.weak(note);}
                             });
                         } else {ui.label("Откройте модель, чтобы увидеть её состав и размеры.");}
                         ui.add_space(16.);ui.separator();ui.weak("Статические GLB: PNG/JPEG, цвета вершин, нормали, OPAQUE/MASK. PBR — предварительный режим. BLEND, скелеты и анимации пока не поддерживаются.");
@@ -419,10 +419,21 @@ mod tests {
             ad_analysis::Limits::default(),
             &ad_document::Cancellation::default(),
         );
+        let stamp = document.stamp();
         let asset = PreparedAsset {
-            document,
-            snapshot,
-            diagnostics,
+            session: std::sync::Arc::new(
+                ad_commands::Session::new(
+                    document,
+                    ad_commands::HistoryLimits::default(),
+                    ad_document::ImportLimits::default(),
+                )
+                .unwrap(),
+            ),
+            generation: crate::imports::Generation {
+                snapshot,
+                diagnostics,
+                stamp,
+            },
         };
         let (out, rect, _) = ui.layout(raw(1200., 1000.), Some(&asset), false);
         out.drop_without_applying_deltas();
@@ -455,8 +466,8 @@ mod tests {
         assert!(!ui.normal_maps);
         assert!(!ui.ao_maps);
         assert!(!ui.emission);
-        assert!(std::sync::Arc::ptr_eq(asset.document.source(), &source));
-        assert_eq!(asset.snapshot.fallback_normal_vertices, 6);
+        assert!(std::sync::Arc::ptr_eq(asset.document().source(), &source));
+        assert_eq!(asset.snapshot().fallback_normal_vertices, 6);
     }
     #[test]
     fn mr_switch_is_independent_of_color_texture_sampling() {

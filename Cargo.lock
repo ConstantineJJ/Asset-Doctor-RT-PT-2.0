@@ -33,8 +33,10 @@ name = "ad-desktop"
 version = "0.1.0"
 dependencies = [
  "ad-analysis",
+ "ad-commands",
  "ad-document",
  "ad-formats",
+ "ad-heal",
  "ad-render-vulkan",
  "egui",
  "egui-winit",
