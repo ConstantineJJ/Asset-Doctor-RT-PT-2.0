@@ -60,6 +60,9 @@ impl PreparedRemoval {
     pub fn retained_bytes(&self) -> usize {
         self.retained_bytes
     }
+    pub(crate) fn changes_indices(&self) -> bool {
+        self.replacement.is_some()
+    }
 }
 /// An applied change owns the alternate index buffer, never copied attributes.
 pub struct IndexExchange {

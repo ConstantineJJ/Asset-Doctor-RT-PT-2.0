@@ -4,7 +4,8 @@ mod coverage;
 mod edges;
 mod uv;
 use ad_document::{
-    AssetDocument, AssetError, AssetResult, Cancellation, DocumentId, ErrorCode, MeshId,
+    AssetDocument, AssetError, AssetResult, Cancellation, DocumentId, DocumentView, ErrorCode,
+    MeshId,
 };
 pub use coverage::{Coverage, LimitReason};
 
@@ -175,12 +176,23 @@ pub fn analyze(
     limits: Limits,
     cancel: &Cancellation,
 ) -> AssetResult<Report> {
+    analyze_view(&document.view(), limits, cancel)
+}
+
+/// Analyzes the current document or a candidate view (ADR-0031). A candidate
+/// report carries the future tag and matches the document only after the
+/// same change is published.
+pub fn analyze_view(
+    view: &DocumentView,
+    limits: Limits,
+    cancel: &Cancellation,
+) -> AssetResult<Report> {
     cancel.check()?;
     let mut triangles = 0usize;
     // Admission covers the whole scan before any working buffers are allocated.
-    for mesh in document.primitives() {
+    for (mesh_id, mesh) in view.primitives().iter().enumerate() {
         cancel.check()?;
-        let count = mesh.indices.len() / 3;
+        let count = view.indices(MeshId(mesh_id)).len() / 3;
         triangles = triangles.checked_add(count).ok_or_else(budget)?;
         let scratch = count
             .checked_mul(std::mem::size_of::<([u32; 3], u32)>())
@@ -195,16 +207,17 @@ pub fn analyze(
         }
     }
     let mut report = Report {
-        document_id: document.id(),
-        revision: document.revision(),
+        document_id: view.tag().document,
+        revision: view.tag().revision,
         algorithm: ALGORITHM_VERSION,
-        primitives: document.primitives().len(),
+        primitives: view.primitives().len(),
         triangles,
         findings: Vec::new(),
         coverage: Code::ALL.map(Coverage::new),
     };
-    for (mesh_id, mesh) in document.primitives().iter().enumerate() {
+    for (mesh_id, mesh) in view.primitives().iter().enumerate() {
         cancel.check()?;
+        let mesh_indices = view.indices(MeshId(mesh_id));
         let mut referenced = Vec::new();
         referenced
             .try_reserve_exact(mesh.positions.len())
@@ -212,7 +225,7 @@ pub fn analyze(
         referenced.resize(mesh.positions.len(), 0u8);
         let mut faces = Vec::new();
         faces
-            .try_reserve_exact(mesh.indices.len() / 3)
+            .try_reserve_exact(mesh_indices.len() / 3)
             .map_err(|_| budget())?;
         let (mut zero, mut duplicate, mut unused, mut missing, mut zero_normal) = (
             Tally::default(),
@@ -221,7 +234,7 @@ pub fn analyze(
             Tally::default(),
             Tally::default(),
         );
-        for (index, face) in mesh.indices.as_chunks::<3>().0.iter().enumerate() {
+        for (index, face) in mesh_indices.as_chunks::<3>().0.iter().enumerate() {
             if index % 1024 == 0 {
                 cancel.check()?;
             }
@@ -274,9 +287,9 @@ pub fn analyze(
             });
         }
     }
-    edges::analyze(document, &mut report, limits, cancel)?;
-    components::analyze(document, &mut report, limits, cancel)?;
-    uv::analyze(document, &mut report, limits, cancel)?;
+    edges::analyze(view, &mut report, limits, cancel)?;
+    components::analyze(view, &mut report, limits, cancel)?;
+    uv::analyze(view, &mut report, limits, cancel)?;
     cancel.check()?;
     Ok(report)
 }

@@ -3,11 +3,15 @@ mod color;
 mod indices;
 mod normals;
 mod uv;
+mod view;
 pub use indices::{
     AppliedRemoval, DocumentStamp, DocumentTag, IndexExchange, PreparedRemoval, RemovalPreview,
 };
+pub use view::{CandidateIndices, DocumentView};
 #[cfg(test)]
 mod index_tests;
+#[cfg(test)]
+mod view_tests;
 pub use color::*;
 use std::{
     fmt,
@@ -388,10 +392,23 @@ impl AssetDocument {
         limits: ImportLimits,
         cancel: &Cancellation,
     ) -> AssetResult<GeometrySnapshot> {
+        self.view().snapshot(limits, cancel)
+    }
+}
+
+impl DocumentView<'_> {
+    /// Snapshot of this view, tagged with the view's revision. For a candidate
+    /// view that is the revision a successful publication will produce.
+    pub fn snapshot(
+        &self,
+        limits: ImportLimits,
+        cancel: &Cancellation,
+    ) -> AssetResult<GeometrySnapshot> {
         use glam::{Mat4, Vec3};
+        let document = self.document();
         cancel.check()?;
-        let mut visited = vec![false; self.parts.nodes.len()];
-        let mut pending: Vec<_> = self
+        let mut visited = vec![false; document.parts.nodes.len()];
+        let mut pending: Vec<_> = document
             .parts
             .roots
             .iter()
@@ -409,7 +426,7 @@ impl AssetDocument {
                 ));
             }
             visited[id.0] = true;
-            let node = &self.parts.nodes[id.0];
+            let node = &document.parts.nodes[id.0];
             let world = parent * Mat4::from_cols_array_2d(&node.local);
             if !world.is_finite() {
                 return Err(AssetError::new(
@@ -424,13 +441,15 @@ impl AssetDocument {
                         "Scene exceeds draw/instance budget",
                     ));
                 }
-                let mesh = &self.parts.meshes[mesh_id.0];
+                let mesh = &document.parts.meshes[mesh_id.0];
                 vertices = vertices.checked_add(mesh.positions.len()).ok_or_else(|| {
                     AssetError::new(ErrorCode::ResourceLimit, "Snapshot vertex count overflow")
                 })?;
-                indices = indices.checked_add(mesh.indices.len()).ok_or_else(|| {
-                    AssetError::new(ErrorCode::ResourceLimit, "Snapshot index count overflow")
-                })?;
+                indices = indices
+                    .checked_add(self.indices(*mesh_id).len())
+                    .ok_or_else(|| {
+                        AssetError::new(ErrorCode::ResourceLimit, "Snapshot index count overflow")
+                    })?;
                 if geometry_bytes(vertices, indices)? > limits.snapshot_bytes
                     || vertices > u32::MAX as usize
                     || indices > u32::MAX as usize
@@ -451,8 +470,8 @@ impl AssetDocument {
             ));
         }
         let mut result = GeometrySnapshot {
-            document_id: self.id(),
-            revision: self.revision(),
+            document_id: self.tag().document,
+            revision: self.tag().revision,
             positions: Vec::new(),
             normals: Vec::new(),
             tangents: Vec::new(),
@@ -521,7 +540,7 @@ impl AssetDocument {
                 AssetError::new(ErrorCode::ResourceLimit, "Cannot allocate scene draws")
             })?;
         for (mesh_id, world) in instances {
-            let mesh = &self.parts.meshes[mesh_id.0];
+            let mesh = &document.parts.meshes[mesh_id.0];
             let normal_matrix = normals::normal_matrix(world);
             let tangent_matrix = normals::tangent_matrix(world);
             let [
@@ -577,7 +596,7 @@ impl AssetDocument {
             }
             result.draws.push(DrawRange {
                 index_start: result.indices.len() as u32,
-                index_count: mesh.indices.len() as u32,
+                index_count: self.indices(mesh_id).len() as u32,
                 base_color: mesh.base_color,
                 metallic_roughness: mesh.metallic_roughness,
                 color_texture: mesh.color_texture.clone(),
@@ -590,7 +609,7 @@ impl AssetDocument {
                 emissive_texture: mesh.emissive_texture.clone(),
                 alpha_cutoff: mesh.alpha_cutoff,
             });
-            for (i, &index) in mesh.indices.iter().enumerate() {
+            for (i, &index) in self.indices(mesh_id).iter().enumerate() {
                 if i % 4096 == 0 {
                     cancel.check()?;
                 }

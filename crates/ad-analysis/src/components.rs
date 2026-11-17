@@ -1,5 +1,5 @@
 use crate::{
-    AssetDocument, AssetResult, Cancellation, Code, ComponentSample, Finding, LimitReason, Limits,
+    AssetResult, Cancellation, Code, ComponentSample, DocumentView, Finding, LimitReason, Limits,
     MeshId, Report, Samples, Severity, budget, eligible_triangle,
 };
 
@@ -145,15 +145,15 @@ fn scratch_bytes(vertices: usize) -> Option<usize> {
 }
 
 pub(crate) fn analyze(
-    document: &AssetDocument,
+    view: &DocumentView,
     report: &mut Report,
     limits: Limits,
     cancel: &Cancellation,
 ) -> AssetResult<()> {
-    for (index, mesh) in document.primitives().iter().enumerate() {
+    for (index, mesh) in view.primitives().iter().enumerate() {
         cancel.check()?;
         let mesh_id = MeshId(index);
-        let faces = mesh.indices.as_chunks::<3>().0;
+        let faces = view.indices(mesh_id).as_chunks::<3>().0;
         let mut excluded = 0usize;
         for (i, face) in faces.iter().enumerate() {
             if i % 1024 == 0 {

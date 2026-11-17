@@ -710,3 +710,43 @@ fn all_excluded_components_complete_without_allocating_a_forest() {
             .any(|f| f.code == Code::DisconnectedComponents)
     );
 }
+
+#[test]
+fn candidate_view_analysis_equals_analysis_after_a_real_commit() {
+    let mut doc = document(1., true);
+    let c = Cancellation::default();
+    let limits = ImportLimits::default();
+    let before = analyze(&doc, Limits::default(), &c).unwrap();
+    assert!(
+        before
+            .findings
+            .iter()
+            .any(|f| f.code == Code::DuplicateTriangle)
+    );
+    let plan = doc
+        .prepare_triangle_removal(doc.tag(), MeshId(0), &[1], limits, &c)
+        .unwrap();
+    let candidate = {
+        let view = doc
+            .candidate_view(plan.candidate(&doc, &c).unwrap(), &c)
+            .unwrap();
+        analyze_view(&view, Limits::default(), &c).unwrap()
+    };
+    assert_eq!((candidate.document_id, candidate.revision), (doc.id(), 1));
+    assert!(
+        !candidate.matches(&doc),
+        "candidate report is not current before publication"
+    );
+    assert_eq!(doc.revision(), 0);
+    let current = analyze_view(&doc.view(), Limits::default(), &c).unwrap();
+    assert_eq!(current.findings, before.findings);
+    assert_eq!(current.coverage, before.coverage);
+    doc.apply_triangle_removal(plan, limits, &c).unwrap();
+    let after = analyze(&doc, Limits::default(), &c).unwrap();
+    assert!(candidate.matches(&doc));
+    assert_eq!(candidate.primitives, after.primitives);
+    assert_eq!(candidate.triangles, after.triangles);
+    assert_eq!(candidate.findings, after.findings);
+    assert_eq!(candidate.coverage, after.coverage);
+    assert_ne!(candidate.findings, before.findings);
+}

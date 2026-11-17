@@ -1,5 +1,5 @@
 use crate::{
-    AssetDocument, AssetResult, Cancellation, Code, Element, Finding, Limits, MeshId, Report,
+    AssetResult, Cancellation, Code, DocumentView, Element, Finding, Limits, MeshId, Report,
     Samples, Severity, Tally, budget, eligible_triangle,
 };
 use ad_document::MAX_UV_CHANNELS;
@@ -83,12 +83,12 @@ fn group(channels: &mut [Channel], code: Code, mesh: MeshId) -> AssetResult<Vec<
 }
 
 pub(crate) fn analyze(
-    document: &AssetDocument,
+    view: &DocumentView,
     report: &mut Report,
     limits: Limits,
     cancel: &Cancellation,
 ) -> AssetResult<()> {
-    for (id, mesh) in document.primitives().iter().enumerate() {
+    for (id, mesh) in view.primitives().iter().enumerate() {
         cancel.check()?;
         let mesh_id = MeshId(id);
         report.retain(
@@ -119,7 +119,7 @@ pub(crate) fn analyze(
             let (result, repeated) = measure(
                 source.set,
                 &source.values,
-                mesh.indices.as_chunks::<3>().0,
+                view.indices(mesh_id).as_chunks::<3>().0,
                 || cancel.check(),
             )?;
             *stats = result;

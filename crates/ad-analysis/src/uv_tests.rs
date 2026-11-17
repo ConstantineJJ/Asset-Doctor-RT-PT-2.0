@@ -333,7 +333,7 @@ fn failed_channel_group_allocation_retains_no_fragment_and_cancel_returns_no_res
     let cancel = Cancellation::default();
     cancel.cancel();
     assert!(
-        matches!(uv::analyze(&doc,&mut report,Limits::default(),&cancel),Err(e) if e.code==ErrorCode::Cancelled)
+        matches!(uv::analyze(&doc.view(),&mut report,Limits::default(),&cancel),Err(e) if e.code==ErrorCode::Cancelled)
     );
     assert!(
         matches!(analyze(&doc,Limits::default(),&cancel),Err(e) if e.code==ErrorCode::Cancelled)
