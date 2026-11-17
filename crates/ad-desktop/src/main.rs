@@ -11,7 +11,7 @@ use ad_document::{DocumentId, ErrorCode};
 use ad_render_vulkan::{
     SurfaceSize,
     context::GpuResult,
-    renderer::{FrameResult, Renderer},
+    renderer::{FrameResult, Renderer, SceneFault},
 };
 use camera::Camera;
 use imports::{Imports, PreparedAsset};
@@ -88,6 +88,12 @@ struct App {
     smoke_bad: Option<PathBuf>,
     expected_tag: Option<(DocumentId, u64)>,
     failed_replacement_preserved: bool,
+    /// ADR-0031 B3 smoke: re-import the good model with an injected GPU stage
+    /// failure and prove the published scene/document stay current.
+    smoke_gpu_fault: Option<SceneFault>,
+    smoke_good: Option<PathBuf>,
+    gpu_fault_armed: bool,
+    gpu_fault_preserved: bool,
     ui: viewer_ui::ViewerUi,
 }
 
@@ -160,6 +166,7 @@ impl App {
                 && self.smoke_import
                 && (self.current.is_none()
                     || !self.failed_replacement_preserved
+                    || (self.smoke_gpu_fault.is_some() && !self.gpu_fault_preserved)
                     || mesh_frames < 15
                     || (pbr_required && pbr_frames < 15)
                     || (mr_required && mr_frames < 15)
@@ -274,6 +281,30 @@ impl App {
                     .ok_or("No renderer for imported asset")?
                     .set_scene(&asset.snapshot)
                 {
+                    if std::mem::take(&mut self.gpu_fault_armed) {
+                        let actual = self.renderer.as_ref().and_then(Renderer::scene_tag);
+                        let Some(expected) = self.expected_tag else {
+                            return Err("GPU fault smoke has no published scene".into());
+                        };
+                        if actual != Some(expected)
+                            || self.current.as_ref().is_none_or(|current| {
+                                (current.document.id(), current.document.revision()) != expected
+                            })
+                        {
+                            return Err("Injected GPU failure replaced the published scene".into());
+                        }
+                        self.gpu_fault_preserved = true;
+                        eprintln!(
+                            "gpu_fault_smoke stage={} preserved=true scene_document={} scene_revision={}",
+                            match self.smoke_gpu_fault {
+                                Some(SceneFault::Upload) => "upload",
+                                _ => "wait",
+                            },
+                            expected.0.0,
+                            expected.1
+                        );
+                        return Ok(());
+                    }
                     if self.smoke.is_some() {
                         return Err(error);
                     }
@@ -397,6 +428,18 @@ impl App {
             self.start_import(path);
             return Ok(());
         }
+        if self.failed_replacement_preserved
+            && !self.importing
+            && let Some(fault) = self.smoke_gpu_fault
+            && let Some(path) = self.smoke_good.take()
+            && let Some(renderer) = self.renderer.as_mut()
+        {
+            self.expected_tag = renderer.scene_tag();
+            renderer.inject_scene_fault(Some(fault));
+            self.gpu_fault_armed = true;
+            self.start_import(path);
+            return Ok(());
+        }
         let Some(window) = self.window.as_ref() else {
             return Ok(());
         };
@@ -426,7 +469,10 @@ impl App {
             }
         }
         if self.smoke_import
-            && (self.current.is_none() || self.importing || !self.failed_replacement_preserved)
+            && (self.current.is_none()
+                || self.importing
+                || !self.failed_replacement_preserved
+                || (self.smoke_gpu_fault.is_some() && !self.gpu_fault_preserved))
         {
             if self.started.elapsed() > Duration::from_secs(20) {
                 return Err("Import smoke timed out".into());
@@ -637,6 +683,7 @@ fn run() -> GpuResult<()> {
     let mut initial_path = None;
     let mut smoke_import = false;
     let mut smoke_bad = None;
+    let mut smoke_gpu_fault = None;
     let mut ui = viewer_ui::ViewerUi::default();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -667,15 +714,26 @@ fn run() -> GpuResult<()> {
                     args.next().ok_or("--smoke-bad needs a damaged GLB path")?,
                 ))
             }
+            "--smoke-gpu-fault" => {
+                smoke_gpu_fault = Some(
+                    args.next()
+                        .ok_or("--smoke-gpu-fault needs upload or wait")?
+                        .parse::<SceneFault>()?,
+                )
+            }
             "--help" => {
                 println!(
-                    "AssetDoctorRTPT [--require-validation] [--pbr] [--no-mr-maps] [--no-normal-maps] [--no-ao-maps] [--no-emission] [--open model.glb] [--smoke] [--smoke-import model.glb --smoke-bad bad.glb]"
+                    "AssetDoctorRTPT [--require-validation] [--pbr] [--no-mr-maps] [--no-normal-maps] [--no-ao-maps] [--no-emission] [--open model.glb] [--smoke] [--smoke-import model.glb --smoke-bad bad.glb [--smoke-gpu-fault upload|wait]]"
                 );
                 return Ok(());
             }
             _ => return Err(format!("Unknown argument: {arg}").into()),
         }
     }
+    if smoke_gpu_fault.is_some() && (!smoke_import || smoke_bad.is_none()) {
+        return Err("--smoke-gpu-fault requires --smoke-import and --smoke-bad".into());
+    }
+    let smoke_good = smoke_gpu_fault.and(initial_path.clone());
     let event_loop = EventLoop::new()?;
     let mut app = App {
         renderer: None,
@@ -704,6 +762,10 @@ fn run() -> GpuResult<()> {
         smoke_bad,
         expected_tag: None,
         failed_replacement_preserved: false,
+        smoke_gpu_fault,
+        smoke_good,
+        gpu_fault_armed: false,
+        gpu_fault_preserved: false,
         ui,
     };
     event_loop.run_app(&mut app)?;

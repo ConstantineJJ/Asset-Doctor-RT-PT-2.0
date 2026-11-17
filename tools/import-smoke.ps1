@@ -6,7 +6,9 @@ param(
     [switch]$NoNormalMaps,
     [switch]$NoAoMaps,
     [switch]$NoEmission,
-    [switch]$SynchronizationValidation
+    [switch]$SynchronizationValidation,
+    # ADR-0031 B3: replace the scene once more with an injected GPU stage failure.
+    [ValidateSet('none','upload','wait')][string]$GpuFault='none'
 )
 $ErrorActionPreference='Stop'
 $repo=Split-Path $PSScriptRoot -Parent
@@ -38,6 +40,7 @@ if ($NoMrMaps) {$suffix='-no-maps'+$suffix}
 if ($NoNormalMaps) {$suffix='-no-normal'+$suffix}
 if ($NoAoMaps) {$suffix='-no-ao'+$suffix}
 if ($NoEmission) {$suffix='-no-emission'+$suffix}
+if ($GpuFault -ne 'none') {$suffix='-gpu-'+$GpuFault+$suffix}
 $stdout=Join-Path $reports "$Configuration-import-smoke$suffix.stdout.log"
 $stderr=Join-Path $reports "$Configuration-import-smoke$suffix.stderr.log"
 # Start-Process joins arguments on Windows: quote each literal path containing spaces.
@@ -47,6 +50,7 @@ if ($NoMrMaps) {$arguments+='--no-mr-maps'}
 if ($NoNormalMaps) {$arguments+='--no-normal-maps'}
 if ($NoAoMaps) {$arguments+='--no-ao-maps'}
 if ($NoEmission) {$arguments+='--no-emission'}
+if ($GpuFault -ne 'none') {$arguments+=@('--smoke-gpu-fault',$GpuFault)}
 $previousSync=$env:VK_LAYER_VALIDATE_SYNC
 try {
     if ($SynchronizationValidation) { $env:VK_LAYER_VALIDATE_SYNC='1' }
@@ -85,6 +89,8 @@ if ($Scene -eq 'uv') {
     if ($log -notmatch 'analysis_coverage rule=G010 completed_primitives=2 .*excluded_triangles=1 .*retained_findings=1 retained_count=1 not_applicable_primitives=1') {throw 'Missing UV area/N-A scope.'}
     if ($log -notmatch 'analysis_coverage rule=G011 completed_primitives=2 .*retained_findings=1 retained_count=1 not_applicable_primitives=1') {throw 'Missing UV range/N-A scope.'}
 }
+if ($log -notmatch 'gpu_scene_published document=1 revision=0 vertices=\d+ triangles=\d+ stage_ms=\d+ geometry_bytes=\d+') {throw 'Missing staged GPU scene publication evidence.'}
+if ($GpuFault -ne 'none' -and $log -notmatch "gpu_fault_smoke stage=$GpuFault preserved=true scene_document=1 scene_revision=0") {throw 'Injected GPU stage failure did not preserve the published scene.'}
 $expectedBindings=if($Scene -in @('color','mr','emission')){2}else{1}
 if($log -notmatch "gpu_material_binding_sets=$expectedBindings\b"){throw 'Missing material descriptor tuple-sharing evidence.'}
 if ($Scene -eq 'color' -and $log -notmatch 'gpu_material_images=1 material_textures=2 mip_bytes=20 decoded_images=1 srgb_images=1 linear_images=0') {
@@ -103,4 +109,4 @@ if (($NoNormalMaps -or !$Pbr -or $Scene -ne 'normal') -and $log -notmatch 'norma
 if ($Scene -eq 'mr' -and $Pbr -and !$NoMrMaps -and $log -notmatch 'mr_frames=(1[5-9]|[2-9]\d|\d{3,})\b') {throw 'Missing MR sampled frame evidence.'}
 if (($NoMrMaps -or !$Pbr) -and $log -notmatch 'mr_frames=0\b') {throw 'MR sampling unexpectedly active.'}
 if ($Pbr -and $log -notmatch 'lighting_smoke mode=DirectPbr pbr_frames=(1[5-9]|[2-9]\d|\d{3,})\b') {throw 'Missing PBR frame presentation evidence.'}
-($log -split "`n" | Where-Object { $_ -match '^analysis_complete|^analysis_partial|^analysis_coverage|^gpu_material_images|^asset_smoke|^lighting_smoke|^SMOKE_PASS' }).Trim()
+($log -split "`n" | Where-Object { $_ -match '^gpu_fault_smoke|^gpu_scene_published|^analysis_complete|^analysis_partial|^analysis_coverage|^gpu_material_images|^asset_smoke|^lighting_smoke|^SMOKE_PASS' }).Trim()

@@ -33,6 +33,9 @@ fn validate_write(size: usize, length: usize) -> GpuResult<()> {
     Ok(())
 }
 impl Buffer {
+    pub fn size(&self) -> usize {
+        self.size
+    }
     pub fn upload(gpu: Arc<Gpu>, bytes: &[u8], usage: vk::BufferUsageFlags) -> GpuResult<Self> {
         if bytes.is_empty() {
             return Err("Cannot upload an empty GPU buffer".into());

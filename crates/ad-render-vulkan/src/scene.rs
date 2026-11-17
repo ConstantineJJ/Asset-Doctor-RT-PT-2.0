@@ -40,6 +40,24 @@ pub(crate) struct GpuScene {
     pub has_emission: bool,
 }
 impl GpuScene {
+    /// Accounted bytes of the geometry buffers (textures are logged separately).
+    pub fn geometry_bytes(&self) -> usize {
+        [
+            &self.vertices,
+            &self.normals,
+            &self.tangents,
+            &self.normal_uvs,
+            &self.occlusion_uvs,
+            &self.emissive_uvs,
+            &self.indices,
+            &self.uvs,
+            &self.metallic_roughness_uvs,
+            &self.colors,
+        ]
+        .iter()
+        .map(|buffer| buffer.size())
+        .sum()
+    }
     pub fn new(gpu: Arc<Gpu>, snapshot: &GeometrySnapshot) -> GpuResult<Self> {
         if snapshot.positions.is_empty()
             || snapshot.indices.is_empty()
