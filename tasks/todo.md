@@ -18,7 +18,7 @@ Full roadmap and all76function/request statuses:
   - [x] B2: Session stage_commit/stage_undo/stage_redo + infallible publish; undo/redo candidates; dropped stage keeps redo (178 tests).
   - [x] B3: Renderer stage_scene/activate; one-shot upload/wait fault injection via --smoke-gpu-fault keeps published scene (179 tests, native 0 validation errors).
   - [x] B4: desktop Arc<Session>, shared latest-ticket worker, Generation, publish_edit with stale/busy/cancel/GPU-failure tests; native --smoke-edit Apply/Undo/Redo with upload/wait fault (185 tests, 0 validation errors). No Heal button.
-  - [ ] C: changed-export eligibility preflight; G002 Preview/Apply/Undo/Redo UI and native smoke.
+  - [x] C: preflight_changed_export before Apply (G002-06); Diagnostics → Preview → Apply, Undo/Redo buttons and Ctrl+Z/Ctrl+Y; native smoke and heavy 1.5M-triangle measurement (191 tests). Manual UI acceptance not done.
   - [ ] D: Save Copy UI, receipt-based dirty, close/replace guard, end-to-end demonstrator.
 
 - [x] A1a: Initial source inventory: 66 functions/scenarios, all 10 REQ IDs, exact evidence and source hashes. Verify: tools/audit_legacy.py. Full semantic UI/native audit remains open below.
