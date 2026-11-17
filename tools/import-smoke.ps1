@@ -28,7 +28,13 @@ if ($Scene -eq 'heal') {
     $good=Join-Path $repo 'tests\fixtures\Duplicate_Heal.glb'
     $bad=Join-Path $repo 'tests\fixtures\Bad_Normal_Image.glb'
 }
-if ($Edit -and $Scene -ne 'heal') {throw '-Edit requires -Scene heal.'}
+if ($Edit -and $Scene -notin @('heal','geometry')) {throw '-Edit requires -Scene heal (G002) or geometry (G001).'}
+# Expected evidence per repair: heal = G002 on Duplicate_Heal, geometry = G001 on Geometry_Findings.
+$expect=if ($Scene -eq 'geometry') {
+    @{repair='g001'; before=5; after=3; removed=2; refs=2; primitives=2; total=4}
+} else {
+    @{repair='g002'; before=992; after=960; removed=32; refs=1; primitives=4; total=3840}
+}
 if ($Save -and !$Edit) {throw '-Save requires -Edit.'}
 if ($Guard -and (!$Edit -or $Save)) {throw '-Guard requires -Edit without -Save.'}
 $saveDir=$null
@@ -71,7 +77,7 @@ if ($NoNormalMaps) {$arguments+='--no-normal-maps'}
 if ($NoAoMaps) {$arguments+='--no-ao-maps'}
 if ($NoEmission) {$arguments+='--no-emission'}
 if ($GpuFault -ne 'none') {$arguments+=@('--smoke-gpu-fault',$GpuFault)}
-if ($Edit) {$arguments+='--smoke-edit'}
+if ($Edit) {$arguments+=@('--smoke-edit','--smoke-repair',$expect.repair)}
 if ($Save) {
     $saveDir=Join-Path $reports ('save-smoke-'+[Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $saveDir | Out-Null
@@ -122,11 +128,14 @@ if ($log -notmatch 'gpu_scene_published document=1 revision=0 vertices=\d+ trian
 if ($GpuFault -ne 'none' -and !$Edit -and $log -notmatch "gpu_fault_smoke stage=$GpuFault preserved=true scene_document=1 scene_revision=0") {throw 'Injected GPU stage failure did not preserve the published scene.'}
 if ($Edit) {
     if ($GpuFault -ne 'none' -and $log -notmatch 'edit_gpu_fault preserved=true revision=0 scene_revision=0 undo=0 redo=0') {throw 'Injected GPU failure during Apply was not fully preserved.'}
+    # Undo/Redo lines name the primitive from the history entry and report both rule counts.
+    foreach ($step in @(@('remove',$expect.removed,1,$expect.after,0,1,0),@('undo',0,2,$expect.before,1,0,1),@('redo',0,3,$expect.after,0,1,0))) {
+        $pattern="edit_published kind=$($step[0]) removed=$($step[1]) mesh=0 revision=$($step[2]) scene_revision=$($step[2]) mesh_triangles=$($step[3]) analysis=complete "
+        $counts=if ($expect.repair -eq 'g001') {"g001_in_mesh=$($step[4]) g002_in_mesh=\d+"} else {"g001_in_mesh=\d+ g002_in_mesh=$($step[4])"}
+        if ($log -notmatch ([regex]::Escape($pattern)+$counts+" undo=$($step[5]) redo=$($step[6]) consistent=true")) {throw "Missing edit evidence: $($step[0])"}
+    }
     foreach ($line in @(
-        'edit_preview mesh=0 before=992 after=960 references=1 complete=true g002_left=0',
-        'edit_published kind=remove removed=32 revision=1 scene_revision=1 mesh_triangles=960 analysis=complete g002_in_mesh=0 undo=1 redo=0 consistent=true',
-        'edit_published kind=undo removed=0 revision=2 scene_revision=2 mesh_triangles=992 analysis=complete g002_in_mesh=1 undo=0 redo=1 consistent=true',
-        'edit_published kind=redo removed=0 revision=3 scene_revision=3 mesh_triangles=960 analysis=complete g002_in_mesh=0 undo=1 redo=0 consistent=true',
+        "edit_preview mesh=0 before=$($expect.before) after=$($expect.after) references=$($expect.refs) complete=true target_left=0",
         'edit_smoke_done=true')) {
         if ($log -notmatch [regex]::Escape($line)) {throw "Missing edit evidence: $line"}
     }
@@ -135,11 +144,11 @@ if ($Save) {
     foreach ($line in @(
         'unsaved_guard dirty=true decision=Ask',
         'unsaved_guard dirty=false decision=Proceed',
-        'reopened_saved revision=0 primitives=4 mesh_triangles=960 analysis=complete g002_in_mesh=0 dirty=false')) {
+        "reopened_saved revision=0 primitives=$($expect.primitives) mesh_triangles=$($expect.after) analysis=complete target_in_mesh=0 dirty=false")) {
         if ($log -notmatch [regex]::Escape($line)) {throw "Missing Save Copy evidence: $line"}
     }
     if ($log -notmatch 'save_failed code=\w+ dirty=true') {throw 'Existing destination was not refused while keeping unsaved state.'}
-    if ($log -notmatch 'save_published revision=3 bytes=(\d+) exact_copy=false reimported_triangles=3840 cleanup_warning=false accepted=true dirty=false') {throw 'Missing verified Save Copy receipt evidence.'}
+    if ($log -notmatch "save_published revision=3 bytes=(\d+) exact_copy=false reimported_triangles=$($expect.total) cleanup_warning=false accepted=true dirty=false") {throw 'Missing verified Save Copy receipt evidence.'}
     $savedBytes=[int64]$Matches[1]
     $healed=Join-Path $saveDir 'healed.glb'
     if (!(Test-Path -LiteralPath $healed) -or (Get-Item -LiteralPath $healed).Length -ne $savedBytes) {throw 'Saved copy is missing or has an unexpected size.'}

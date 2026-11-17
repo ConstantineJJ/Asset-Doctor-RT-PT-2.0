@@ -131,6 +131,8 @@ struct App {
     save_smoke: Option<(PathBuf, u8)>,
     /// Smoke-only close guard: 1 = answer Cancel, 2 = answer No, 3 = done.
     smoke_guard: u8,
+    /// Repair kind exercised by --smoke-edit (default G002).
+    smoke_repair: ad_heal::RepairKind,
     ui: viewer_ui::ViewerUi,
 }
 
@@ -370,7 +372,7 @@ impl App {
                     let asset = self.current.as_ref().expect("Published above");
                     let report = asset.diagnostics().as_ref().ok();
                     eprintln!(
-                        "reopened_saved revision={} primitives={} mesh_triangles={} analysis={} g002_in_mesh={} dirty={}",
+                        "reopened_saved revision={} primitives={} mesh_triangles={} analysis={} target_in_mesh={} dirty={}",
                         asset.document().revision(),
                         asset.document().primitives().len(),
                         asset
@@ -386,7 +388,7 @@ impl App {
                         report.map_or(usize::MAX, |r| r
                             .findings
                             .iter()
-                            .filter(|f| f.code == ad_analysis::Code::DuplicateTriangle)
+                            .filter(|f| f.code == edits::target_code(self.smoke_repair))
                             .count()),
                         self.is_dirty()
                     );
@@ -439,6 +441,7 @@ impl App {
         self.edit_started = Instant::now();
         self.edit_busy = match kind {
             EditKind::RemoveDuplicates(_) => "Расчёт и проверка ремонта G002…",
+            EditKind::RemoveDegenerate(_) => "Расчёт и проверка ремонта G001…",
             EditKind::Undo => "Подготовка отмены правки…",
             EditKind::Redo => "Подготовка повтора правки…",
         }
@@ -476,13 +479,13 @@ impl App {
         };
         if let Some(info) = candidate.info() {
             eprintln!(
-                "edit_preview mesh={} before={} after={} references={} complete={} g002_left={}",
+                "edit_preview mesh={} before={} after={} references={} complete={} target_left={}",
                 info.mesh.0,
                 info.before,
                 info.after,
                 info.references,
                 info.complete,
-                info.g002_left.map_or(-1, |n| n as i64)
+                info.target_left.map_or(-1, |n| n as i64)
             );
             eprintln!("edit_timing stage=prepare kind=remove prepare_ms={prepare_ms}");
             self.ui.status = "Предпросмотр готов; модель не изменена".into();
@@ -508,6 +511,7 @@ impl App {
         // Any publication attempt invalidates an older preview.
         self.pending_preview = None;
         let kind = candidate.kind();
+        let mesh = candidate.mesh();
         let removed = candidate
             .preview()
             .map_or(0, |p| p.before_triangles - p.after_triangles);
@@ -524,13 +528,12 @@ impl App {
         match published {
             Ok(tag) => {
                 let report = asset.diagnostics().as_ref().ok();
-                let mesh = match kind {
-                    EditKind::RemoveDuplicates(mesh) => mesh,
-                    _ => self.edit_mesh.unwrap_or(MeshId(0)),
-                };
+                let count =
+                    |kind| report.map_or(usize::MAX, |r| edits::findings_in_mesh(r, mesh, kind));
                 eprintln!(
-                    "edit_published kind={} removed={removed} revision={} scene_revision={} mesh_triangles={} analysis={} g002_in_mesh={} undo={} redo={} consistent={}",
+                    "edit_published kind={} removed={removed} mesh={} revision={} scene_revision={} mesh_triangles={} analysis={} g001_in_mesh={} g002_in_mesh={} undo={} redo={} consistent={}",
                     edit_name(kind),
+                    mesh.0,
                     tag.revision,
                     renderer.scene_tag().map_or(u64::MAX, |t| t.1),
                     asset
@@ -543,14 +546,8 @@ impl App {
                         Some(_) => "partial",
                         None => "incomplete",
                     },
-                    report.map_or(0, |r| {
-                        r.findings
-                            .iter()
-                            .filter(|f| {
-                                f.mesh == mesh && f.code == ad_analysis::Code::DuplicateTriangle
-                            })
-                            .count()
-                    }),
+                    count(ad_heal::RepairKind::DegenerateTriangles),
+                    count(ad_heal::RepairKind::DuplicateTriangles),
                     asset.session.history_usage().undo,
                     asset.session.history_usage().redo,
                     asset.is_consistent()
@@ -597,7 +594,8 @@ impl App {
         self.title();
         Ok(())
     }
-    /// Smoke sequence on the first G002 mesh: [fault Apply,] Apply, Undo, Redo.
+    /// Smoke sequence on the first finding of the smoke repair kind:
+    /// [fault Apply,] Apply, Undo, Redo.
     fn advance_edit_smoke(&mut self) -> GpuResult<()> {
         if !self.smoke_edit || self.importing || self.editing || !self.failed_replacement_preserved
         {
@@ -612,13 +610,13 @@ impl App {
                     report
                         .findings
                         .iter()
-                        .find(|f| f.code == ad_analysis::Code::DuplicateTriangle)
+                        .find(|f| f.code == edits::target_code(self.smoke_repair))
                 })
                 .map(|finding| finding.mesh)
-                .ok_or("Edit smoke model has no G002 finding")?;
+                .ok_or("Edit smoke model has no finding for the smoke repair")?;
             self.edit_mesh = Some(mesh);
             self.edit_queue = VecDeque::from([
-                EditKind::RemoveDuplicates(mesh),
+                EditKind::from_repair(mesh, self.smoke_repair),
                 EditKind::Undo,
                 EditKind::Redo,
             ]);
@@ -902,8 +900,8 @@ impl App {
         if actions.save_copy {
             self.pending_save = true;
         }
-        if let Some(mesh) = actions.preview {
-            self.request_edit(EditKind::RemoveDuplicates(mesh));
+        if let Some((mesh, kind)) = actions.preview {
+            self.request_edit(EditKind::from_repair(mesh, kind));
         }
         if actions.discard_preview && self.pending_preview.take().is_some() {
             self.ui.status = "Предпросмотр закрыт; модель не изменена".into();
@@ -1260,7 +1258,7 @@ impl ApplicationHandler for App {
 
 fn edit_name(kind: EditKind) -> &'static str {
     match kind {
-        EditKind::RemoveDuplicates(_) => "remove",
+        EditKind::RemoveDuplicates(_) | EditKind::RemoveDegenerate(_) => "remove",
         EditKind::Undo => "undo",
         EditKind::Redo => "redo",
     }
@@ -1276,6 +1274,7 @@ fn run() -> GpuResult<()> {
     let mut smoke_edit = false;
     let mut smoke_save = None;
     let mut smoke_guard = 0u8;
+    let mut smoke_repair = ad_heal::RepairKind::DuplicateTriangles;
     let mut ui = viewer_ui::ViewerUi::default();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -1308,6 +1307,13 @@ fn run() -> GpuResult<()> {
             }
             "--smoke-edit" => smoke_edit = true,
             "--smoke-guard" => smoke_guard = 1,
+            "--smoke-repair" => {
+                smoke_repair = match args.next().as_deref() {
+                    Some("g001") => ad_heal::RepairKind::DegenerateTriangles,
+                    Some("g002") => ad_heal::RepairKind::DuplicateTriangles,
+                    _ => return Err("--smoke-repair needs g001 or g002".into()),
+                }
+            }
             "--smoke-save" => {
                 smoke_save = Some(PathBuf::from(
                     args.next()
@@ -1397,6 +1403,7 @@ fn run() -> GpuResult<()> {
         after_save: None,
         save_smoke: smoke_save.map(|dir| (dir, 0)),
         smoke_guard,
+        smoke_repair,
         ui,
     };
     event_loop.run_app(&mut app)?;

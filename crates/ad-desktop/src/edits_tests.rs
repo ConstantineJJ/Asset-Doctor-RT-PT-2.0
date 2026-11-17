@@ -361,3 +361,55 @@ fn unsupported_changed_export_refuses_apply_before_any_change() {
     assert_eq!(&**copy.bytes(), &*asset.document().source().clone());
     let _ = &mut asset;
 }
+
+#[test]
+fn degenerate_repair_uses_the_same_preview_publication_and_history() {
+    let (mut asset, mut scene) = open("Geometry_Findings.glb");
+    let c = Cancellation::default();
+    let original = asset.document().primitives()[0].indices.clone();
+    let candidate = candidate(&asset, EditKind::RemoveDegenerate(MeshId(0)));
+    let info = candidate.info().unwrap();
+    assert_eq!(info.kind, ad_heal::RepairKind::DegenerateTriangles);
+    assert_eq!((info.before, info.after, info.references), (5, 3, 2));
+    assert!(info.complete);
+    assert_eq!(info.target_left, Some(0));
+    assert_eq!(asset.document().revision(), 0);
+    let tag = publish_edit(&mut asset, &mut scene, candidate, &c).unwrap();
+    assert_eq!(tag.revision, 1);
+    assert!(asset.is_consistent());
+    assert_eq!(asset.document().primitives()[0].indices.len(), 9);
+    let report = asset.diagnostics().as_ref().unwrap();
+    assert!(report.is_complete());
+    assert!(
+        !report
+            .findings
+            .iter()
+            .any(|f| f.mesh == MeshId(0) && f.code == ad_analysis::Code::ZeroArea)
+    );
+    apply(&mut asset, &mut scene, EditKind::Undo);
+    assert_eq!(asset.document().primitives()[0].indices, original);
+    // Undo/Redo candidates name the primitive their history entry changes, and
+    // the per-rule counts are read for that primitive (manual-check log bug:
+    // Undo/Redo once reported G002 under the G001 label).
+    let redo = self::candidate(&asset, EditKind::Redo);
+    assert_eq!(redo.mesh(), MeshId(0));
+    publish_edit(&mut asset, &mut scene, redo, &c).unwrap();
+    let report = asset.diagnostics().as_ref().unwrap();
+    assert_eq!(
+        findings_in_mesh(report, MeshId(0), ad_heal::RepairKind::DegenerateTriangles),
+        0
+    );
+    assert_eq!(
+        findings_in_mesh(report, MeshId(0), ad_heal::RepairKind::DuplicateTriangles),
+        1
+    );
+    // Repeating the repair after Redo is a no-op.
+    let outcome = prepare_edit(
+        &asset.session,
+        &asset.generation.stamp,
+        EditKind::RemoveDegenerate(MeshId(0)),
+        &c,
+    )
+    .unwrap();
+    assert!(matches!(outcome, EditOutcome::NoChange(_)));
+}

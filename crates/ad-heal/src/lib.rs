@@ -42,14 +42,29 @@ pub struct DuplicatePreview {
     /// This is not a count of currently displayed instances.
     pub source_node_references: usize,
 }
+/// Index-only repairs that remove whole triangles of one source primitive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RepairKind {
+    /// G002 / REPAIR-06 (ADR-0030).
+    DuplicateTriangles,
+    /// G001 / REPAIR-01 (ADR-0032).
+    DegenerateTriangles,
+}
+/// Complete removal plan for one source primitive and one repair kind.
 pub struct DuplicatePlan {
     stamp: DocumentStamp,
     preview: DuplicatePreview,
     removed: Vec<u32>,
+    kind: RepairKind,
 }
+/// Kind-neutral name for the same plan type.
+pub type RemovalPlan = DuplicatePlan;
 impl DuplicatePlan {
     pub fn preview(&self) -> DuplicatePreview {
         self.preview
+    }
+    pub fn kind(&self) -> RepairKind {
+        self.kind
     }
     pub fn removed_triangles(&self) -> &[u32] {
         &self.removed
@@ -74,32 +89,40 @@ impl DuplicatePlan {
         if !self.is_current(doc) {
             return Err(AssetError::new(
                 ErrorCode::Conflict,
-                "Duplicate plan is stale or belongs to another document",
+                "Repair plan is stale or belongs to another document",
             ));
         }
         let command =
             session.prepare_removal(self.preview.tag, self.preview.mesh, &self.removed, cancel)?;
         let candidate = command.indices_after(doc, cancel)?;
-        verify::check(
-            &doc.primitives()[self.preview.mesh.0].indices,
-            &self.removed,
-            candidate,
-            limits,
-            || cancel.check(),
-        )?;
+        let source = &doc.primitives()[self.preview.mesh.0];
+        match self.kind {
+            RepairKind::DuplicateTriangles => {
+                verify::check(&source.indices, &self.removed, candidate, limits, || {
+                    cancel.check()
+                })?
+            }
+            RepairKind::DegenerateTriangles => verify::check_degenerate(
+                &source.positions,
+                &source.indices,
+                &self.removed,
+                candidate,
+                || cancel.check(),
+            )?,
+        }
         Ok(command)
     }
 }
 fn budget() -> AssetError {
     AssetError::new(
         ErrorCode::ResourceLimit,
-        "Duplicate-removal planning or verification limit exceeded",
+        "Repair planning or verification limit exceeded",
     )
 }
 fn mismatch() -> AssetError {
     AssetError::new(
         ErrorCode::VerificationFailed,
-        "Duplicate-removal candidate failed independent verification",
+        "Repair candidate failed independent verification",
     )
 }
 fn reserve<T>(count: usize, bytes: usize) -> AssetResult<Vec<T>> {
@@ -150,6 +173,75 @@ pub fn plan_duplicates(
             source_node_references: references,
         },
         removed,
+        kind: RepairKind::DuplicateTriangles,
+    })
+}
+
+/// Complete read-only G001 scan of one source primitive (ADR-0032): exactly
+/// the faces the diagnostic's exact zero-area predicate reports, including
+/// repeated-index faces. A fully degenerate primitive is refused because
+/// empty primitives are not supported. An empty plan is a no-op.
+pub fn plan_degenerate(
+    document: &AssetDocument,
+    expected: DocumentTag,
+    mesh: MeshId,
+    limits: PlanLimits,
+    cancel: &Cancellation,
+) -> AssetResult<DuplicatePlan> {
+    document.verify_tag(expected, cancel)?;
+    let primitive = document.primitives().get(mesh.0).ok_or_else(|| {
+        AssetError::new(
+            ErrorCode::InvalidGeometry,
+            "Unknown degenerate-removal source primitive",
+        )
+    })?;
+    let faces = primitive.indices.as_chunks::<3>().0;
+    if faces.len() > limits.triangles || faces.len() > u32::MAX as usize {
+        return Err(budget());
+    }
+    let positions = &primitive.positions;
+    let degenerate = |face: &[u32; 3]| {
+        ad_analysis::zero_area(
+            positions[face[0] as usize],
+            positions[face[1] as usize],
+            positions[face[2] as usize],
+        )
+    };
+    let mut count = 0usize;
+    for (i, face) in faces.iter().enumerate() {
+        if i % 1024 == 0 {
+            cancel.check()?;
+        }
+        count += usize::from(degenerate(face));
+    }
+    if count > 0 && count == faces.len() {
+        return Err(AssetError::new(
+            ErrorCode::Unsupported,
+            "Every triangle of this primitive is degenerate; removing all of them would leave an empty primitive, which is not supported",
+        ));
+    }
+    let mut removed = reserve::<u32>(count, limits.result_bytes)?;
+    for (i, face) in faces.iter().enumerate() {
+        if i % 1024 == 0 {
+            cancel.check()?;
+        }
+        if degenerate(face) {
+            removed.push(i as u32);
+        }
+    }
+    let references = source_references(document, mesh, limits.scratch_bytes, || cancel.check())?;
+    cancel.check()?;
+    Ok(DuplicatePlan {
+        stamp: document.stamp(),
+        preview: DuplicatePreview {
+            tag: expected,
+            mesh,
+            before_triangles: faces.len(),
+            after_triangles: faces.len() - removed.len(),
+            source_node_references: references,
+        },
+        removed,
+        kind: RepairKind::DegenerateTriangles,
     })
 }
 
@@ -246,5 +338,7 @@ fn scan(
     check()?;
     Ok(removed)
 }
+#[cfg(test)]
+mod degenerate_tests;
 #[cfg(test)]
 mod tests;
