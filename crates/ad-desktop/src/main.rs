@@ -511,6 +511,7 @@ impl App {
         // Any publication attempt invalidates an older preview.
         self.pending_preview = None;
         let kind = candidate.kind();
+        let mesh = candidate.mesh();
         let removed = candidate
             .preview()
             .map_or(0, |p| p.before_triangles - p.after_triangles);
@@ -527,13 +528,12 @@ impl App {
         match published {
             Ok(tag) => {
                 let report = asset.diagnostics().as_ref().ok();
-                let mesh = kind
-                    .repair()
-                    .map_or(self.edit_mesh.unwrap_or(MeshId(0)), |(mesh, _)| mesh);
-                let code = edits::target_code(kind.repair().map_or(self.smoke_repair, |r| r.1));
+                let count =
+                    |kind| report.map_or(usize::MAX, |r| edits::findings_in_mesh(r, mesh, kind));
                 eprintln!(
-                    "edit_published kind={} removed={removed} revision={} scene_revision={} mesh_triangles={} analysis={} target_in_mesh={} undo={} redo={} consistent={}",
+                    "edit_published kind={} removed={removed} mesh={} revision={} scene_revision={} mesh_triangles={} analysis={} g001_in_mesh={} g002_in_mesh={} undo={} redo={} consistent={}",
                     edit_name(kind),
+                    mesh.0,
                     tag.revision,
                     renderer.scene_tag().map_or(u64::MAX, |t| t.1),
                     asset
@@ -546,12 +546,8 @@ impl App {
                         Some(_) => "partial",
                         None => "incomplete",
                     },
-                    report.map_or(0, |r| {
-                        r.findings
-                            .iter()
-                            .filter(|f| f.mesh == mesh && f.code == code)
-                            .count()
-                    }),
+                    count(ad_heal::RepairKind::DegenerateTriangles),
+                    count(ad_heal::RepairKind::DuplicateTriangles),
                     asset.session.history_usage().undo,
                     asset.session.history_usage().redo,
                     asset.is_consistent()

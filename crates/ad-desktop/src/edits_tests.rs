@@ -388,8 +388,22 @@ fn degenerate_repair_uses_the_same_preview_publication_and_history() {
     );
     apply(&mut asset, &mut scene, EditKind::Undo);
     assert_eq!(asset.document().primitives()[0].indices, original);
+    // Undo/Redo candidates name the primitive their history entry changes, and
+    // the per-rule counts are read for that primitive (manual-check log bug:
+    // Undo/Redo once reported G002 under the G001 label).
+    let redo = self::candidate(&asset, EditKind::Redo);
+    assert_eq!(redo.mesh(), MeshId(0));
+    publish_edit(&mut asset, &mut scene, redo, &c).unwrap();
+    let report = asset.diagnostics().as_ref().unwrap();
+    assert_eq!(
+        findings_in_mesh(report, MeshId(0), ad_heal::RepairKind::DegenerateTriangles),
+        0
+    );
+    assert_eq!(
+        findings_in_mesh(report, MeshId(0), ad_heal::RepairKind::DuplicateTriangles),
+        1
+    );
     // Repeating the repair after Redo is a no-op.
-    apply(&mut asset, &mut scene, EditKind::Redo);
     let outcome = prepare_edit(
         &asset.session,
         &asset.generation.stamp,

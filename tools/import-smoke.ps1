@@ -128,11 +128,14 @@ if ($log -notmatch 'gpu_scene_published document=1 revision=0 vertices=\d+ trian
 if ($GpuFault -ne 'none' -and !$Edit -and $log -notmatch "gpu_fault_smoke stage=$GpuFault preserved=true scene_document=1 scene_revision=0") {throw 'Injected GPU stage failure did not preserve the published scene.'}
 if ($Edit) {
     if ($GpuFault -ne 'none' -and $log -notmatch 'edit_gpu_fault preserved=true revision=0 scene_revision=0 undo=0 redo=0') {throw 'Injected GPU failure during Apply was not fully preserved.'}
+    # Undo/Redo lines name the primitive from the history entry and report both rule counts.
+    foreach ($step in @(@('remove',$expect.removed,1,$expect.after,0,1,0),@('undo',0,2,$expect.before,1,0,1),@('redo',0,3,$expect.after,0,1,0))) {
+        $pattern="edit_published kind=$($step[0]) removed=$($step[1]) mesh=0 revision=$($step[2]) scene_revision=$($step[2]) mesh_triangles=$($step[3]) analysis=complete "
+        $counts=if ($expect.repair -eq 'g001') {"g001_in_mesh=$($step[4]) g002_in_mesh=\d+"} else {"g001_in_mesh=\d+ g002_in_mesh=$($step[4])"}
+        if ($log -notmatch ([regex]::Escape($pattern)+$counts+" undo=$($step[5]) redo=$($step[6]) consistent=true")) {throw "Missing edit evidence: $($step[0])"}
+    }
     foreach ($line in @(
         "edit_preview mesh=0 before=$($expect.before) after=$($expect.after) references=$($expect.refs) complete=true target_left=0",
-        "edit_published kind=remove removed=$($expect.removed) revision=1 scene_revision=1 mesh_triangles=$($expect.after) analysis=complete target_in_mesh=0 undo=1 redo=0 consistent=true",
-        "edit_published kind=undo removed=0 revision=2 scene_revision=2 mesh_triangles=$($expect.before) analysis=complete target_in_mesh=1 undo=0 redo=1 consistent=true",
-        "edit_published kind=redo removed=0 revision=3 scene_revision=3 mesh_triangles=$($expect.after) analysis=complete target_in_mesh=0 undo=1 redo=0 consistent=true",
         'edit_smoke_done=true')) {
         if ($log -notmatch [regex]::Escape($line)) {throw "Missing edit evidence: $line"}
     }

@@ -46,6 +46,15 @@ pub fn target_code(kind: RepairKind) -> ad_analysis::Code {
         RepairKind::DegenerateTriangles => ad_analysis::Code::ZeroArea,
     }
 }
+/// Findings of the rule a repair kind removes, on one source primitive.
+pub fn findings_in_mesh(report: &ad_analysis::Report, mesh: MeshId, kind: RepairKind) -> usize {
+    let code = target_code(kind);
+    report
+        .findings
+        .iter()
+        .filter(|f| f.mesh == mesh && f.code == code)
+        .count()
+}
 pub fn repair_label(kind: RepairKind) -> &'static str {
     match kind {
         RepairKind::DuplicateTriangles => "G002",
@@ -65,6 +74,8 @@ enum Change {
 /// Fully prepared, not yet visible. Single use; bound to its base stamp.
 pub struct EditCandidate {
     kind: EditKind,
+    /// Source primitive whose indices this edit changes (also for Undo/Redo).
+    mesh: MeshId,
     base: DocumentStamp,
     change: Change,
     preview: Option<DuplicatePreview>,
@@ -74,6 +85,9 @@ pub struct EditCandidate {
 impl EditCandidate {
     pub fn kind(&self) -> EditKind {
         self.kind
+    }
+    pub fn mesh(&self) -> MeshId {
+        self.mesh
     }
     pub fn preview(&self) -> Option<DuplicatePreview> {
         self.preview
@@ -177,6 +191,7 @@ pub fn prepare_edit(
         Change::Undo => session.undo_candidate()?,
         Change::Redo => session.redo_candidate()?,
     };
+    let mesh = candidate.mesh();
     let view = document.candidate_view(candidate, cancel)?;
     if kind.repair().is_some() {
         // G002-06: refuse before Apply if the result could not be saved by
@@ -195,6 +210,7 @@ pub fn prepare_edit(
     cancel.check()?;
     Ok(EditOutcome::Candidate(Box::new(EditCandidate {
         kind,
+        mesh,
         base: base.clone(),
         change,
         preview,
