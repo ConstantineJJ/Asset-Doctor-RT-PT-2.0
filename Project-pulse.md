@@ -1,5 +1,10 @@
 # Project pulse
 
+## 2026-11-17 — PR #1 слит в main
+
+- По команде владельца PR #1 (claude/g002-heal, 21 коммит) слит в main через GitHub обычным merge-коммитом d034177 после двух зелёных проверок windows-msvc (push и pull_request) и без конфликтов. Локальный main обновлён fast-forward. Ветка claude/g002-heal оставлена.
+- Предупреждение CI: actions/checkout@v4 и actions/upload-artifact@v4 построены на устаревшем Node.js 20 (GitHub принудительно запускает их на Node.js 24) — к коду продукта не относится; обновление версий actions в workflow — отдельная мелкая задача.
+
 ## 2026-11-17 — G002: ветка отправлена, PR #1 открыт
 
 - По команде владельца ветка claude/g002-heal (20 коммитов от 24f9fc6, до fa01b2a) отправлена в origin; перед отправкой дифф проверен на личные пути, логи и сборки — их нет. PR https://github.com/ConstantineJJ/Asset-Doctor-RT-PT-2.0/pull/1 создан через встроенный браузер (gh не установлен), «Able to merge». Слияние в main не выполнялось — решение владельца.
