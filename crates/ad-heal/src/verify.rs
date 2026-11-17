@@ -115,3 +115,46 @@ pub(crate) fn check(
     cancel()?;
     Ok(())
 }
+
+/// ADR-0032 postcheck in one streaming pass without scratch memory: every
+/// source face is either zero-area, listed in `removed` and absent from the
+/// candidate, or non-zero and equal to the next candidate face (same order and
+/// winding). The candidate must be fully consumed.
+pub(crate) fn check_degenerate(
+    positions: &[[f32; 3]],
+    before: &[u32],
+    removed: &[u32],
+    after: &[u32],
+    mut cancel: impl FnMut() -> AssetResult<()>,
+) -> AssetResult<()> {
+    cancel()?;
+    if !before.len().is_multiple_of(3) || !after.len().is_multiple_of(3) {
+        return Err(mismatch());
+    }
+    let survivors = after.as_chunks::<3>().0;
+    let mut next_survivor = 0usize;
+    let mut next_removed = 0usize;
+    for (ordinal, face) in before.as_chunks::<3>().0.iter().enumerate() {
+        if ordinal % 1024 == 0 {
+            cancel()?;
+        }
+        let point = |i: u32| positions.get(i as usize).copied().ok_or_else(mismatch);
+        let zero = ad_analysis::zero_area(point(face[0])?, point(face[1])?, point(face[2])?);
+        let listed = removed.get(next_removed) == Some(&(ordinal as u32));
+        match (zero, listed) {
+            (true, true) => next_removed += 1,
+            (false, false) => {
+                if survivors.get(next_survivor) != Some(face) {
+                    return Err(mismatch());
+                }
+                next_survivor += 1;
+            }
+            _ => return Err(mismatch()),
+        }
+    }
+    cancel()?;
+    if next_removed != removed.len() || next_survivor != survivors.len() {
+        return Err(mismatch());
+    }
+    Ok(())
+}

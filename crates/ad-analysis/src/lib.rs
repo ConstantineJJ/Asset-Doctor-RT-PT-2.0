@@ -162,9 +162,11 @@ impl Tally {
     }
 }
 
-// All three projections must be collinear. Source f32 converts exactly to f64;
-// adaptive predicates avoid cancellation false positives in a plain cross product.
-fn zero_area(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> bool {
+/// Exact G001 predicate: true when all three coordinate projections are
+/// collinear. Source f32 converts exactly to f64; adaptive predicates avoid
+/// cancellation false positives in a plain cross product. Shared with repair
+/// planning (ADR-0032) so a plan always equals the complete G001 set.
+pub fn zero_area(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> bool {
     [(0, 1), (1, 2), (2, 0)].into_iter().all(|(x, y)| {
         let point = |v: [f32; 3]| robust::Coord { x: v[x], y: v[y] };
         robust::orient2d(point(a), point(b), point(c)) == 0.
