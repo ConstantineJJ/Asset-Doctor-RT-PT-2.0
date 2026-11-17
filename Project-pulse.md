@@ -1,5 +1,13 @@
 # Project pulse
 
+## 2026-11-17 — REPAIR-01: удаление вырожденных треугольников (G001)
+
+- Ветка claude/g001-degenerate от main 9e288d1. Решения владельца по ADR-0032: точная нулевая площадь (тот же предикат, что G001, без допуска Legacy), общий примитив затрагивает все ссылки, полностью вырожденный примитив — отказ, проверка тем же предикатом (ad-heal теперь зависит от ad-analysis только ради него). Legacy E:\MyCreations\Asset-Doctor прочитан только как справка о поведении (epsilon по диагонали, блокировка общей геометрии) — код не копировался и не запускался.
+- ad-heal: plan_degenerate, RepairKind в плане, потоковая проверка check_degenerate (только удаление, порядок/обход выживших, точный набор G001, без доп. памяти). Desktop: EditKind::RemoveDegenerate на том же конвейере ADR-0031; кнопка предпросмотра в строках G001; окно предпросмотра называет ремонт; лог-поля стали target_left/target_in_mesh; smoke --smoke-repair g001|g002, import-smoke -Scene geometry -Edit.
+- RED→GREEN: 5 тестов ad-heal и 2 desktop-теста не компилировались без API, затем прошли. 205 тестов (17 heal, 41 desktop), fmt/clippy/release/cargo-deny PASS.
+- Нативно с sync-validation на Geometry_Findings (примитив #0, 2 ссылки): предпросмотр 5→3, Apply/Undo/Redo ревизии 1/2/3, отказ GPU upload сохраняет всё, Save Copy 1336 байт с readback и повторным импортом, повторное открытие — 3 треугольника, полный анализ, G001 нет; вопрос при закрытии виден. Регрессии G002 (save/guard), импорт normal/uv/static/geometry/color, heal-smoke, пустое окно — PASS, 0 ошибок validation.
+- REPAIR-01: NOT_STARTED → PARTIAL (сводка: Готово 6, Частично 21, Не реализовано 46). Отчёт G001_DEGENERATE_REPORT_2026-11-17.md. Следующий шаг: ручная проверка G001 владельцем, затем PR. Локальный main 9e288d1 (запись о слиянии PR #1) ещё не отправлен — уйдёт с этим PR.
+
 ## 2026-11-17 — PR #1 слит в main
 
 - По команде владельца PR #1 (claude/g002-heal, 21 коммит) слит в main через GitHub обычным merge-коммитом d034177 после двух зелёных проверок windows-msvc (push и pull_request) и без конфликтов. Локальный main обновлён fast-forward. Ветка claude/g002-heal оставлена.
