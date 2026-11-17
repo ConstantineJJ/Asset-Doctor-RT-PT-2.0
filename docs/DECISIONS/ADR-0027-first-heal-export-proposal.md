@@ -8,6 +8,10 @@ ADR-0030 accepts the internal complete single-primitive G002 plan and independen
 command-candidate postcheck. Native source/material eligibility and publication
 still require separate decisions and verification.
 
+ADR-0031 (2026-11-17) accepts the native publication protocol and owner
+decisions for stale reports, dirty state and export refusal. Its implementation
+and eligibility/Save UI remain unverified until their own stages pass.
+
 Target first complete workflow: oriented same-index duplicate findingG002 →
 read-only preview of full removal set → explicit apply → independent postcheck →
 Undo/Redo → Save Copy → fresh reimport and structural verification. Never use

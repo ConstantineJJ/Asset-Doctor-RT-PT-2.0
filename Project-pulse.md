@@ -1,5 +1,14 @@
 # Project pulse
 
+## 2026-11-17 — G002 этап A: аудит и ADR-0031 атомарной публикации правки
+
+- Исполнитель Claude (Клодиус), ветка claude/g002-heal от 24f9fc6. Только документы: ADR-0031, строки ADR-0027, ARCHITECTURE, мастер-план §13, tasks/todo. Код, тесты, фикстуры и матрица FEATURE_PARITY_MATRIX.csv не менялись (статусы HEAL-01/REPAIR-06/EXP-01 прежние).
+- Ревью: дерево чистое, dbd6091 и 24f9fc6 на месте. cargo test --workspace --locked: 170 PASS (35/14/23/23/38/12/12/13), совпадает с базой. fmt/clippy/release/cargo-deny на этом этапе не запускались — кода нет. CI не проверен: gh не установлен. Передаточный документ Claude_Jarvis2_Projects_Handoff_2026-11-17.md в ..\Docs отсутствует.
+- Подтверждено по коду: успешный Session::commit отрезает Redo (ad-commands lib.rs:183), Undo/Redo повышают revision (indices.rs:305) → «commit → сбой GPU → Undo» не является откатом. set_scene сам по себе корректен (GpuScene::new и wait_idle до присваивания), но вместе с отказоспособным commit ни один порядок не атомарен. Desktop хранит голый AssetDocument без Session; snapshot и анализ не умеют читать будущие индексы; GpuScene::new каждый раз перезаливает все текстуры; Report::matches без приватного origin.
+- Решение ADR-0031: Arc<Session> в desktop, подготовка (план, preflight, PreparedRemoval, candidate snapshot/анализ с revision+1) в фоне; в UI-потоке stage_commit + stage_scene под двумя &mut заимствованиями, затем publish без Result: история, сцена и единое поколение snapshot/report/stamp. Undo/Redo через read-only цели истории, без компенсаций. Решения владельца 1–7 записаны в ADR.
+- Предупреждения: пик VRAM = старая + новая сцена целиком; UI-поток блокируется на время загрузки; VK_EXT_memory_budget нет, замеры будут учётными байтами аллокаций. DEVICE_LOST сохраняет только CPU-состояние. Мелочь в Session::commit: недостижимая ветка changed=true без записи в историю — поправить в B2.
+- Следующий шаг: B1 — CandidateIndices, snapshot_with/analyze_with, RED-тесты равенства с результатами после настоящего commit.
+
 ## 2026-11-17 — Complete G002 plan and command postcheck
 
 - Feature checkpointdbd6091. Accepted ADR-0030/read-only slice15audit; new local ad-heal has only document/commands runtime dependencies. Complete single-source-MeshId oriented same-index scan retains earliest survivor and every removal ordinal, independent of16report samples. Reverse winding/distinct coincident indices stay separate; repeated-index copies retain one degenerate representative. No cross-primitive/welding/attribute edits or native Heal controls.

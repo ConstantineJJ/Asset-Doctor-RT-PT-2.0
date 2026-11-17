@@ -158,3 +158,10 @@ verification before the command is returned. Source/material/export eligibility
 and atomic native document/history/analysis/snapshot/GPU publication remain open.
 No second history or UI repair controller is introduced. Evidence and limits:
 DUPLICATE_PLAN_REPORT_2026-11-17.md.
+
+ADR-0031 (accepted protocol, not yet implemented) defines native edit
+publication. Desktop will hold `Arc<Session>`; workers prepare plan, candidate
+snapshot and analysis from a non-mutating candidate index view. The UI thread
+stages every fallible Session check and GPU upload/idle wait behind two `&mut`
+borrows, then publishes history, scene and one snapshot/report/stamp generation
+without fallible steps between. Undo/Redo use the same path; no compensation.

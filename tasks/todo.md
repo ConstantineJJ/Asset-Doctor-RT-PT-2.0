@@ -13,6 +13,13 @@ Full roadmap and all76function/request statuses:
 - [x] Static export/storage backend: ADR-0028/0029 and source slice14; source-primitive mapping, exact-copy/append-only index writer, bounded core metadata, independent reimport comparison, Windows new-path disk readback/no-replace publication and handle-bound cleanup.157tests and saved-copy/UV/normal/empty native regressions PASS. Report STATIC_EXPORT_REPORT_2026-11-16.md; no desktop controls added.
 - [x] Duplicate-plan CPU subset: ADR-0030/source slice15, complete oriented same-index removal plan for one source primitive, earliest survivors, all source-node reference count, independent precommit verifier and shared command history.170workspace tests; textured plan/apply/complete-analysis/Undo/Redo/export/disk/native readback PASS. Report DUPLICATE_PLAN_REPORT_2026-11-17.md; no native Heal controls.
 - [ ] First user-facing Heal/export: close remaining ADR-0027 source/material eligibility and atomic desktop/history/analysis/snapshot/GPU publication; add preview/apply/verify/Undo/Save Copy/dirty-close workflow. CPU plan/history/writer/storage exist; native repair/Save controls do not.
+  - [x] A: ADR-0031 publication protocol, state owners and owner decisions 1–7 (docs only, branch claude/g002-heal).
+  - [ ] B1: candidate index view; snapshot_with/analyze_with equal to post-commit results.
+  - [ ] B2: Session stage_commit/stage_undo/stage_redo + infallible publish; undo/redo targets.
+  - [ ] B3: Renderer stage_scene/activate, smoke-only upload/wait fault injection.
+  - [ ] B4: desktop Arc<Session>, edit worker, Generation, publication failure tests (no Heal button).
+  - [ ] C: changed-export eligibility preflight; G002 Preview/Apply/Undo/Redo UI and native smoke.
+  - [ ] D: Save Copy UI, receipt-based dirty, close/replace guard, end-to-end demonstrator.
 
 - [x] A1a: Initial source inventory: 66 functions/scenarios, all 10 REQ IDs, exact evidence and source hashes. Verify: tools/audit_legacy.py. Full semantic UI/native audit remains open below.
 - [ ] A1b: Map all 197 UI declaration sites; classify 110 state candidates; complete parameter/error/native workflow acceptance. See reference/LEGACY_GAP_REGISTER.md.

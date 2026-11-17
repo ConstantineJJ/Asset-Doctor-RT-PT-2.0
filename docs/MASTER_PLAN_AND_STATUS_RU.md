@@ -468,7 +468,7 @@
 Следующая рекомендуемая последовательность без изменения общей цели:
 
 1. **Завершено:** G009–G011 и source/coverage/UI/native проверки по ADR-0025; следующая работа начинается с пункта 2.
-2. **Внутренние prerequisites выполнены:** CPU index-command/history ADR-0026, static export/storage ADR-0028/0029 и полный G002 plan/postcheck ADR-0030. Следом закрыть оставшуюся часть ADR-0027: source/material eligibility, native preview и атомарную desktop/history/analysis/snapshot/GPU publication. Не расширять бесконечно только просмотрщик, оставляя основные инструменты без движения.
+2. **Внутренние prerequisites выполнены:** CPU index-command/history ADR-0026, static export/storage ADR-0028/0029 и полный G002 plan/postcheck ADR-0030. Следом закрыть оставшуюся часть ADR-0027: source/material eligibility, native preview и атомарную desktop/history/analysis/snapshot/GPU publication. **17.11.2026:** протокол публикации и решения владельца приняты в [ADR-0031](DECISIONS/ADR-0031-atomic-edit-publication.md) (только документ, код не менялся); реализация по этапам B1–B4 → C → D из ТЗ-G002. Не расширять бесконечно только просмотрщик, оставляя основные инструменты без движения.
 3. Довести минимальный сквозной сценарий: известный дефект → preview → apply → verification → Undo/Redo → Save Copy → fresh reimport. Только после него считать первый Heal перенесённым.
 4. Последовательно расширять diagnostics/Heal и поддержанные форматы; затем skin/manual Rig/animation, auto-Compare и полный UX согласно зависимостям P1–P9.
 5. Закрыть release-quality raster и проверяемые P0/REQ, затем RT → PT → Mixamo/autorig/retargeting.
