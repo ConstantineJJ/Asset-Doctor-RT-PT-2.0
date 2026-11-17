@@ -8,6 +8,8 @@ New-Item -ItemType Directory -Force -Path $reports | Out-Null
 $stdout=Join-Path $reports "$Configuration-smoke.stdout.log"
 $stderr=Join-Path $reports "$Configuration-smoke.stderr.log"
 $process=Start-Process -FilePath $exe -ArgumentList '--smoke' -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+# Windows PowerShell 5.1 reports ExitCode only if the handle is cached before exit.
+$null=$process.Handle
 if (!$process.WaitForExit(30000)) {
     Stop-Process -Id $process.Id
     throw 'Native smoke timed out; see artifacts logs.'
