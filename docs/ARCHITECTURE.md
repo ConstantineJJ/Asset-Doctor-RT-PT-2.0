@@ -165,3 +165,6 @@ snapshot and analysis from a non-mutating candidate index view. The UI thread
 stages every fallible Session check and GPU upload/idle wait behind two `&mut`
 borrows, then publishes history, scene and one snapshot/report/stamp generation
 without fallible steps between. Undo/Redo use the same path; no compensation.
+Stages B1–B4 implement it: desktop's current model is `PreparedAsset { session:
+Arc<Session>, generation }`, import and edit preparation share one latest-ticket
+worker, and `publish_edit` drives Session and GPU stages. No user Heal control yet.
