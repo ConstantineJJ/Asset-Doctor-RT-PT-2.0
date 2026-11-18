@@ -33,6 +33,8 @@ pub struct PreviewInfo {
     pub vertices_after: usize,
     /// BIN bytes a saved copy appends after the original data.
     pub appended_bytes: usize,
+    /// G006 boundary edges of the primitive before/after a vertex merge.
+    pub boundary_edges: Option<(usize, usize)>,
     /// Source node references, including inactive nodes; not visible copies.
     pub references: usize,
     pub complete: bool,
@@ -406,11 +408,12 @@ impl ViewerUi {
                 egui::Window::new(format!("Ремонт {code} · предпросмотр")).id(egui::Id::new("repair_preview")).collapsible(false).resizable(false).default_width(420.).show(&context,|ui| {
                     ui.strong(format!("Исходный примитив #{}",info.mesh.0));
                     ui.label(format!("Ссылок из узлов: {} (включая неактивные; это не число видимых копий).",info.references));
-                    let vertices=info.kind==ad_heal::RepairKind::UnusedVertices;
+                    let vertices=matches!(info.kind,ad_heal::RepairKind::UnusedVertices|ad_heal::RepairKind::DuplicateVertices);
                     ui.label(if vertices {"Правка меняет общий примитив: все узлы, которые его используют, получат одинаковые вершины и индексы."} else {"Правка меняет общий примитив: все узлы, которые его используют, получат одинаковые индексы."});
                     ui.separator();
                     if vertices {
                         ui.label(format!("Вершины: было {}, станет {} (удаляется {}). Треугольники не меняются: {}.",info.vertices_before,info.vertices_after,info.vertices_before-info.vertices_after,info.before));
+                        if let Some((before,after))=info.boundary_edges {ui.label(format!("Граничные рёбра (G006): было {before}, станет {after}."));}
                     } else {
                         ui.label(format!("Треугольники: было {}, станет {} (удаляется {}).",info.before,info.after,info.before-info.after));
                     }
@@ -418,6 +421,7 @@ impl ViewerUi {
                         ad_heal::RepairKind::DuplicateTriangles=>"Удаляются только точные повторы с тем же обходом; первый экземпляр, порядок и все атрибуты сохраняются.",
                         ad_heal::RepairKind::DegenerateTriangles=>"Удаляются только треугольники точно нулевой площади (повторяющийся индекс или три вершины на одной прямой); остальные треугольники, их порядок, вершины и атрибуты сохраняются. Освободившиеся вершины остаются (G003).",
                         ad_heal::RepairKind::UnusedVertices=>"Удаляются только вершины, на которые не ссылается ни один треугольник этого примитива. Порядок и все атрибуты оставшихся вершин сохраняются, индексы перенумеровываются. Другие примитивы с общим буфером вершин продолжают использовать прежние данные.",
+                        ad_heal::RepairKind::DuplicateVertices=>"Объединяются только вершины, у которых совпадают все данные: позиция, нормаль, касательная, цвет и все UV. Треугольники переходят на первую такую вершину; швы с разными UV или нормалями остаются. Ремонт отклоняется, если топология примитива ухудшится.",
                     });
                     match (info.complete,info.target_left) {
                         (true,Some(0))=>ui.label(format!("Проверка результата: полный анализ, {code} в этом примитиве не останется.")),
@@ -791,6 +795,7 @@ mod tests {
             vertices_before: 600,
             vertices_after: 600,
             appended_bytes: 11_520,
+            boundary_edges: None,
             references: 1,
             complete: true,
             target_left: Some(0),

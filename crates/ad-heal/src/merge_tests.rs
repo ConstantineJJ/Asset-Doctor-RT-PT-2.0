@@ -113,8 +113,7 @@ fn merge_postcheck_refuses_wrong_twins_ranks_and_values() {
         verify::check_merge(
             source,
             None,
-            &[3, 4, 5],
-            targets,
+            (&[3, 4, 5], targets),
             &candidate,
             p.source_vertices_after(s.document()),
             VerificationLimits::default(),

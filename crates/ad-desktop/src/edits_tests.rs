@@ -415,6 +415,55 @@ fn degenerate_repair_uses_the_same_preview_publication_and_history() {
 }
 
 #[test]
+fn vertex_merge_welds_a_seam_and_refuses_topology_regression() {
+    let (mut asset, mut scene) = open("Vertex_Weld.glb");
+    let c = Cancellation::default();
+    let kind = EditKind::MergeVertices(MeshId(0));
+    assert_eq!(
+        kind.repair(),
+        Some((MeshId(0), ad_heal::RepairKind::DuplicateVertices))
+    );
+    assert_eq!(repair_label(ad_heal::RepairKind::DuplicateVertices), "G012");
+    let candidate = candidate(&asset, kind);
+    let info = candidate.info().unwrap();
+    assert_eq!((info.vertices_before, info.vertices_after), (9, 7));
+    assert_eq!((info.before, info.after), (3, 3));
+    assert_eq!(info.boundary_edges, Some((9, 7)), "the split seam welds");
+    assert!(info.complete);
+    assert_eq!(info.target_left, Some(0));
+    publish_edit(&mut asset, &mut scene, candidate, &c).unwrap();
+    assert_eq!(asset.document().primitives()[0].positions.len(), 7);
+    let report = asset.diagnostics().as_ref().unwrap();
+    assert_eq!(
+        findings_in_mesh(report, MeshId(0), ad_heal::RepairKind::DuplicateVertices),
+        0
+    );
+    apply(&mut asset, &mut scene, EditKind::Undo);
+    assert_eq!(asset.document().primitives()[0].positions.len(), 9);
+
+    // Merging two coincident triangles' vertices would create a duplicate
+    // triangle: the edit is refused before anything becomes visible.
+    let (asset, _) = open("Edge_Topology.glb");
+    let mesh = asset
+        .diagnostics()
+        .as_ref()
+        .unwrap()
+        .findings
+        .iter()
+        .find(|f| f.code == ad_analysis::Code::DuplicateVertex)
+        .unwrap()
+        .mesh;
+    let result = prepare_edit(
+        &asset.session,
+        &asset.generation.stamp,
+        EditKind::MergeVertices(mesh),
+        &c,
+    );
+    assert!(matches!(result, Err(e) if e.code == ErrorCode::Unsupported));
+    assert_eq!(asset.document().revision(), 0);
+}
+
+#[test]
 fn unused_vertex_repair_compacts_publishes_undoes_and_saves() {
     let (mut asset, mut scene) = open("Geometry_Findings.glb");
     let c = Cancellation::default();

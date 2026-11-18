@@ -133,8 +133,7 @@ impl DuplicatePlan {
             verify::check_merge(
                 source,
                 doc.source_vertices(mesh),
-                &self.removed,
-                &self.targets,
+                (&self.removed, &self.targets),
                 command.primitive_after(doc, cancel)?,
                 command.source_vertices_after(doc),
                 limits,

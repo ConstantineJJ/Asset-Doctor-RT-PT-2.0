@@ -81,11 +81,11 @@ pub(crate) fn check_unused(
 /// vertex must be bitwise equal to its earlier, kept `targets` twin and its
 /// indices must point at that twin's rank. Unused vertices are not required
 /// to disappear; G012 completeness comes from complete candidate analysis.
+/// `merge` is (removed vertices, their earlier twins), index-aligned.
 pub(crate) fn check_merge(
     source: &MeshPrimitive,
     source_map: Option<&[u32]>,
-    removed: &[u32],
-    targets: &[u32],
+    (removed, targets): (&[u32], &[u32]),
     candidate: &MeshPrimitive,
     candidate_map: Option<&[u32]>,
     limits: VerificationLimits,

@@ -445,6 +445,7 @@ impl App {
             EditKind::RemoveDuplicates(_) => "Расчёт и проверка ремонта G002…",
             EditKind::RemoveDegenerate(_) => "Расчёт и проверка ремонта G001…",
             EditKind::RemoveUnused(_) => "Расчёт и проверка ремонта G003…",
+            EditKind::MergeVertices(_) => "Расчёт и проверка ремонта G012…",
             EditKind::Undo => "Подготовка отмены правки…",
             EditKind::Redo => "Подготовка повтора правки…",
         }
@@ -538,7 +539,7 @@ impl App {
                 let count =
                     |kind| report.map_or(usize::MAX, |r| edits::findings_in_mesh(r, mesh, kind));
                 eprintln!(
-                    "edit_published kind={} removed={removed} mesh={} revision={} scene_revision={} mesh_triangles={} analysis={} g001_in_mesh={} g002_in_mesh={} undo={} redo={} consistent={} mesh_vertices={} g003_in_mesh={}",
+                    "edit_published kind={} removed={removed} mesh={} revision={} scene_revision={} mesh_triangles={} analysis={} g001_in_mesh={} g002_in_mesh={} undo={} redo={} consistent={} mesh_vertices={} g003_in_mesh={} g012_in_mesh={}",
                     edit_name(kind),
                     mesh.0,
                     tag.revision,
@@ -563,7 +564,8 @@ impl App {
                         .primitives()
                         .get(mesh.0)
                         .map_or(0, |m| m.positions.len()),
-                    count(ad_heal::RepairKind::UnusedVertices)
+                    count(ad_heal::RepairKind::UnusedVertices),
+                    count(ad_heal::RepairKind::DuplicateVertices)
                 );
                 self.ui.status = format!("Правка применена; ревизия {}", tag.revision);
             }
@@ -1273,7 +1275,8 @@ fn edit_name(kind: EditKind) -> &'static str {
     match kind {
         EditKind::RemoveDuplicates(_)
         | EditKind::RemoveDegenerate(_)
-        | EditKind::RemoveUnused(_) => "remove",
+        | EditKind::RemoveUnused(_)
+        | EditKind::MergeVertices(_) => "remove",
         EditKind::Undo => "undo",
         EditKind::Redo => "redo",
     }
@@ -1327,7 +1330,8 @@ fn run() -> GpuResult<()> {
                     Some("g001") => ad_heal::RepairKind::DegenerateTriangles,
                     Some("g002") => ad_heal::RepairKind::DuplicateTriangles,
                     Some("g003") => ad_heal::RepairKind::UnusedVertices,
-                    _ => return Err("--smoke-repair needs g001, g002 or g003".into()),
+                    Some("g012") => ad_heal::RepairKind::DuplicateVertices,
+                    _ => return Err("--smoke-repair needs g001, g002, g003 or g012".into()),
                 }
             }
             "--smoke-save" => {

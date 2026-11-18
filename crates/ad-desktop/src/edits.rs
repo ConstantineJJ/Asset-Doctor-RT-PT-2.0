@@ -22,6 +22,8 @@ pub enum EditKind {
     RemoveDegenerate(MeshId),
     /// G003 (ADR-0033): compact the primitive's vertex streams.
     RemoveUnused(MeshId),
+    /// G012 (ADR-0034): merge exact duplicate vertices.
+    MergeVertices(MeshId),
     Undo,
     Redo,
 }
@@ -32,6 +34,7 @@ impl EditKind {
             Self::RemoveDuplicates(mesh) => Some((mesh, RepairKind::DuplicateTriangles)),
             Self::RemoveDegenerate(mesh) => Some((mesh, RepairKind::DegenerateTriangles)),
             Self::RemoveUnused(mesh) => Some((mesh, RepairKind::UnusedVertices)),
+            Self::MergeVertices(mesh) => Some((mesh, RepairKind::DuplicateVertices)),
             Self::Undo | Self::Redo => None,
         }
     }
@@ -40,6 +43,7 @@ impl EditKind {
             RepairKind::DuplicateTriangles => Self::RemoveDuplicates(mesh),
             RepairKind::DegenerateTriangles => Self::RemoveDegenerate(mesh),
             RepairKind::UnusedVertices => Self::RemoveUnused(mesh),
+            RepairKind::DuplicateVertices => Self::MergeVertices(mesh),
         }
     }
 }
@@ -49,6 +53,7 @@ pub fn target_code(kind: RepairKind) -> ad_analysis::Code {
         RepairKind::DuplicateTriangles => ad_analysis::Code::DuplicateTriangle,
         RepairKind::DegenerateTriangles => ad_analysis::Code::ZeroArea,
         RepairKind::UnusedVertices => ad_analysis::Code::UnusedVertex,
+        RepairKind::DuplicateVertices => ad_analysis::Code::DuplicateVertex,
     }
 }
 /// Findings of the rule a repair kind removes, on one source primitive.
@@ -65,6 +70,7 @@ pub fn repair_label(kind: RepairKind) -> &'static str {
         RepairKind::DuplicateTriangles => "G002",
         RepairKind::DegenerateTriangles => "G001",
         RepairKind::UnusedVertices => "G003",
+        RepairKind::DuplicateVertices => "G012",
     }
 }
 pub struct EditInput {
@@ -87,6 +93,8 @@ pub struct EditCandidate {
     preview: Option<DuplicatePreview>,
     /// BIN bytes a saved copy appends to the original (export preflight).
     appended: usize,
+    /// G006 boundary edges of the primitive before/after a merge.
+    boundary: Option<(usize, usize)>,
     snapshot: Arc<GeometrySnapshot>,
     diagnostics: AssetResult<ad_analysis::Report>,
 }
@@ -114,6 +122,7 @@ impl EditCandidate {
             vertices_before: preview.before_vertices,
             vertices_after: preview.after_vertices,
             appended_bytes: self.appended,
+            boundary_edges: self.boundary,
             references: preview.source_node_references,
             complete: report.is_some_and(|r| r.is_complete()),
             target_left: report.map(|r| {
@@ -166,8 +175,16 @@ pub fn prepare_edit(
     match kind {
         EditKind::RemoveDuplicates(mesh)
         | EditKind::RemoveDegenerate(mesh)
-        | EditKind::RemoveUnused(mesh) => {
+        | EditKind::RemoveUnused(mesh)
+        | EditKind::MergeVertices(mesh) => {
             let plan = match kind {
+                EditKind::MergeVertices(_) => ad_heal::plan_vertex_merge(
+                    document,
+                    base.tag(),
+                    mesh,
+                    PlanLimits::default(),
+                    cancel,
+                )?,
                 EditKind::RemoveUnused(_) => {
                     ad_heal::plan_unused(document, base.tag(), mesh, PlanLimits::default(), cancel)?
                 }
@@ -224,6 +241,12 @@ pub fn prepare_edit(
     // Like import, an analysis resource refusal keeps a viewable result with
     // an incomplete report; whole-job cancellation still discards everything.
     let diagnostics = ad_analysis::analyze_view(&view, ad_analysis::Limits::default(), cancel);
+    let boundary = match kind {
+        EditKind::MergeVertices(mesh) => {
+            Some(merge_regression(document, &diagnostics, mesh, cancel)?)
+        }
+        _ => None,
+    };
     cancel.check()?;
     Ok(EditOutcome::Candidate(Box::new(EditCandidate {
         kind,
@@ -232,9 +255,64 @@ pub fn prepare_edit(
         change,
         preview,
         appended,
+        boundary,
         snapshot,
         diagnostics,
     })))
+}
+
+/// Per-primitive counts a merge must not increase (ADR-0034 decision 6):
+/// G001, G002, G006, G007 findings and G008 groups.
+const TOPOLOGY: [ad_analysis::Code; 5] = [
+    ad_analysis::Code::ZeroArea,
+    ad_analysis::Code::DuplicateTriangle,
+    ad_analysis::Code::BoundaryEdge,
+    ad_analysis::Code::HighIncidenceEdge,
+    ad_analysis::Code::DisconnectedComponents,
+];
+fn topology(report: &ad_analysis::Report, mesh: MeshId) -> [usize; 5] {
+    TOPOLOGY.map(|code| {
+        report
+            .findings
+            .iter()
+            .filter(|f| f.mesh == mesh && f.code == code)
+            .map(|f| f.count)
+            .sum()
+    })
+}
+/// Refuses a merge whose complete candidate analysis shows any topology count
+/// above the current complete analysis; returns G006 before/after.
+fn merge_regression(
+    document: &ad_document::AssetDocument,
+    after: &AssetResult<ad_analysis::Report>,
+    mesh: MeshId,
+    cancel: &Cancellation,
+) -> AssetResult<(usize, usize)> {
+    let refused = |message: String| AssetError::new(ad_document::ErrorCode::Unsupported, message);
+    let before = ad_analysis::analyze(document, ad_analysis::Limits::default(), cancel)?;
+    let after = match after {
+        Ok(report) if report.is_complete() && before.is_complete() => report,
+        _ => {
+            return Err(refused(
+                "слияние не проверено: анализ топологии неполный".into(),
+            ));
+        }
+    };
+    let (b, a) = (topology(&before, mesh), topology(after, mesh));
+    if a.iter().zip(&b).any(|(a, b)| a > b) {
+        let changes = ["G001", "G002", "G006", "G007", "G008"]
+            .iter()
+            .zip(b.iter().zip(&a))
+            .filter(|(_, (b, a))| a > b)
+            .map(|(code, (b, a))| format!("{code} {b} -> {a}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(refused(format!(
+            "слияние ухудшит топологию примитива #{}: {changes}",
+            mesh.0
+        )));
+    }
+    Ok((b[2], a[2]))
 }
 
 pub type Edits = Worker<EditInput, EditOutcome>;
