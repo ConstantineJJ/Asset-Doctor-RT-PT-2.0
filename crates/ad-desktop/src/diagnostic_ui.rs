@@ -1,20 +1,21 @@
 use crate::imports::PreparedAsset;
 use egui::Color32;
 
-/// Returns a requested G002 repair preview (source primitive) and, for tests,
-/// the rectangle of the first preview button.
+/// A requested repair preview: source primitive and repair kind.
+pub type PreviewRequest = (ad_document::MeshId, ad_heal::RepairKind);
+/// Every visible preview button with its repair kind (used by UI tests).
+pub type PreviewButtons = Vec<(ad_heal::RepairKind, egui::Rect)>;
+
+/// Returns a requested repair preview and the visible preview buttons.
 pub fn show(
     context: &egui::Context,
     open: &mut bool,
     asset: Option<&PreparedAsset>,
     viewport_height: f32,
     can_preview: bool,
-) -> (
-    Option<(ad_document::MeshId, ad_heal::RepairKind)>,
-    egui::Rect,
-) {
+) -> (Option<PreviewRequest>, PreviewButtons) {
     let mut preview = None;
-    let mut preview_rect = egui::Rect::NOTHING;
+    let mut preview_rects = Vec::new();
     egui::Window::new("Диагностика геометрии и UV").open(open).default_size([620.,420.]).show(context,|ui| {
                 ui.label("Исходные примитивы, включая неактивные; каждый проверен один раз. Экземпляры и преобразования просмотра не учитываются.");
                 ui.weak("Геометрия и все исходные UV-каналы. Границы, группы и UV вне 0…1 могут быть намеренными. Ремонт не выполняется.");
@@ -67,7 +68,7 @@ pub fn show(
                                         ui.horizontal(|ui| {
                                             ui.label(&metadata);
                                             let button=ui.add_enabled(can_preview,egui::Button::new("Предпросмотр ремонта…").small()).on_hover_text(hint);
-                                            if preview_rect==egui::Rect::NOTHING {preview_rect=button.rect;}
+                                            preview_rects.push((kind,button.rect));
                                             if button.clicked() {preview=Some((finding.mesh,kind));}
                                         });
                                     } else {
@@ -90,7 +91,7 @@ pub fn show(
                 }
                 ui.separator();ui.weak("Связность — по индексам, без склеивания позиций и подсчёта физических деталей. UV: наличие UV0, точная площадь, диапазон всех каналов. Перекрытия UV, ориентация, материалы и скелет не проверяются.");
             });
-    (preview, preview_rect)
+    (preview, preview_rects)
 }
 
 fn coverage_text(c: &ad_analysis::Coverage, total: usize) -> String {

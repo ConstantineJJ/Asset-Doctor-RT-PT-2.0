@@ -385,11 +385,13 @@ impl App {
                         } else {
                             "incomplete"
                         },
-                        report.map_or(usize::MAX, |r| r
-                            .findings
-                            .iter()
-                            .filter(|f| f.code == edits::target_code(self.smoke_repair))
-                            .count()),
+                        // Findings of the repaired rule on the repaired primitive
+                        // only; siblings may legitimately keep their own.
+                        report.map_or(usize::MAX, |r| edits::findings_in_mesh(
+                            r,
+                            self.edit_mesh.unwrap_or(MeshId(0)),
+                            self.smoke_repair
+                        )),
                         self.is_dirty()
                     );
                     self.save_smoke = Some((dir, 6));

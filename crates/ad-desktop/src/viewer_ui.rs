@@ -83,6 +83,8 @@ pub struct ViewerUi {
     #[cfg(test)]
     preview_rect: egui::Rect,
     #[cfg(test)]
+    preview_rects: Vec<(ad_heal::RepairKind, egui::Rect)>,
+    #[cfg(test)]
     save_rect: egui::Rect,
     #[cfg(test)]
     reset_lighting_rect: egui::Rect,
@@ -137,6 +139,8 @@ impl Default for ViewerUi {
             redo_rect: egui::Rect::NOTHING,
             #[cfg(test)]
             preview_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            preview_rects: Vec::new(),
             #[cfg(test)]
             save_rect: egui::Rect::NOTHING,
             #[cfg(test)]
@@ -392,9 +396,9 @@ impl ViewerUi {
                     root.painter().text(center+egui::vec2(0.,22.),egui::Align2::CENTER_CENTER,"Ctrl+O или перетащите GLB в окно",egui::FontId::proportional(14.),Color32::from_rgb(154,164,181));
                 }
             }
-            let (preview,_preview_rect)=crate::diagnostic_ui::show(&context,&mut self.show_diagnostics,asset,height,!loading && self.edit.busy.is_none());
+            let (preview,_preview_rects)=crate::diagnostic_ui::show(&context,&mut self.show_diagnostics,asset,height,!loading && self.edit.busy.is_none());
             #[cfg(test)]
-            {self.preview_rect=_preview_rect;}
+            {self.preview_rect=_preview_rects.first().map_or(egui::Rect::NOTHING,|r|r.1);self.preview_rects=_preview_rects;}
             actions.preview=preview;
             if let Some(info)=self.edit.preview.clone() {
                 let ready=!loading && self.edit.busy.is_none();
@@ -981,5 +985,54 @@ mod tests {
             )),
             "the first repairable row is G001"
         );
+    }
+    #[test]
+    fn g003_finding_offers_an_unused_vertex_preview_and_its_window_applies() {
+        let asset = crate::imports::prepare(&crate::worker::Request {
+            ticket: 1,
+            input: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/Geometry_Findings.glb"),
+            cancel: ad_document::Cancellation::default(),
+        })
+        .unwrap();
+        let mut ui = ViewerUi {
+            show_diagnostics: true,
+            ..Default::default()
+        };
+        for _ in 0..4 {
+            let (out, _, _) = ui.layout(raw(1400., 1000.), Some(&asset), false);
+            out.drop_without_applying_deltas();
+        }
+        let rect = ui
+            .preview_rects
+            .iter()
+            .find(|(kind, _)| *kind == ad_heal::RepairKind::UnusedVertices)
+            .expect("a visible G003 row with a preview button")
+            .1;
+        let actions = click(&mut ui, Some(&asset), rect, (1400., 1000.));
+        assert_eq!(
+            actions.preview,
+            Some((ad_document::MeshId(0), ad_heal::RepairKind::UnusedVertices))
+        );
+        assert_eq!(asset.document().revision(), 0);
+        // The G003 preview window offers Apply like the triangle repairs.
+        let mut ui = ViewerUi::default();
+        ui.edit.preview = Some(PreviewInfo {
+            kind: ad_heal::RepairKind::UnusedVertices,
+            before: 5,
+            after: 5,
+            vertices_before: 5,
+            vertices_after: 4,
+            appended_bytes: 64,
+            references: 2,
+            ..preview_info()
+        });
+        for _ in 0..4 {
+            let (out, _, _) = ui.layout(raw(1200., 900.), None, false);
+            out.drop_without_applying_deltas();
+        }
+        assert!(ui.apply_rect.is_positive());
+        let rect = ui.apply_rect;
+        assert!(click(&mut ui, None, rect, (1200., 900.)).apply);
     }
 }
