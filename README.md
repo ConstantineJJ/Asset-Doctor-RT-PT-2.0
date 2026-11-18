@@ -10,12 +10,14 @@ written from scratch in Rust with a Vulkan renderer. Engineering prototype.
   normal, occlusion and emission maps.
 - Scene tree, summary and camera: left drag orbit, right/middle drag pan,
   wheel zoom, **F** frame, **Esc** cancel loading, **H** help.
-- **Диагностика**: geometry and UV checks G001–G011 (zero-area and duplicate
+- **Диагностика**: geometry and UV checks G001–G012 (zero-area and duplicate
   triangles, unused vertices, missing/zero normals, boundary and non-manifold
-  edges, connected groups, missing UV0, zero UV area, UV outside 0…1).
-- Repairs with preview → Apply → Undo/Redo (Ctrl+Z / Ctrl+Y):
-  remove zero-area triangles (G001), duplicate triangles (G002) and unused
-  vertices (G003) of one source primitive.
+  edges, connected groups, missing UV0, zero UV area, UV outside 0…1, exact
+  duplicate vertices).
+- Repairs with preview → Apply → Undo/Redo (Ctrl+Z / Ctrl+Y) on one source
+  primitive: remove zero-area triangles (G001), duplicate triangles (G002) and
+  unused vertices (G003); merge exact duplicate vertices (G012), refused if the
+  topology would get worse.
 - **Сохранить копию…** writes a new GLB only after an independent re-import
   check; the original file is never overwritten.
 
