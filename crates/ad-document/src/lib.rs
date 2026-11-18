@@ -13,6 +13,8 @@ pub use view::{CandidateIndices, DocumentView, Primitives};
 #[cfg(test)]
 mod index_tests;
 #[cfg(test)]
+mod merge_tests;
+#[cfg(test)]
 mod vertex_tests;
 #[cfg(test)]
 mod view_tests;

@@ -183,6 +183,31 @@ impl Session {
         }
         Ok(plan)
     }
+    /// ADR-0034: merge exact duplicate vertices, `[removed, kept]` pairs.
+    /// Same history admission as a vertex removal.
+    pub fn prepare_vertex_merge(
+        &self,
+        expected: DocumentTag,
+        mesh: MeshId,
+        pairs: &[[u32; 2]],
+        cancel: &Cancellation,
+    ) -> AssetResult<PreparedRemoval> {
+        self.document.verify_tag(expected, cancel)?;
+        if !pairs.is_empty() {
+            self.admit(self.document.primitive_capacity_bytes(mesh)?)?;
+        }
+        let plan = self.document.prepare_vertex_merge(
+            expected,
+            mesh,
+            pairs,
+            self.import_limits,
+            cancel,
+        )?;
+        if plan.changes() {
+            self.admit(plan.retained_bytes())?;
+        }
+        Ok(plan)
+    }
     pub fn commit(
         &mut self,
         plan: PreparedRemoval,

@@ -64,6 +64,56 @@ pub(crate) fn check_unused(
     candidate: &MeshPrimitive,
     candidate_map: Option<&[u32]>,
     limits: VerificationLimits,
+    cancel: impl FnMut() -> AssetResult<()>,
+) -> AssetResult<()> {
+    check_remap(
+        source,
+        source_map,
+        removed,
+        None,
+        candidate,
+        candidate_map,
+        limits,
+        cancel,
+    )
+}
+/// ADR-0034 postcheck for a merge: like [`check_unused`], but every removed
+/// vertex must be bitwise equal to its earlier, kept `targets` twin and its
+/// indices must point at that twin's rank. Unused vertices are not required
+/// to disappear; G012 completeness comes from complete candidate analysis.
+pub(crate) fn check_merge(
+    source: &MeshPrimitive,
+    source_map: Option<&[u32]>,
+    removed: &[u32],
+    targets: &[u32],
+    candidate: &MeshPrimitive,
+    candidate_map: Option<&[u32]>,
+    limits: VerificationLimits,
+    cancel: impl FnMut() -> AssetResult<()>,
+) -> AssetResult<()> {
+    if targets.len() != removed.len() {
+        return Err(mismatch());
+    }
+    check_remap(
+        source,
+        source_map,
+        removed,
+        Some(targets),
+        candidate,
+        candidate_map,
+        limits,
+        cancel,
+    )
+}
+#[allow(clippy::too_many_arguments)]
+fn check_remap(
+    source: &MeshPrimitive,
+    source_map: Option<&[u32]>,
+    removed: &[u32],
+    targets: Option<&[u32]>,
+    candidate: &MeshPrimitive,
+    candidate_map: Option<&[u32]>,
+    limits: VerificationLimits,
     mut cancel: impl FnMut() -> AssetResult<()>,
 ) -> AssetResult<()> {
     cancel()?;
@@ -85,6 +135,14 @@ pub(crate) fn check_unused(
             cancel()?;
         }
         if r as usize >= n || i > 0 && removed[i - 1] >= r {
+            return Err(mismatch());
+        }
+        // A merged vertex must equal an earlier vertex that survives.
+        if let Some(t) = targets.map(|t| t[i])
+            && (t >= r
+                || removed.binary_search(&t).is_ok()
+                || !same_vertex(source, t as usize, source, r as usize))
+        {
             return Err(mismatch());
         }
     }
@@ -109,23 +167,27 @@ pub(crate) fn check_unused(
     if k != kept || next_removed != removed.len() {
         return Err(mismatch());
     }
-    // Every source index must survive and map to its rank among survivors.
+    // Every source index maps to the rank of its surviving (or twin) vertex.
     let mut used = reserve::<bool>(kept, limits.scratch_bytes)?;
     used.resize(kept, false);
     for (i, (&s, &c)) in source.indices.iter().zip(&candidate.indices).enumerate() {
         if i % 4096 == 0 {
             cancel()?;
         }
+        let s = match (removed.binary_search(&s), targets) {
+            (Ok(k), Some(targets)) => targets[k],
+            (Ok(_), None) => return Err(mismatch()),
+            (Err(_), _) => s,
+        };
         let below = removed.partition_point(|&r| r < s);
-        if removed.get(below) == Some(&s) || c as usize != s as usize - below || c as usize >= kept
-        {
+        if c as usize != s as usize - below || c as usize >= kept {
             return Err(mismatch());
         }
         used[c as usize] = true;
     }
     cancel()?;
-    // Completeness: the removed set is the whole unused set.
-    if used.iter().any(|u| !u) {
+    // Completeness for G003: the removed set is the whole unused set.
+    if targets.is_none() && used.iter().any(|u| !u) {
         return Err(mismatch());
     }
     Ok(())

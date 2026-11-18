@@ -176,6 +176,35 @@ fn bindings(
                 }
                 _ => {}
             }
+            // ADR-0034: a merged vertex may stand for a source vertex only if
+            // every source attribute element (decoded or not) is byte-identical.
+            let mut elements = Vec::new();
+            if map.is_some() {
+                elements
+                    .try_reserve_exact(primitive.attributes().len())
+                    .map_err(|_| budget())?;
+                for (_, accessor) in primitive.attributes() {
+                    let view = accessor.view().ok_or_else(metadata::unsupported)?;
+                    elements.push((
+                        view.offset() + accessor.offset(),
+                        view.stride().unwrap_or(accessor.size()),
+                        accessor.size(),
+                    ));
+                }
+            }
+            let same_bytes = |a: u32, b: u32| {
+                a == b
+                    || elements.iter().all(|&(start, stride, size)| {
+                        let at = |v: u32| {
+                            let begin = start + v as usize * stride;
+                            bin.get(begin..begin + size)
+                        };
+                        at(a).is_some() && at(a) == at(b)
+                    })
+            };
+            let equivalent = |current: [u32; 3], source: [u32; 3]| {
+                (0..3).all(|i| same_bytes(current[i], source[i]))
+            };
             let source_of = |face: &[u32; 3]| -> Option<[u32; 3]> {
                 match map {
                     None => Some(*face),
@@ -228,7 +257,11 @@ fn bindings(
                     return Err(invalid());
                 }
                 same &= wanted.get(face).and_then(source_of) == Some(triangle);
-                if wanted.get(kept).and_then(source_of) == Some(triangle) {
+                if wanted
+                    .get(kept)
+                    .and_then(source_of)
+                    .is_some_and(|w| equivalent(w, triangle))
+                {
                     kept += 1;
                 }
             }

@@ -54,6 +54,8 @@ pub enum RepairKind {
     DegenerateTriangles,
     /// G003 / REPAIR-02 (ADR-0033): vertex streams are compacted.
     UnusedVertices,
+    /// G012 / REPAIR-04 (ADR-0034): exact duplicate vertices are merged.
+    DuplicateVertices,
 }
 /// Complete removal plan for one source primitive and one repair kind.
 /// `removed` holds triangle ordinals, or vertex ordinals for
@@ -62,6 +64,9 @@ pub struct DuplicatePlan {
     stamp: DocumentStamp,
     preview: DuplicatePreview,
     removed: Vec<u32>,
+    /// For [`RepairKind::DuplicateVertices`]: the earlier twin of each removed
+    /// vertex; empty otherwise.
+    targets: Vec<u32>,
     kind: RepairKind,
 }
 /// Kind-neutral name for the same plan type.
@@ -76,20 +81,24 @@ impl DuplicatePlan {
     /// Triangle ordinals removed; empty for a vertex repair.
     pub fn removed_triangles(&self) -> &[u32] {
         match self.kind {
-            RepairKind::UnusedVertices => &[],
+            RepairKind::UnusedVertices | RepairKind::DuplicateVertices => &[],
             _ => &self.removed,
         }
     }
     /// Vertex ordinals removed; empty for a triangle repair.
     pub fn removed_vertices(&self) -> &[u32] {
         match self.kind {
-            RepairKind::UnusedVertices => &self.removed,
+            RepairKind::UnusedVertices | RepairKind::DuplicateVertices => &self.removed,
             _ => &[],
         }
     }
+    /// Earlier twin of each removed vertex for a merge; empty otherwise.
+    pub fn merge_targets(&self) -> &[u32] {
+        &self.targets
+    }
     /// Retained Vec capacity only; excludes the fixed plan header.
     pub fn retained_bytes(&self) -> usize {
-        self.removed.capacity() * std::mem::size_of::<u32>()
+        (self.removed.capacity() + self.targets.capacity()) * std::mem::size_of::<u32>()
     }
     pub fn is_current(&self, document: &AssetDocument) -> bool {
         self.stamp.is_current(document)
@@ -112,6 +121,27 @@ impl DuplicatePlan {
         }
         let (tag, mesh) = (self.preview.tag, self.preview.mesh);
         let source = &doc.primitives()[mesh.0];
+        if self.kind == RepairKind::DuplicateVertices {
+            let mut pairs = reserve::<[u32; 2]>(self.removed.len(), usize::MAX)?;
+            pairs.extend(
+                self.removed
+                    .iter()
+                    .zip(&self.targets)
+                    .map(|(&r, &t)| [r, t]),
+            );
+            let command = session.prepare_vertex_merge(tag, mesh, &pairs, cancel)?;
+            verify::check_merge(
+                source,
+                doc.source_vertices(mesh),
+                &self.removed,
+                &self.targets,
+                command.primitive_after(doc, cancel)?,
+                command.source_vertices_after(doc),
+                limits,
+                || cancel.check(),
+            )?;
+            return Ok(command);
+        }
         if self.kind == RepairKind::UnusedVertices {
             let command = session.prepare_vertex_removal(tag, mesh, &self.removed, cancel)?;
             verify::check_unused(
@@ -128,7 +158,9 @@ impl DuplicatePlan {
         let command = session.prepare_removal(tag, mesh, &self.removed, cancel)?;
         let candidate = command.indices_after(doc, cancel)?;
         match self.kind {
-            RepairKind::UnusedVertices => unreachable!("handled above"),
+            RepairKind::UnusedVertices | RepairKind::DuplicateVertices => {
+                unreachable!("handled above")
+            }
             RepairKind::DuplicateTriangles => {
                 verify::check(&source.indices, &self.removed, candidate, limits, || {
                     cancel.check()
@@ -207,6 +239,7 @@ pub fn plan_duplicates(
             source_node_references: references,
         },
         removed,
+        targets: Vec::new(),
         kind: RepairKind::DuplicateTriangles,
     })
 }
@@ -277,6 +310,7 @@ pub fn plan_degenerate(
             source_node_references: references,
         },
         removed,
+        targets: Vec::new(),
         kind: RepairKind::DegenerateTriangles,
     })
 }
@@ -337,7 +371,82 @@ pub fn plan_unused(
             source_node_references: references,
         },
         removed,
+        targets: Vec::new(),
         kind: RepairKind::UnusedVertices,
+    })
+}
+
+/// Complete read-only G012 scan of one source primitive (ADR-0034): every
+/// vertex bitwise equal to an earlier vertex on all decoded streams, paired
+/// with the earliest such vertex. Uses the diagnostic's own order, so the plan
+/// equals the G012 set. An empty plan is a no-op.
+pub fn plan_vertex_merge(
+    document: &AssetDocument,
+    expected: DocumentTag,
+    mesh: MeshId,
+    limits: PlanLimits,
+    cancel: &Cancellation,
+) -> AssetResult<DuplicatePlan> {
+    document.verify_tag(expected, cancel)?;
+    let primitive = document.primitives().get(mesh.0).ok_or_else(|| {
+        AssetError::new(
+            ErrorCode::InvalidGeometry,
+            "Unknown vertex-merge source primitive",
+        )
+    })?;
+    let count = primitive.positions.len();
+    if count > u32::MAX as usize || primitive.indices.len() / 3 > limits.triangles {
+        return Err(budget());
+    }
+    let mut order = reserve::<u32>(count, limits.scratch_bytes)?;
+    order.extend(0..count as u32);
+    cancel.check()?;
+    order.sort_unstable_by(|&a, &b| ad_analysis::vertex_order(primitive, a, b).then(a.cmp(&b)));
+    cancel.check()?;
+    let mut pairs = 0usize;
+    for (i, w) in order.windows(2).enumerate() {
+        if i % 4096 == 0 {
+            cancel.check()?;
+        }
+        pairs += usize::from(ad_analysis::same_vertex(primitive, w[0], w[1]));
+    }
+    let mut merged = reserve::<[u32; 2]>(pairs, limits.result_bytes)?;
+    let mut first = order.first().copied().unwrap_or(0);
+    for (i, w) in order.windows(2).enumerate() {
+        if i % 4096 == 0 {
+            cancel.check()?;
+        }
+        if ad_analysis::same_vertex(primitive, w[0], w[1]) {
+            merged.push([w[1], first]);
+        } else {
+            first = w[1];
+        }
+    }
+    drop(order);
+    merged.sort_unstable();
+    let mut removed = reserve::<u32>(merged.len(), limits.result_bytes)?;
+    let mut targets = reserve::<u32>(merged.len(), limits.result_bytes)?;
+    for [r, t] in merged {
+        removed.push(r);
+        targets.push(t);
+    }
+    let references = source_references(document, mesh, limits.scratch_bytes, || cancel.check())?;
+    cancel.check()?;
+    let triangles = primitive.indices.len() / 3;
+    Ok(DuplicatePlan {
+        stamp: document.stamp(),
+        preview: DuplicatePreview {
+            tag: expected,
+            mesh,
+            before_triangles: triangles,
+            after_triangles: triangles,
+            before_vertices: count,
+            after_vertices: count - removed.len(),
+            source_node_references: references,
+        },
+        removed,
+        targets,
+        kind: RepairKind::DuplicateVertices,
     })
 }
 
@@ -436,6 +545,8 @@ fn scan(
 }
 #[cfg(test)]
 mod degenerate_tests;
+#[cfg(test)]
+mod merge_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

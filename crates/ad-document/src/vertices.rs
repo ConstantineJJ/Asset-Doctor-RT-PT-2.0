@@ -71,6 +71,25 @@ fn gather<T: Copy>(
     Ok(result)
 }
 
+/// Document-level guard for merges: every decoded stream bitwise equal.
+fn same_streams(mesh: &MeshPrimitive, a: u32, b: u32) -> bool {
+    fn bits<const N: usize>(v: &[[f32; N]], i: u32) -> Option<[u32; N]> {
+        v.get(i as usize).map(|x| x.map(f32::to_bits))
+    }
+    fn optional<const N: usize>(v: &Option<Vec<[f32; N]>>, a: u32, b: u32) -> bool {
+        v.as_deref().is_none_or(|v| bits(v, a) == bits(v, b))
+    }
+    bits(&mesh.positions, a).is_some()
+        && bits(&mesh.positions, a) == bits(&mesh.positions, b)
+        && optional(&mesh.normals, a, b)
+        && optional(&mesh.tangents, a, b)
+        && optional(&mesh.colors, a, b)
+        && mesh
+            .uv_channels
+            .iter()
+            .all(|c| bits(&c.values, a) == bits(&c.values, b))
+}
+
 fn gather_optional<T: Copy>(
     values: &Option<Vec<T>>,
     rank: &[u32],
@@ -106,6 +125,41 @@ impl AssetDocument {
         limits: ImportLimits,
         cancel: &Cancellation,
     ) -> AssetResult<PreparedRemoval> {
+        self.prepare_vertex_remap(expected, mesh, removed, None, limits, cancel)
+    }
+    /// ADR-0034: merges each `[removed, kept]` pair (sorted by removed vertex)
+    /// by pointing every index of the removed vertex at its earlier, kept twin,
+    /// then compacting. Refused unless the twin is earlier, itself kept and
+    /// bitwise equal on every decoded stream. Never mutates the document.
+    pub fn prepare_vertex_merge(
+        &self,
+        expected: DocumentTag,
+        mesh: MeshId,
+        pairs: &[[u32; 2]],
+        limits: ImportLimits,
+        cancel: &Cancellation,
+    ) -> AssetResult<PreparedRemoval> {
+        let mut removed = Vec::new();
+        let mut targets = Vec::new();
+        removed
+            .try_reserve_exact(pairs.len())
+            .and_then(|_| targets.try_reserve_exact(pairs.len()))
+            .map_err(|_| budget())?;
+        for pair in pairs {
+            removed.push(pair[0]);
+            targets.push(pair[1]);
+        }
+        self.prepare_vertex_remap(expected, mesh, &removed, Some(&targets), limits, cancel)
+    }
+    fn prepare_vertex_remap(
+        &self,
+        expected: DocumentTag,
+        mesh: MeshId,
+        removed: &[u32],
+        targets: Option<&[u32]>,
+        limits: ImportLimits,
+        cancel: &Cancellation,
+    ) -> AssetResult<PreparedRemoval> {
         self.verify_tag(expected, cancel)?;
         let current = self.parts.meshes.get(mesh.0).ok_or_else(invalid)?;
         let count = current.positions.len();
@@ -119,6 +173,16 @@ impl AssetDocument {
                 return Err(invalid());
             }
             previous = Some(v);
+        }
+        if let Some(targets) = targets {
+            for (i, (&r, &t)) in removed.iter().zip(targets).enumerate() {
+                if i % 4096 == 0 {
+                    cancel.check()?;
+                }
+                if t >= r || removed.binary_search(&t).is_ok() || !same_streams(current, t, r) {
+                    return Err(invalid());
+                }
+            }
         }
         let preview = RemovalPreview {
             tag: expected,
@@ -157,10 +221,15 @@ impl AssetDocument {
             if i % 4096 == 0 {
                 cancel.check()?;
             }
-            match rank[index as usize] {
-                u32::MAX => return Err(invalid()),
-                r => indices.push(r),
-            }
+            let r = match (rank[index as usize], targets) {
+                (u32::MAX, Some(targets)) => removed
+                    .binary_search(&index)
+                    .map(|k| rank[targets[k] as usize])
+                    .map_err(|_| invalid())?,
+                (u32::MAX, None) => return Err(invalid()),
+                (r, _) => r,
+            };
+            indices.push(r);
         }
         self.check_index_budget(
             mesh,

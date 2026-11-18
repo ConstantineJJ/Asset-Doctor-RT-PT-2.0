@@ -233,6 +233,68 @@ fn index_removal_after_compaction_and_shared_accessor_siblings_export() {
     assert_eq!(reopened.primitives()[0].positions.len(), 5);
 }
 
+/// Four vertices; v3 repeats v0 in POSITION. `_ID` is equal for v0/v3 when
+/// `same_custom`, otherwise it differs (an attribute the document never reads).
+fn twins(same_custom: bool) -> Vec<u8> {
+    let mut bin = Vec::new();
+    for p in [[0f32, 0., 0.], [1., 0., 0.], [0., 1., 0.], [0., 0., 0.]] {
+        for x in p {
+            bin.extend(x.to_le_bytes());
+        }
+    }
+    for id in [7f32, 8., 9., if same_custom { 7. } else { 70. }] {
+        bin.extend(id.to_le_bytes());
+    }
+    for i in [0u16, 1, 2, 3, 2, 1] {
+        bin.extend(i.to_le_bytes());
+    }
+    let json = json!({"asset":{"version":"2.0"},"buffers":[{"byteLength":0}],
+        "bufferViews":[
+            {"buffer":0,"byteOffset":0,"byteLength":48,"target":34962},
+            {"buffer":0,"byteOffset":48,"byteLength":16,"target":34962},
+            {"buffer":0,"byteOffset":64,"byteLength":12,"target":34963}],
+        "accessors":[
+            {"bufferView":0,"componentType":5126,"count":4,"type":"VEC3","min":[0,0,0],"max":[1,1,0]},
+            {"bufferView":1,"componentType":5126,"count":4,"type":"SCALAR"},
+            {"bufferView":2,"componentType":5123,"count":6,"type":"SCALAR"}],
+        "meshes":[{"primitives":[{"attributes":{"POSITION":0,"_ID":1},"indices":2}]}],
+        "nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}],"scene":0});
+    glb(json, bin)
+}
+
+#[test]
+fn merged_twins_export_only_when_every_source_attribute_byte_matches() {
+    let (c, l) = (Cancellation::default(), ImportLimits::default());
+    for same in [true, false] {
+        let mut doc = open(twins(same));
+        let p = doc
+            .prepare_vertex_merge(doc.tag(), MeshId(0), &[[3, 0]], l, &c)
+            .unwrap();
+        let preflight = {
+            let view = doc
+                .candidate_view(p.candidate(&doc, &c).unwrap(), &c)
+                .unwrap();
+            preflight_changed_export(&view, ExportLimits::default(), l, &c)
+        };
+        if !same {
+            // The document cannot see `_ID`; export refuses before Apply.
+            assert!(matches!(preflight, Err(e) if e.code == ErrorCode::Unsupported));
+            continue;
+        }
+        preflight.unwrap();
+        doc.apply_triangle_removal(p, l, &c).unwrap();
+        let copy = export(&doc).unwrap();
+        let reopened = open(copy.bytes().to_vec());
+        assert_eq!(reopened.primitives()[0].positions.len(), 3);
+        assert_eq!(reopened.primitives()[0].indices, [0, 1, 2, 0, 2, 1]);
+        let (meta, bin) = parts(copy.bytes());
+        let id = meta["meshes"][0]["primitives"][0]["attributes"]["_ID"]
+            .as_u64()
+            .unwrap();
+        assert_eq!(floats(&meta, &bin, id), [7., 8., 9.]);
+    }
+}
+
 #[test]
 fn undone_compaction_exports_the_exact_source_and_preflight_reports_growth() {
     let mut doc = open(rich());
