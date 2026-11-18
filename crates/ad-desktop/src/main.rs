@@ -442,6 +442,7 @@ impl App {
         self.edit_busy = match kind {
             EditKind::RemoveDuplicates(_) => "Расчёт и проверка ремонта G002…",
             EditKind::RemoveDegenerate(_) => "Расчёт и проверка ремонта G001…",
+            EditKind::RemoveUnused(_) => "Расчёт и проверка ремонта G003…",
             EditKind::Undo => "Подготовка отмены правки…",
             EditKind::Redo => "Подготовка повтора правки…",
         }
@@ -461,10 +462,11 @@ impl App {
         let candidate = match completion.result {
             Ok(EditOutcome::NoChange(preview)) => {
                 eprintln!(
-                    "edit_no_change mesh={} triangles={}",
-                    preview.mesh.0, preview.before_triangles
+                    "edit_no_change mesh={} triangles={} vertices={}",
+                    preview.mesh.0, preview.before_triangles, preview.before_vertices
                 );
-                self.ui.status = "Повторных треугольников нет; модель не изменена".into();
+                self.ui.status =
+                    "Исправлять нечего: дефект в примитиве не найден; модель не изменена".into();
                 return Ok(());
             }
             Ok(EditOutcome::Candidate(candidate)) => *candidate,
@@ -479,13 +481,16 @@ impl App {
         };
         if let Some(info) = candidate.info() {
             eprintln!(
-                "edit_preview mesh={} before={} after={} references={} complete={} target_left={}",
+                "edit_preview mesh={} before={} after={} references={} complete={} target_left={} vertices_before={} vertices_after={} appended_bytes={}",
                 info.mesh.0,
                 info.before,
                 info.after,
                 info.references,
                 info.complete,
-                info.target_left.map_or(-1, |n| n as i64)
+                info.target_left.map_or(-1, |n| n as i64),
+                info.vertices_before,
+                info.vertices_after,
+                info.appended_bytes
             );
             eprintln!("edit_timing stage=prepare kind=remove prepare_ms={prepare_ms}");
             self.ui.status = "Предпросмотр готов; модель не изменена".into();
@@ -512,9 +517,9 @@ impl App {
         self.pending_preview = None;
         let kind = candidate.kind();
         let mesh = candidate.mesh();
-        let removed = candidate
-            .preview()
-            .map_or(0, |p| p.before_triangles - p.after_triangles);
+        let removed = candidate.preview().map_or(0, |p| {
+            p.before_triangles - p.after_triangles + p.before_vertices - p.after_vertices
+        });
         let (Some(asset), Some(renderer)) = (self.current.as_mut(), self.renderer.as_mut()) else {
             return Ok(());
         };
@@ -531,7 +536,7 @@ impl App {
                 let count =
                     |kind| report.map_or(usize::MAX, |r| edits::findings_in_mesh(r, mesh, kind));
                 eprintln!(
-                    "edit_published kind={} removed={removed} mesh={} revision={} scene_revision={} mesh_triangles={} analysis={} g001_in_mesh={} g002_in_mesh={} undo={} redo={} consistent={}",
+                    "edit_published kind={} removed={removed} mesh={} revision={} scene_revision={} mesh_triangles={} analysis={} g001_in_mesh={} g002_in_mesh={} undo={} redo={} consistent={} mesh_vertices={} g003_in_mesh={}",
                     edit_name(kind),
                     mesh.0,
                     tag.revision,
@@ -550,7 +555,13 @@ impl App {
                     count(ad_heal::RepairKind::DuplicateTriangles),
                     asset.session.history_usage().undo,
                     asset.session.history_usage().redo,
-                    asset.is_consistent()
+                    asset.is_consistent(),
+                    asset
+                        .document()
+                        .primitives()
+                        .get(mesh.0)
+                        .map_or(0, |m| m.positions.len()),
+                    count(ad_heal::RepairKind::UnusedVertices)
                 );
                 self.ui.status = format!("Правка применена; ревизия {}", tag.revision);
             }
@@ -1258,7 +1269,9 @@ impl ApplicationHandler for App {
 
 fn edit_name(kind: EditKind) -> &'static str {
     match kind {
-        EditKind::RemoveDuplicates(_) | EditKind::RemoveDegenerate(_) => "remove",
+        EditKind::RemoveDuplicates(_)
+        | EditKind::RemoveDegenerate(_)
+        | EditKind::RemoveUnused(_) => "remove",
         EditKind::Undo => "undo",
         EditKind::Redo => "redo",
     }
@@ -1311,7 +1324,8 @@ fn run() -> GpuResult<()> {
                 smoke_repair = match args.next().as_deref() {
                     Some("g001") => ad_heal::RepairKind::DegenerateTriangles,
                     Some("g002") => ad_heal::RepairKind::DuplicateTriangles,
-                    _ => return Err("--smoke-repair needs g001 or g002".into()),
+                    Some("g003") => ad_heal::RepairKind::UnusedVertices,
+                    _ => return Err("--smoke-repair needs g001, g002 or g003".into()),
                 }
             }
             "--smoke-save" => {

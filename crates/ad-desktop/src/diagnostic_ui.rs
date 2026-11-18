@@ -60,6 +60,7 @@ pub fn show(
                                     let repair=match finding.code {
                                         ad_analysis::Code::DuplicateTriangle=>Some((ad_heal::RepairKind::DuplicateTriangles,"Полный расчёт удаления всех повторов этого исходного примитива. Модель не изменяется до «Применить».")),
                                         ad_analysis::Code::ZeroArea=>Some((ad_heal::RepairKind::DegenerateTriangles,"Полный расчёт удаления всех треугольников нулевой площади этого исходного примитива. Модель не изменяется до «Применить».")),
+                                        ad_analysis::Code::UnusedVertex=>Some((ad_heal::RepairKind::UnusedVertices,"Полный расчёт удаления всех вершин, которые не использует ни один треугольник этого исходного примитива. Модель не изменяется до «Применить».")),
                                         _=>None,
                                     };
                                     if let Some((kind,hint))=repair {

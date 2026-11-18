@@ -413,3 +413,70 @@ fn degenerate_repair_uses_the_same_preview_publication_and_history() {
     .unwrap();
     assert!(matches!(outcome, EditOutcome::NoChange(_)));
 }
+
+#[test]
+fn unused_vertex_repair_compacts_publishes_undoes_and_saves() {
+    let (mut asset, mut scene) = open("Geometry_Findings.glb");
+    let c = Cancellation::default();
+    let kind = EditKind::RemoveUnused(MeshId(1));
+    assert_eq!(
+        kind.repair(),
+        Some((MeshId(1), ad_heal::RepairKind::UnusedVertices))
+    );
+    assert_eq!(
+        EditKind::from_repair(MeshId(1), ad_heal::RepairKind::UnusedVertices),
+        kind
+    );
+    assert_eq!(repair_label(ad_heal::RepairKind::UnusedVertices), "G003");
+    let candidate = candidate(&asset, kind);
+    let info = candidate.info().unwrap();
+    assert_eq!(info.kind, ad_heal::RepairKind::UnusedVertices);
+    assert_eq!((info.before, info.after), (1, 1), "triangles are kept");
+    assert_eq!((info.vertices_before, info.vertices_after), (5, 3));
+    assert_eq!(info.references, 1);
+    assert!(info.complete);
+    assert_eq!(info.target_left, Some(0));
+    // POSITION and NORMAL (12 + 12 bytes) for 3 vertices plus 3 U32 indices.
+    assert_eq!(info.appended_bytes, 3 * 24 + 3 * 4);
+    assert_eq!(asset.document().revision(), 0);
+    publish_edit(&mut asset, &mut scene, candidate, &c).unwrap();
+    assert!(asset.is_consistent());
+    assert_eq!(asset.document().primitives()[1].positions.len(), 3);
+    assert_eq!(asset.document().primitives()[0].positions.len(), 5);
+    let report = asset.diagnostics().as_ref().unwrap();
+    assert!(report.is_complete());
+    assert_eq!(
+        findings_in_mesh(report, MeshId(1), ad_heal::RepairKind::UnusedVertices),
+        0
+    );
+    assert_eq!(
+        findings_in_mesh(report, MeshId(0), ad_heal::RepairKind::UnusedVertices),
+        1,
+        "the sibling sharing the accessor is untouched"
+    );
+    let saved = ad_formats::prepare_glb(
+        asset.document(),
+        asset.document().tag(),
+        Default::default(),
+        ImportLimits::default(),
+        &c,
+    )
+    .unwrap();
+    let reopened = ad_formats::import_glb(
+        saved.bytes().clone(),
+        "copy".into(),
+        DocumentId(9),
+        ImportLimits::default(),
+        &c,
+    )
+    .unwrap();
+    assert_eq!(reopened.primitives()[1].positions.len(), 3);
+    let undo = self::candidate(&asset, EditKind::Undo);
+    assert_eq!(undo.mesh(), MeshId(1));
+    publish_edit(&mut asset, &mut scene, undo, &c).unwrap();
+    assert_eq!(asset.document().primitives()[1].positions.len(), 5);
+    apply(&mut asset, &mut scene, EditKind::Redo);
+    assert_eq!(asset.document().primitives()[1].positions.len(), 3);
+    let outcome = prepare_edit(&asset.session, &asset.generation.stamp, kind, &c).unwrap();
+    assert!(matches!(outcome, EditOutcome::NoChange(_)));
+}

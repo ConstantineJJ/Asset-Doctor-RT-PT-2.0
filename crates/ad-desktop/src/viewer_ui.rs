@@ -26,8 +26,13 @@ pub struct Actions {
 pub struct PreviewInfo {
     pub kind: ad_heal::RepairKind,
     pub mesh: ad_document::MeshId,
+    /// Triangles before/after the edit.
     pub before: usize,
     pub after: usize,
+    pub vertices_before: usize,
+    pub vertices_after: usize,
+    /// BIN bytes a saved copy appends after the original data.
+    pub appended_bytes: usize,
     /// Source node references, including inactive nodes; not visible copies.
     pub references: usize,
     pub complete: bool,
@@ -397,12 +402,18 @@ impl ViewerUi {
                 egui::Window::new(format!("Ремонт {code} · предпросмотр")).id(egui::Id::new("repair_preview")).collapsible(false).resizable(false).default_width(420.).show(&context,|ui| {
                     ui.strong(format!("Исходный примитив #{}",info.mesh.0));
                     ui.label(format!("Ссылок из узлов: {} (включая неактивные; это не число видимых копий).",info.references));
-                    ui.label("Правка меняет общий примитив: все узлы, которые его используют, получат одинаковые индексы.");
+                    let vertices=info.kind==ad_heal::RepairKind::UnusedVertices;
+                    ui.label(if vertices {"Правка меняет общий примитив: все узлы, которые его используют, получат одинаковые вершины и индексы."} else {"Правка меняет общий примитив: все узлы, которые его используют, получат одинаковые индексы."});
                     ui.separator();
-                    ui.label(format!("Треугольники: было {}, станет {} (удаляется {}).",info.before,info.after,info.before-info.after));
+                    if vertices {
+                        ui.label(format!("Вершины: было {}, станет {} (удаляется {}). Треугольники не меняются: {}.",info.vertices_before,info.vertices_after,info.vertices_before-info.vertices_after,info.before));
+                    } else {
+                        ui.label(format!("Треугольники: было {}, станет {} (удаляется {}).",info.before,info.after,info.before-info.after));
+                    }
                     ui.weak(match info.kind {
                         ad_heal::RepairKind::DuplicateTriangles=>"Удаляются только точные повторы с тем же обходом; первый экземпляр, порядок и все атрибуты сохраняются.",
                         ad_heal::RepairKind::DegenerateTriangles=>"Удаляются только треугольники точно нулевой площади (повторяющийся индекс или три вершины на одной прямой); остальные треугольники, их порядок, вершины и атрибуты сохраняются. Освободившиеся вершины остаются (G003).",
+                        ad_heal::RepairKind::UnusedVertices=>"Удаляются только вершины, на которые не ссылается ни один треугольник этого примитива. Порядок и все атрибуты оставшихся вершин сохраняются, индексы перенумеровываются. Другие примитивы с общим буфером вершин продолжают использовать прежние данные.",
                     });
                     match (info.complete,info.target_left) {
                         (true,Some(0))=>ui.label(format!("Проверка результата: полный анализ, {code} в этом примитиве не останется.")),
@@ -410,6 +421,7 @@ impl ViewerUi {
                         _=>ui.colored_label(Color32::from_rgb(255,190,120),format!("Проверка результата неполная: отсутствие {code} не доказано.")),
                     };
                     ui.label("Сохранение: результат совместим с проверенным экспортом копии GLB.");
+                    ui.weak(format!("Копия GLB станет больше примерно на {:.1} КиБ: новые данные пишутся в конец файла, исходные данные остаются.",info.appended_bytes as f64/1024.));
                     ui.weak(format!("Новая сцена на GPU: {:.1} МиБ геометрии; текстуры загружаются заново. Новые G006 после удаления треугольников — не обязательно новые дыры.",info.geometry_bytes as f64/1048576.));
                     ui.separator();
                     ui.horizontal(|ui| {
@@ -772,6 +784,9 @@ mod tests {
             mesh: ad_document::MeshId(0),
             before: 992,
             after: 960,
+            vertices_before: 600,
+            vertices_after: 600,
+            appended_bytes: 11_520,
             references: 1,
             complete: true,
             target_left: Some(0),

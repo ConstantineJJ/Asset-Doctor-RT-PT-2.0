@@ -20,6 +20,8 @@ pub enum EditKind {
     RemoveDuplicates(MeshId),
     /// G001 for one explicit source primitive and all its references.
     RemoveDegenerate(MeshId),
+    /// G003 (ADR-0033): compact the primitive's vertex streams.
+    RemoveUnused(MeshId),
     Undo,
     Redo,
 }
@@ -29,6 +31,7 @@ impl EditKind {
         match self {
             Self::RemoveDuplicates(mesh) => Some((mesh, RepairKind::DuplicateTriangles)),
             Self::RemoveDegenerate(mesh) => Some((mesh, RepairKind::DegenerateTriangles)),
+            Self::RemoveUnused(mesh) => Some((mesh, RepairKind::UnusedVertices)),
             Self::Undo | Self::Redo => None,
         }
     }
@@ -36,6 +39,7 @@ impl EditKind {
         match kind {
             RepairKind::DuplicateTriangles => Self::RemoveDuplicates(mesh),
             RepairKind::DegenerateTriangles => Self::RemoveDegenerate(mesh),
+            RepairKind::UnusedVertices => Self::RemoveUnused(mesh),
         }
     }
 }
@@ -44,6 +48,7 @@ pub fn target_code(kind: RepairKind) -> ad_analysis::Code {
     match kind {
         RepairKind::DuplicateTriangles => ad_analysis::Code::DuplicateTriangle,
         RepairKind::DegenerateTriangles => ad_analysis::Code::ZeroArea,
+        RepairKind::UnusedVertices => ad_analysis::Code::UnusedVertex,
     }
 }
 /// Findings of the rule a repair kind removes, on one source primitive.
@@ -59,6 +64,7 @@ pub fn repair_label(kind: RepairKind) -> &'static str {
     match kind {
         RepairKind::DuplicateTriangles => "G002",
         RepairKind::DegenerateTriangles => "G001",
+        RepairKind::UnusedVertices => "G003",
     }
 }
 pub struct EditInput {
@@ -79,6 +85,8 @@ pub struct EditCandidate {
     base: DocumentStamp,
     change: Change,
     preview: Option<DuplicatePreview>,
+    /// BIN bytes a saved copy appends to the original (export preflight).
+    appended: usize,
     snapshot: Arc<GeometrySnapshot>,
     diagnostics: AssetResult<ad_analysis::Report>,
 }
@@ -103,6 +111,9 @@ impl EditCandidate {
             mesh: preview.mesh,
             before: preview.before_triangles,
             after: preview.after_triangles,
+            vertices_before: preview.before_vertices,
+            vertices_after: preview.after_vertices,
+            appended_bytes: self.appended,
             references: preview.source_node_references,
             complete: report.is_some_and(|r| r.is_complete()),
             target_left: report.map(|r| {
@@ -153,8 +164,13 @@ pub fn prepare_edit(
     }
     let (change, preview, removal);
     match kind {
-        EditKind::RemoveDuplicates(mesh) | EditKind::RemoveDegenerate(mesh) => {
+        EditKind::RemoveDuplicates(mesh)
+        | EditKind::RemoveDegenerate(mesh)
+        | EditKind::RemoveUnused(mesh) => {
             let plan = match kind {
+                EditKind::RemoveUnused(_) => {
+                    ad_heal::plan_unused(document, base.tag(), mesh, PlanLimits::default(), cancel)?
+                }
                 EditKind::RemoveDegenerate(_) => ad_heal::plan_degenerate(
                     document,
                     base.tag(),
@@ -170,7 +186,7 @@ pub fn prepare_edit(
                     cancel,
                 )?,
             };
-            if plan.removed_triangles().is_empty() {
+            if plan.removed_triangles().is_empty() && plan.removed_vertices().is_empty() {
                 return Ok(EditOutcome::NoChange(plan.preview()));
             }
             removal = plan.prepare(session, VerificationLimits::default(), cancel)?;
@@ -193,10 +209,11 @@ pub fn prepare_edit(
     };
     let mesh = candidate.mesh();
     let view = document.candidate_view(candidate, cancel)?;
+    let mut appended = 0;
     if kind.repair().is_some() {
         // G002-06: refuse before Apply if the result could not be saved by
         // the verified static exporter (ADR-0028), with its exact reason.
-        ad_formats::preflight_changed_export(
+        appended = ad_formats::preflight_changed_export(
             &view,
             ad_formats::ExportLimits::default(),
             ImportLimits::default(),
@@ -214,6 +231,7 @@ pub fn prepare_edit(
         base: base.clone(),
         change,
         preview,
+        appended,
         snapshot,
         diagnostics,
     })))
