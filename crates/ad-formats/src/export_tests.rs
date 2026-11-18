@@ -395,6 +395,7 @@ fn preflight(view: &ad_document::DocumentView<'_>, limits: ExportLimits) -> Asse
         ImportLimits::default(),
         &Cancellation::default(),
     )
+    .map(|_| ())
 }
 
 #[test]

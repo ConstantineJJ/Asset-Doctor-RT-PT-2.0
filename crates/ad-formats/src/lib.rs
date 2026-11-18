@@ -19,6 +19,8 @@ pub fn compare_reimported(
 }
 #[cfg(test)]
 mod export_tests;
+#[cfg(test)]
+mod export_vertex_tests;
 mod source;
 use ad_document::{
     AssetDocument, AssetError, AssetResult, Cancellation, DocumentId, DocumentParts, ErrorCode,

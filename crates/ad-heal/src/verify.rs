@@ -1,6 +1,135 @@
 //! Rebuild verification data from source/candidate, not planner working records.
 use super::{VerificationLimits, budget, mismatch, reserve};
-use ad_document::AssetResult;
+use ad_document::{AssetResult, MeshPrimitive, Texture};
+use std::sync::Arc;
+
+fn bits<const N: usize>(v: &[f32; N]) -> [u32; N] {
+    v.map(f32::to_bits)
+}
+fn same_texture(a: &Option<Arc<Texture>>, b: &Option<Arc<Texture>>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        _ => false,
+    }
+}
+/// Everything except the vertex/index streams must be the source's own.
+fn same_material(a: &MeshPrimitive, b: &MeshPrimitive) -> bool {
+    a.uv_bindings == b.uv_bindings
+        && bits(&a.base_color) == bits(&b.base_color)
+        && bits(&a.metallic_roughness) == bits(&b.metallic_roughness)
+        && bits(&a.emissive_factor) == bits(&b.emissive_factor)
+        && a.normal_scale.to_bits() == b.normal_scale.to_bits()
+        && a.occlusion_strength.to_bits() == b.occlusion_strength.to_bits()
+        && a.alpha_cutoff.map(f32::to_bits) == b.alpha_cutoff.map(f32::to_bits)
+        && same_texture(&a.color_texture, &b.color_texture)
+        && same_texture(&a.metallic_roughness_texture, &b.metallic_roughness_texture)
+        && same_texture(&a.normal_texture, &b.normal_texture)
+        && same_texture(&a.occlusion_texture, &b.occlusion_texture)
+        && same_texture(&a.emissive_texture, &b.emissive_texture)
+        && a.normals.is_some() == b.normals.is_some()
+        && a.tangents.is_some() == b.tangents.is_some()
+        && a.colors.is_some() == b.colors.is_some()
+        && a.uv_channels.len() == b.uv_channels.len()
+        && a.uv_channels
+            .iter()
+            .zip(&b.uv_channels)
+            .all(|(a, b)| a.set == b.set)
+}
+/// Bitwise equality of every decoded stream at source vertex `v` and
+/// candidate vertex `k`.
+fn same_vertex(s: &MeshPrimitive, v: usize, c: &MeshPrimitive, k: usize) -> bool {
+    fn at<const N: usize>(values: &Option<Vec<[f32; N]>>, i: usize) -> Option<[u32; N]> {
+        values.as_ref().and_then(|v| v.get(i)).map(bits)
+    }
+    s.positions.get(v).map(bits) == c.positions.get(k).map(bits)
+        && at(&s.normals, v) == at(&c.normals, k)
+        && at(&s.tangents, v) == at(&c.tangents, k)
+        && at(&s.colors, v) == at(&c.colors, k)
+        && s.uv_channels.iter().zip(&c.uv_channels).all(|(a, b)| {
+            a.values.get(v).map(bits).is_some()
+                && a.values.get(v).map(bits) == b.values.get(k).map(bits)
+        })
+}
+
+/// ADR-0033 postcheck. Streams the source once: removed vertices must be
+/// exactly the vertices no source index uses; every other vertex equals the
+/// next candidate vertex on all decoded streams and source-map entries; every
+/// candidate index equals the rank of the source index; no candidate vertex
+/// is unused. Material fields and texture identities are unchanged.
+pub(crate) fn check_unused(
+    source: &MeshPrimitive,
+    source_map: Option<&[u32]>,
+    removed: &[u32],
+    candidate: &MeshPrimitive,
+    candidate_map: Option<&[u32]>,
+    limits: VerificationLimits,
+    mut cancel: impl FnMut() -> AssetResult<()>,
+) -> AssetResult<()> {
+    cancel()?;
+    let n = source.positions.len();
+    let kept = n.checked_sub(removed.len()).ok_or_else(mismatch)?;
+    if n > u32::MAX as usize {
+        return Err(budget());
+    }
+    if candidate.positions.len() != kept
+        || candidate.indices.len() != source.indices.len()
+        || candidate_map.is_some_and(|m| m.len() != kept)
+        || source_map.is_some_and(|m| m.len() != n)
+        || !same_material(source, candidate)
+    {
+        return Err(mismatch());
+    }
+    for (i, &r) in removed.iter().enumerate() {
+        if i % 4096 == 0 {
+            cancel()?;
+        }
+        if r as usize >= n || i > 0 && removed[i - 1] >= r {
+            return Err(mismatch());
+        }
+    }
+    let mut next_removed = 0usize;
+    let mut k = 0usize;
+    for v in 0..n {
+        if v % 4096 == 0 {
+            cancel()?;
+        }
+        if removed.get(next_removed) == Some(&(v as u32)) {
+            next_removed += 1;
+            continue;
+        }
+        let expected = source_map.map_or(v as u32, |m| m[v]);
+        if !same_vertex(source, v, candidate, k)
+            || candidate_map.map_or(k as u32, |m| m[k]) != expected
+        {
+            return Err(mismatch());
+        }
+        k += 1;
+    }
+    if k != kept || next_removed != removed.len() {
+        return Err(mismatch());
+    }
+    // Every source index must survive and map to its rank among survivors.
+    let mut used = reserve::<bool>(kept, limits.scratch_bytes)?;
+    used.resize(kept, false);
+    for (i, (&s, &c)) in source.indices.iter().zip(&candidate.indices).enumerate() {
+        if i % 4096 == 0 {
+            cancel()?;
+        }
+        let below = removed.partition_point(|&r| r < s);
+        if removed.get(below) == Some(&s) || c as usize != s as usize - below || c as usize >= kept
+        {
+            return Err(mismatch());
+        }
+        used[c as usize] = true;
+    }
+    cancel()?;
+    // Completeness: the removed set is the whole unused set.
+    if used.iter().any(|u| !u) {
+        return Err(mismatch());
+    }
+    Ok(())
+}
 
 fn key(face: &[u32; 3]) -> [u32; 3] {
     (0..3)

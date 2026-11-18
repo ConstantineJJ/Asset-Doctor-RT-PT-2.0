@@ -38,19 +38,26 @@ pub struct DuplicatePreview {
     pub mesh: MeshId,
     pub before_triangles: usize,
     pub after_triangles: usize,
+    pub before_vertices: usize,
+    pub after_vertices: usize,
     /// All source nodes referencing this primitive, including inactive nodes.
     /// This is not a count of currently displayed instances.
     pub source_node_references: usize,
 }
-/// Index-only repairs that remove whole triangles of one source primitive.
+/// Repairs of one source primitive: whole-triangle removals, or removal of
+/// vertices no triangle uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RepairKind {
     /// G002 / REPAIR-06 (ADR-0030).
     DuplicateTriangles,
     /// G001 / REPAIR-01 (ADR-0032).
     DegenerateTriangles,
+    /// G003 / REPAIR-02 (ADR-0033): vertex streams are compacted.
+    UnusedVertices,
 }
 /// Complete removal plan for one source primitive and one repair kind.
+/// `removed` holds triangle ordinals, or vertex ordinals for
+/// [`RepairKind::UnusedVertices`].
 pub struct DuplicatePlan {
     stamp: DocumentStamp,
     preview: DuplicatePreview,
@@ -66,8 +73,19 @@ impl DuplicatePlan {
     pub fn kind(&self) -> RepairKind {
         self.kind
     }
+    /// Triangle ordinals removed; empty for a vertex repair.
     pub fn removed_triangles(&self) -> &[u32] {
-        &self.removed
+        match self.kind {
+            RepairKind::UnusedVertices => &[],
+            _ => &self.removed,
+        }
+    }
+    /// Vertex ordinals removed; empty for a triangle repair.
+    pub fn removed_vertices(&self) -> &[u32] {
+        match self.kind {
+            RepairKind::UnusedVertices => &self.removed,
+            _ => &[],
+        }
     }
     /// Retained Vec capacity only; excludes the fixed plan header.
     pub fn retained_bytes(&self) -> usize {
@@ -92,11 +110,25 @@ impl DuplicatePlan {
                 "Repair plan is stale or belongs to another document",
             ));
         }
-        let command =
-            session.prepare_removal(self.preview.tag, self.preview.mesh, &self.removed, cancel)?;
+        let (tag, mesh) = (self.preview.tag, self.preview.mesh);
+        let source = &doc.primitives()[mesh.0];
+        if self.kind == RepairKind::UnusedVertices {
+            let command = session.prepare_vertex_removal(tag, mesh, &self.removed, cancel)?;
+            verify::check_unused(
+                source,
+                doc.source_vertices(mesh),
+                &self.removed,
+                command.primitive_after(doc, cancel)?,
+                command.source_vertices_after(doc),
+                limits,
+                || cancel.check(),
+            )?;
+            return Ok(command);
+        }
+        let command = session.prepare_removal(tag, mesh, &self.removed, cancel)?;
         let candidate = command.indices_after(doc, cancel)?;
-        let source = &doc.primitives()[self.preview.mesh.0];
         match self.kind {
+            RepairKind::UnusedVertices => unreachable!("handled above"),
             RepairKind::DuplicateTriangles => {
                 verify::check(&source.indices, &self.removed, candidate, limits, || {
                     cancel.check()
@@ -170,6 +202,8 @@ pub fn plan_duplicates(
             mesh,
             before_triangles: primitive.indices.len() / 3,
             after_triangles: primitive.indices.len() / 3 - removed.len(),
+            before_vertices: primitive.positions.len(),
+            after_vertices: primitive.positions.len(),
             source_node_references: references,
         },
         removed,
@@ -238,10 +272,72 @@ pub fn plan_degenerate(
             mesh,
             before_triangles: faces.len(),
             after_triangles: faces.len() - removed.len(),
+            before_vertices: primitive.positions.len(),
+            after_vertices: primitive.positions.len(),
             source_node_references: references,
         },
         removed,
         kind: RepairKind::DegenerateTriangles,
+    })
+}
+
+/// Complete read-only G003 scan of one source primitive (ADR-0033): every
+/// vertex that no triangle of this primitive references, in ascending order.
+/// Vertices used only by a sibling primitive sharing the source accessor are
+/// unused here. An empty plan is a no-op.
+pub fn plan_unused(
+    document: &AssetDocument,
+    expected: DocumentTag,
+    mesh: MeshId,
+    limits: PlanLimits,
+    cancel: &Cancellation,
+) -> AssetResult<DuplicatePlan> {
+    document.verify_tag(expected, cancel)?;
+    let primitive = document.primitives().get(mesh.0).ok_or_else(|| {
+        AssetError::new(
+            ErrorCode::InvalidGeometry,
+            "Unknown unused-vertex source primitive",
+        )
+    })?;
+    let count = primitive.positions.len();
+    if count > u32::MAX as usize || primitive.indices.len() / 3 > limits.triangles {
+        return Err(budget());
+    }
+    let mut used = reserve::<bool>(count, limits.scratch_bytes)?;
+    used.resize(count, false);
+    for (i, &index) in primitive.indices.iter().enumerate() {
+        if i % 4096 == 0 {
+            cancel.check()?;
+        }
+        used[index as usize] = true;
+    }
+    let unused = used.iter().filter(|u| !**u).count();
+    let mut removed = reserve::<u32>(unused, limits.result_bytes)?;
+    for (v, &u) in used.iter().enumerate() {
+        if v % 4096 == 0 {
+            cancel.check()?;
+        }
+        if !u {
+            removed.push(v as u32);
+        }
+    }
+    drop(used);
+    let references = source_references(document, mesh, limits.scratch_bytes, || cancel.check())?;
+    cancel.check()?;
+    let triangles = primitive.indices.len() / 3;
+    Ok(DuplicatePlan {
+        stamp: document.stamp(),
+        preview: DuplicatePreview {
+            tag: expected,
+            mesh,
+            before_triangles: triangles,
+            after_triangles: triangles,
+            before_vertices: count,
+            after_vertices: count - removed.len(),
+            source_node_references: references,
+        },
+        removed,
+        kind: RepairKind::UnusedVertices,
     })
 }
 
@@ -342,3 +438,5 @@ fn scan(
 mod degenerate_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod unused_tests;
