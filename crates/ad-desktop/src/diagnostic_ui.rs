@@ -53,6 +53,7 @@ pub fn show(
                                         ad_analysis::Code::MissingUv0=>("G009","Исходный UV0 отсутствует"),
                                         ad_analysis::Code::ZeroUvArea=>("G010","Нулевая UV-площадь"),
                                         ad_analysis::Code::OutsideUnitUv=>("G011","UV вне 0…1 · могут быть намеренными"),
+                                        ad_analysis::Code::DuplicateVertex=>("G012","Точные дубли вершин · все атрибуты совпадают"),
                                     };
                                     let severity=if finding.severity==ad_analysis::Severity::Information {"Сведения"} else {"Замечание"};
                                     let title=format!("{code} · {severity} · {label}");
