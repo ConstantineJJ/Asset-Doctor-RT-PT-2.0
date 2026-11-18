@@ -3,14 +3,17 @@ mod color;
 mod indices;
 mod normals;
 mod uv;
+mod vertices;
 mod view;
 pub use indices::{
     AppliedRemoval, DocumentStamp, DocumentTag, IndexExchange, PreparedRemoval, RemovalPreview,
     StagedExchange, StagedRemoval,
 };
-pub use view::{CandidateIndices, DocumentView};
+pub use view::{CandidateIndices, DocumentView, Primitives};
 #[cfg(test)]
 mod index_tests;
+#[cfg(test)]
+mod vertex_tests;
 #[cfg(test)]
 mod view_tests;
 pub use color::*;
@@ -148,6 +151,8 @@ pub struct AssetDocument {
     texture_stats: TextureStats,
     revision: u64,
     origin: Arc<()>,
+    /// Per primitive: current vertex -> original source vertex (ADR-0033).
+    vertex_maps: Vec<Option<Vec<u32>>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -352,7 +357,15 @@ impl AssetDocument {
                 ));
             }
         }
+        let mut vertex_maps = Vec::new();
+        vertex_maps
+            .try_reserve_exact(parts.meshes.len())
+            .map_err(|_| {
+                AssetError::new(ErrorCode::ResourceLimit, "Cannot allocate primitive maps")
+            })?;
+        vertex_maps.resize_with(parts.meshes.len(), || None);
         Ok(Self {
+            vertex_maps,
             parts,
             texture_stats: textures.stats,
             revision: 0,
@@ -442,7 +455,7 @@ impl DocumentView<'_> {
                         "Scene exceeds draw/instance budget",
                     ));
                 }
-                let mesh = &document.parts.meshes[mesh_id.0];
+                let mesh = self.primitive(*mesh_id);
                 vertices = vertices.checked_add(mesh.positions.len()).ok_or_else(|| {
                     AssetError::new(ErrorCode::ResourceLimit, "Snapshot vertex count overflow")
                 })?;
@@ -541,7 +554,7 @@ impl DocumentView<'_> {
                 AssetError::new(ErrorCode::ResourceLimit, "Cannot allocate scene draws")
             })?;
         for (mesh_id, world) in instances {
-            let mesh = &document.parts.meshes[mesh_id.0];
+            let mesh = self.primitive(mesh_id);
             let normal_matrix = normals::normal_matrix(world);
             let tangent_matrix = normals::tangent_matrix(world);
             let [

@@ -152,7 +152,33 @@ impl Session {
             self.import_limits,
             cancel,
         )?;
-        if plan.preview().before_triangles != plan.preview().after_triangles {
+        if plan.changes() {
+            self.admit(plan.retained_bytes())?;
+        }
+        Ok(plan)
+    }
+    /// ADR-0033: removal of unused vertices of one primitive. History keeps
+    /// the whole previous primitive, so admission is checked before the
+    /// replacement streams are built.
+    pub fn prepare_vertex_removal(
+        &self,
+        expected: DocumentTag,
+        mesh: MeshId,
+        vertices: &[u32],
+        cancel: &Cancellation,
+    ) -> AssetResult<PreparedRemoval> {
+        self.document.verify_tag(expected, cancel)?;
+        if !vertices.is_empty() {
+            self.admit(self.document.primitive_capacity_bytes(mesh)?)?;
+        }
+        let plan = self.document.prepare_vertex_removal(
+            expected,
+            mesh,
+            vertices,
+            self.import_limits,
+            cancel,
+        )?;
+        if plan.changes() {
             self.admit(plan.retained_bytes())?;
         }
         Ok(plan)
@@ -162,7 +188,7 @@ impl Session {
         plan: PreparedRemoval,
         cancel: &Cancellation,
     ) -> AssetResult<CommandOutcome> {
-        if plan.preview().before_triangles == plan.preview().after_triangles {
+        if !plan.changes() {
             self.document.verify_tag(plan.preview().tag, cancel)?;
             let applied = self
                 .document
@@ -371,3 +397,5 @@ impl StagedEdit<'_> {
 mod stage_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod vertex_tests;
