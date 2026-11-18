@@ -362,7 +362,8 @@ impl App {
                 }
                 self.camera.fit(asset.snapshot().bounds);
                 self.ui.tree.replace(asset.document());
-                self.ui.status = format!("Открыт {}", asset.document().name());
+                self.ui
+                    .set_status(format!("Открыт {}", asset.document().name()), false);
                 self.ui.error = None;
                 self.confirmed = Some(Confirmed::imported(&asset));
                 self.current = Some(asset);
@@ -418,7 +419,8 @@ impl App {
                     return Err(error.into());
                 } else if error.code != ErrorCode::Cancelled {
                     self.ui.error = Some(error.to_string().chars().take(512).collect());
-                    self.ui.status = "Загрузка не выполнена; предыдущая модель сохранена".into();
+                    self.ui
+                        .set_status("Загрузка не выполнена; предыдущая модель сохранена", true);
                     self.title();
                     native::show_error(&error.to_string());
                 }
@@ -468,8 +470,10 @@ impl App {
                     "edit_no_change mesh={} triangles={} vertices={}",
                     preview.mesh.0, preview.before_triangles, preview.before_vertices
                 );
-                self.ui.status =
-                    "Исправлять нечего: дефект в примитиве не найден; модель не изменена".into();
+                self.ui.set_status(
+                    "Исправлять нечего: дефект в примитиве не найден; модель не изменена",
+                    false,
+                );
                 return Ok(());
             }
             Ok(EditOutcome::Candidate(candidate)) => *candidate,
@@ -478,7 +482,10 @@ impl App {
                 if self.smoke_edit {
                     return Err(error.into());
                 }
-                self.ui.status = format!("Правка не подготовлена, модель прежняя: {error}");
+                self.ui.set_status(
+                    format!("Правка не подготовлена, модель прежняя: {error}"),
+                    true,
+                );
                 return Ok(());
             }
         };
@@ -496,7 +503,8 @@ impl App {
                 info.appended_bytes
             );
             eprintln!("edit_timing stage=prepare kind=remove prepare_ms={prepare_ms}");
-            self.ui.status = "Предпросмотр готов; модель не изменена".into();
+            self.ui
+                .set_status("Предпросмотр готов; модель не изменена", false);
             self.pending_preview = Some(candidate);
             if self.smoke_edit {
                 return self.apply_preview();
@@ -567,14 +575,18 @@ impl App {
                     count(ad_heal::RepairKind::UnusedVertices),
                     count(ad_heal::RepairKind::DuplicateVertices)
                 );
-                self.ui.status = format!("Правка применена; ревизия {}", tag.revision);
+                self.ui
+                    .set_status(format!("Правка применена; ревизия {}", tag.revision), false);
             }
             Err(error)
                 if !self.smoke_edit
                     && matches!(error, PublishError::Stale | PublishError::Busy) =>
             {
                 eprintln!("edit_refused kind={} reason={error:?}", edit_name(kind));
-                self.ui.status = format!("Правка не применена: {error}. Повторите предпросмотр.");
+                self.ui.set_status(
+                    format!("Правка не применена: {error}. Повторите предпросмотр."),
+                    true,
+                );
             }
             Err(error) => {
                 let revision = asset.document().revision();
@@ -603,7 +615,10 @@ impl App {
                 if self.smoke_edit {
                     return Err(format!("Smoke edit refused: {error}").into());
                 }
-                self.ui.status = format!("Правка не применена, модель прежняя: {error}");
+                self.ui.set_status(
+                    format!("Правка не применена, модель прежняя: {error}"),
+                    true,
+                );
             }
         }
         self.title();
@@ -711,7 +726,8 @@ impl App {
             Ok(Some(path)) => self.start_save_to(path, after),
             Ok(None) => {
                 eprintln!("save_cancelled dialog=true");
-                self.ui.status = "Сохранение отменено; правки не сохранены".into();
+                self.ui
+                    .set_status("Сохранение отменено; правки не сохранены", false);
             }
             Err(error) => native::show_error(&error.to_string()),
         }
@@ -769,14 +785,15 @@ impl App {
                     self.save_smoke = Some((dir, 4));
                 }
                 if accepted {
-                    self.ui.status = format!("Копия сохранена и проверена: {path}");
+                    self.ui
+                        .set_status(format!("Копия сохранена и проверена: {path}"), false);
                     if let Some(after) = after {
                         self.perform(after, event_loop);
                     }
                 } else {
-                    self.ui.status = format!(
+                    self.ui.set_status(format!(
                         "Копия {path} сохранена для более ранней ревизии; текущие правки не сохранены"
-                    );
+                    ), true);
                 }
             }
             Err(error) => {
@@ -791,7 +808,8 @@ impl App {
                 } else if self.smoke.is_some() {
                     return Err(error.into());
                 } else {
-                    self.ui.status = "Копия не сохранена; правки остаются несохранёнными".into();
+                    self.ui
+                        .set_status("Копия не сохранена; правки остаются несохранёнными", true);
                     native::show_error(&format!("Копия не сохранена: {error}"));
                 }
             }
@@ -802,7 +820,8 @@ impl App {
     /// Close/replace guard (decision 2): ask only when the model is dirty.
     fn guarded(&mut self, after: AfterSave, event_loop: &ActiveEventLoop) {
         if self.saving {
-            self.ui.status = "Дождитесь окончания сохранения копии".into();
+            self.ui
+                .set_status("Дождитесь окончания сохранения копии", false);
             return;
         }
         let dirty = self.is_dirty();
@@ -827,7 +846,8 @@ impl App {
             Guard::Proceed => self.perform(after, event_loop),
             Guard::SaveThenProceed => self.start_save(Some(after)),
             Guard::Stay | Guard::Ask => {
-                self.ui.status = "Действие отменено; модель и правки сохранены в окне".into();
+                self.ui
+                    .set_status("Действие отменено; модель и правки сохранены в окне", false);
                 if self.smoke_guard == 1 && after == AfterSave::Close {
                     eprintln!(
                         "unsaved_guard_stayed window_open={} dirty={}",
@@ -865,7 +885,7 @@ impl App {
     fn cancel_import(&mut self) {
         self.imports.cancel();
         self.importing = false;
-        self.ui.status = "Загрузка отменена".into();
+        self.ui.set_status("Загрузка отменена", false);
         self.title();
     }
 
@@ -919,7 +939,8 @@ impl App {
             self.request_edit(EditKind::from_repair(mesh, kind));
         }
         if actions.discard_preview && self.pending_preview.take().is_some() {
-            self.ui.status = "Предпросмотр закрыт; модель не изменена".into();
+            self.ui
+                .set_status("Предпросмотр закрыт; модель не изменена", false);
         }
         if actions.apply {
             self.apply_preview()?;
@@ -947,12 +968,13 @@ impl App {
     fn cancel_edit(&mut self) {
         if self.saving {
             self.saves.interrupt();
-            self.ui.status = "Отмена сохранения…".into();
+            self.ui.set_status("Отмена сохранения…", false);
         }
         if self.editing {
             self.edits.cancel();
             self.editing = false;
-            self.ui.status = "Подготовка правки отменена; модель не изменена".into();
+            self.ui
+                .set_status("Подготовка правки отменена; модель не изменена", false);
         }
     }
     fn refresh_edit_ui(&mut self) {

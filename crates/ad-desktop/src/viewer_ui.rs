@@ -70,6 +70,8 @@ pub struct ViewerUi {
     pub tree: SceneTree,
     scene: egui::Rect,
     pub status: String,
+    /// Refusal or failure: drawn in the warning colour until the next status.
+    pub status_warning: bool,
     pub error: Option<String>,
     pub edit: EditUi,
     #[cfg(test)]
@@ -127,6 +129,7 @@ impl Default for ViewerUi {
             tree: SceneTree::default(),
             scene: egui::Rect::NOTHING,
             status: "Готов к открытию GLB".into(),
+            status_warning: false,
             error: None,
             edit: EditUi::default(),
             #[cfg(test)]
@@ -161,6 +164,11 @@ impl Default for ViewerUi {
     }
 }
 impl ViewerUi {
+    /// Replaces the status line; `warning` marks a refusal or failure.
+    pub fn set_status(&mut self, text: impl Into<String>, warning: bool) {
+        self.status = text.into();
+        self.status_warning = warning;
+    }
     pub fn attach(&mut self, window: &Window) {
         self.input = Some(egui_winit::State::new(
             self.context.clone(),
@@ -299,6 +307,7 @@ impl ViewerUi {
                         if width>=430. {ui.label(busy);}
                         actions.cancel_edit|=ui.button("Отменить подготовку").on_hover_text("Модель не изменится · Esc").clicked();
                     }
+                    else if self.status_warning {ui.add(egui::Label::new(RichText::new(&self.status).color(Color32::from_rgb(255,190,120))).truncate()).on_hover_text(&self.status);}
                     else {ui.label(&self.status);}
                     if ui.available_width()>220. {ui.separator();ui.weak("Vulkan · геометрия и базовые цвета");}
                 });
@@ -896,6 +905,18 @@ mod tests {
             0,
             "preview request changes nothing"
         );
+    }
+    #[test]
+    fn refusal_status_is_marked_as_warning_until_the_next_status() {
+        let mut ui = ViewerUi::default();
+        assert!(!ui.status_warning);
+        ui.set_status("Правка не подготовлена, модель прежняя: отказ", true);
+        assert!(ui.status_warning);
+        let (out, _, _) = ui.layout(raw(1200., 760.), None, false);
+        out.drop_without_applying_deltas();
+        ui.set_status("Правка применена; ревизия 1", false);
+        assert!(!ui.status_warning);
+        assert_eq!(ui.status, "Правка применена; ревизия 1");
     }
     #[test]
     fn save_copy_is_offered_when_idle_and_dirty_state_is_visible() {
