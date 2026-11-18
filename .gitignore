@@ -4,3 +4,15 @@
 /.env.*
 *.pdb
 *.tmp
+
+# Owner rule (2026-11-18): the repository holds program files only. Design
+# docs, journals, task lists, local tools and fixture notes stay on disk.
+/docs/
+/reference/
+/tools/
+/tasks/
+/Project-pulse.md
+/AGENTS.md
+/DEPENDENCIES.md
+/tests/fixtures/README.md
+/tests/fixtures/manifest.json
