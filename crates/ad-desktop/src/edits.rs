@@ -24,6 +24,10 @@ pub enum EditKind {
     RemoveUnused(MeshId),
     /// G012 (ADR-0034): merge exact duplicate vertices.
     MergeVertices(MeshId),
+    /// G004 (ADR-0037): create normals for a primitive without them.
+    CreateNormals(MeshId),
+    /// G005 (ADR-0037): replace zero normals, keep authored ones.
+    FixNormals(MeshId),
     Undo,
     Redo,
 }
@@ -35,6 +39,8 @@ impl EditKind {
             Self::RemoveDegenerate(mesh) => Some((mesh, RepairKind::DegenerateTriangles)),
             Self::RemoveUnused(mesh) => Some((mesh, RepairKind::UnusedVertices)),
             Self::MergeVertices(mesh) => Some((mesh, RepairKind::DuplicateVertices)),
+            Self::CreateNormals(mesh) => Some((mesh, RepairKind::MissingNormals)),
+            Self::FixNormals(mesh) => Some((mesh, RepairKind::ZeroNormals)),
             Self::Undo | Self::Redo => None,
         }
     }
@@ -44,6 +50,8 @@ impl EditKind {
             RepairKind::DegenerateTriangles => Self::RemoveDegenerate(mesh),
             RepairKind::UnusedVertices => Self::RemoveUnused(mesh),
             RepairKind::DuplicateVertices => Self::MergeVertices(mesh),
+            RepairKind::MissingNormals => Self::CreateNormals(mesh),
+            RepairKind::ZeroNormals => Self::FixNormals(mesh),
         }
     }
 }
@@ -54,6 +62,8 @@ pub fn target_code(kind: RepairKind) -> ad_analysis::Code {
         RepairKind::DegenerateTriangles => ad_analysis::Code::ZeroArea,
         RepairKind::UnusedVertices => ad_analysis::Code::UnusedVertex,
         RepairKind::DuplicateVertices => ad_analysis::Code::DuplicateVertex,
+        RepairKind::MissingNormals => ad_analysis::Code::MissingNormals,
+        RepairKind::ZeroNormals => ad_analysis::Code::ZeroNormal,
     }
 }
 /// Findings of the rule a repair kind removes, on one source primitive.
@@ -71,6 +81,8 @@ pub fn repair_label(kind: RepairKind) -> &'static str {
         RepairKind::DegenerateTriangles => "G001",
         RepairKind::UnusedVertices => "G003",
         RepairKind::DuplicateVertices => "G012",
+        RepairKind::MissingNormals => "G004",
+        RepairKind::ZeroNormals => "G005",
     }
 }
 pub struct EditInput {
@@ -123,6 +135,7 @@ impl EditCandidate {
             vertices_after: preview.after_vertices,
             appended_bytes: self.appended,
             boundary_edges: self.boundary,
+            changed_normals: preview.changed_normals,
             references: preview.source_node_references,
             complete: report.is_some_and(|r| r.is_complete()),
             target_left: report.map(|r| {
@@ -176,8 +189,18 @@ pub fn prepare_edit(
         EditKind::RemoveDuplicates(mesh)
         | EditKind::RemoveDegenerate(mesh)
         | EditKind::RemoveUnused(mesh)
-        | EditKind::MergeVertices(mesh) => {
+        | EditKind::MergeVertices(mesh)
+        | EditKind::CreateNormals(mesh)
+        | EditKind::FixNormals(mesh) => {
             let plan = match kind {
+                EditKind::CreateNormals(_) | EditKind::FixNormals(_) => ad_heal::plan_normals(
+                    document,
+                    base.tag(),
+                    mesh,
+                    kind.repair().expect("repair edit").1,
+                    PlanLimits::default(),
+                    cancel,
+                )?,
                 EditKind::MergeVertices(_) => ad_heal::plan_vertex_merge(
                     document,
                     base.tag(),
@@ -203,7 +226,7 @@ pub fn prepare_edit(
                     cancel,
                 )?,
             };
-            if plan.removed_triangles().is_empty() && plan.removed_vertices().is_empty() {
+            if plan.is_empty() {
                 return Ok(EditOutcome::NoChange(plan.preview()));
             }
             removal = plan.prepare(session, VerificationLimits::default(), cancel)?;

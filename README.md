@@ -17,7 +17,11 @@ written from scratch in Rust with a Vulkan renderer. Engineering prototype.
 - Repairs with preview → Apply → Undo/Redo (Ctrl+Z / Ctrl+Y) on one source
   primitive: remove zero-area triangles (G001), duplicate triangles (G002) and
   unused vertices (G003); merge exact duplicate vertices (G012), refused if the
-  topology would get worse.
+  topology would get worse; create missing normals (G004) or replace zero
+  normals (G005) from area-weighted faces.
+- **Сохранить** (Ctrl+S) replaces the working file after a one-time
+  confirmation and the same verification; a file changed by another program
+  is never overwritten.
 - **Сохранить копию…** writes a new GLB only after an independent re-import
   check; the original file is never overwritten.
 

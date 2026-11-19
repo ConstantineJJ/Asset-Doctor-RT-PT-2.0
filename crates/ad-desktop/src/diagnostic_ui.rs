@@ -62,6 +62,8 @@ pub fn show(
                                     let repair=match finding.code {
                                         ad_analysis::Code::DuplicateTriangle=>Some((ad_heal::RepairKind::DuplicateTriangles,"Полный расчёт удаления всех повторов этого исходного примитива. Модель не изменяется до «Применить».")),
                                         ad_analysis::Code::ZeroArea=>Some((ad_heal::RepairKind::DegenerateTriangles,"Полный расчёт удаления всех треугольников нулевой площади этого исходного примитива. Модель не изменяется до «Применить».")),
+                                        ad_analysis::Code::MissingNormals=>Some((ad_heal::RepairKind::MissingNormals,"Полный расчёт нормалей для всех вершин этого исходного примитива по его граням. Модель не изменяется до «Применить».")),
+                                        ad_analysis::Code::ZeroNormal=>Some((ad_heal::RepairKind::ZeroNormals,"Полный расчёт нулевых нормалей этого исходного примитива; авторские нормали сохраняются. Модель не изменяется до «Применить».")),
                                         ad_analysis::Code::DuplicateVertex=>Some((ad_heal::RepairKind::DuplicateVertices,"Полный расчёт объединения всех точных дублей вершин этого исходного примитива с проверкой топологии. Модель не изменяется до «Применить».")),
                                         ad_analysis::Code::UnusedVertex=>Some((ad_heal::RepairKind::UnusedVertices,"Полный расчёт удаления всех вершин, которые не использует ни один треугольник этого исходного примитива. Модель не изменяется до «Применить».")),
                                         _=>None,

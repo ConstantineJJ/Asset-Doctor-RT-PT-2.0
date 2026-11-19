@@ -37,6 +37,8 @@ pub struct PreviewInfo {
     pub appended_bytes: usize,
     /// G006 boundary edges of the primitive before/after a vertex merge.
     pub boundary_edges: Option<(usize, usize)>,
+    /// Normals a G004/G005 repair rewrites.
+    pub changed_normals: usize,
     /// Source node references, including inactive nodes; not visible copies.
     pub references: usize,
     pub complete: bool,
@@ -432,7 +434,10 @@ impl ViewerUi {
                     let vertices=matches!(info.kind,ad_heal::RepairKind::UnusedVertices|ad_heal::RepairKind::DuplicateVertices);
                     ui.label(if vertices {"Правка меняет общий примитив: все узлы, которые его используют, получат одинаковые вершины и индексы."} else {"Правка меняет общий примитив: все узлы, которые его используют, получат одинаковые индексы."});
                     ui.separator();
-                    if vertices {
+                    let normals=matches!(info.kind,ad_heal::RepairKind::MissingNormals|ad_heal::RepairKind::ZeroNormals);
+                    if normals {
+                        ui.label(format!("Нормали: вычисляется {} из {} вершин. Позиции, треугольники и остальные данные не меняются.",info.changed_normals,info.vertices_before));
+                    } else if vertices {
                         ui.label(format!("Вершины: было {}, станет {} (удаляется {}). Треугольники не меняются: {}.",info.vertices_before,info.vertices_after,info.vertices_before-info.vertices_after,info.before));
                         if let Some((before,after))=info.boundary_edges {ui.label(format!("Граничные рёбра (G006): было {before}, станет {after}."));}
                     } else {
@@ -442,6 +447,8 @@ impl ViewerUi {
                         ad_heal::RepairKind::DuplicateTriangles=>"Удаляются только точные повторы с тем же обходом; первый экземпляр, порядок и все атрибуты сохраняются.",
                         ad_heal::RepairKind::DegenerateTriangles=>"Удаляются только треугольники точно нулевой площади (повторяющийся индекс или три вершины на одной прямой); остальные треугольники, их порядок, вершины и атрибуты сохраняются. Освободившиеся вершины остаются (G003).",
                         ad_heal::RepairKind::UnusedVertices=>"Удаляются только вершины, на которые не ссылается ни один треугольник этого примитива. Порядок и все атрибуты оставшихся вершин сохраняются, индексы перенумеровываются. Другие примитивы с общим буфером вершин продолжают использовать прежние данные.",
+                        ad_heal::RepairKind::MissingNormals=>"Нормали вычисляются по граням с учётом их площади, по индексам вершин: разрезанные швы остаются острыми. В копии GLB появится новый атрибут NORMAL.",
+                        ad_heal::RepairKind::ZeroNormals=>"Заменяются только нулевые нормали; авторские нормали сохраняются без изменений. Новые значения вычисляются по граням с учётом их площади.",
                         ad_heal::RepairKind::DuplicateVertices=>"Объединяются только вершины, у которых совпадают все данные: позиция, нормаль, касательная, цвет и все UV. Треугольники переходят на первую такую вершину; швы с разными UV или нормалями остаются. Ремонт отклоняется, если топология примитива ухудшится.",
                     });
                     match (info.complete,info.target_left) {
@@ -817,6 +824,7 @@ mod tests {
             vertices_after: 600,
             appended_bytes: 11_520,
             boundary_edges: None,
+            changed_normals: 0,
             references: 1,
             complete: true,
             target_left: Some(0),

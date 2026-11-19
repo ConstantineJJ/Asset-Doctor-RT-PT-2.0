@@ -415,6 +415,49 @@ fn degenerate_repair_uses_the_same_preview_publication_and_history() {
 }
 
 #[test]
+fn normals_repairs_create_and_fix_normals_and_refuse_unusable_vertices() {
+    let (mut asset, mut scene) = open("Normals_Repair.glb");
+    let c = Cancellation::default();
+    for (kind, mesh, changed, code) in [
+        (
+            EditKind::CreateNormals(MeshId(0)),
+            0,
+            4,
+            ad_heal::RepairKind::MissingNormals,
+        ),
+        (
+            EditKind::FixNormals(MeshId(1)),
+            1,
+            2,
+            ad_heal::RepairKind::ZeroNormals,
+        ),
+    ] {
+        assert_eq!(kind.repair(), Some((MeshId(mesh), code)));
+        let candidate = candidate(&asset, kind);
+        let info = candidate.info().unwrap();
+        assert_eq!(info.changed_normals, changed);
+        assert!(info.complete);
+        assert_eq!(info.target_left, Some(0));
+        publish_edit(&mut asset, &mut scene, candidate, &c).unwrap();
+        let report = asset.diagnostics().as_ref().unwrap();
+        assert_eq!(findings_in_mesh(report, MeshId(mesh), code), 0);
+    }
+    assert_eq!(repair_label(ad_heal::RepairKind::MissingNormals), "G004");
+    assert_eq!(repair_label(ad_heal::RepairKind::ZeroNormals), "G005");
+    let result = prepare_edit(
+        &asset.session,
+        &asset.generation.stamp,
+        EditKind::FixNormals(MeshId(2)),
+        &c,
+    );
+    assert!(
+        matches!(result, Err(e) if e.code == ErrorCode::Unsupported && e.message.contains("G003"))
+    );
+    apply(&mut asset, &mut scene, EditKind::Undo);
+    assert!(asset.document().primitives()[1].normals.as_ref().unwrap()[1] == [0.; 3]);
+}
+
+#[test]
 fn vertex_merge_welds_a_seam_and_refuses_topology_regression() {
     let (mut asset, mut scene) = open("Vertex_Weld.glb");
     let c = Cancellation::default();

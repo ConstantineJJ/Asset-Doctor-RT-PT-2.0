@@ -487,6 +487,8 @@ impl App {
             EditKind::RemoveDegenerate(_) => "Расчёт и проверка ремонта G001…",
             EditKind::RemoveUnused(_) => "Расчёт и проверка ремонта G003…",
             EditKind::MergeVertices(_) => "Расчёт и проверка ремонта G012…",
+            EditKind::CreateNormals(_) => "Расчёт и проверка нормалей G004…",
+            EditKind::FixNormals(_) => "Расчёт и проверка нормалей G005…",
             EditKind::Undo => "Подготовка отмены правки…",
             EditKind::Redo => "Подготовка повтора правки…",
         }
@@ -530,7 +532,7 @@ impl App {
         };
         if let Some(info) = candidate.info() {
             eprintln!(
-                "edit_preview mesh={} before={} after={} references={} complete={} target_left={} vertices_before={} vertices_after={} appended_bytes={}",
+                "edit_preview mesh={} before={} after={} references={} complete={} target_left={} vertices_before={} vertices_after={} appended_bytes={} changed_normals={}",
                 info.mesh.0,
                 info.before,
                 info.after,
@@ -539,7 +541,8 @@ impl App {
                 info.target_left.map_or(-1, |n| n as i64),
                 info.vertices_before,
                 info.vertices_after,
-                info.appended_bytes
+                info.appended_bytes,
+                info.changed_normals
             );
             eprintln!("edit_timing stage=prepare kind=remove prepare_ms={prepare_ms}");
             self.ui
@@ -586,7 +589,7 @@ impl App {
                 let count =
                     |kind| report.map_or(usize::MAX, |r| edits::findings_in_mesh(r, mesh, kind));
                 eprintln!(
-                    "edit_published kind={} removed={removed} mesh={} revision={} scene_revision={} mesh_triangles={} analysis={} g001_in_mesh={} g002_in_mesh={} undo={} redo={} consistent={} mesh_vertices={} g003_in_mesh={} g012_in_mesh={}",
+                    "edit_published kind={} removed={removed} mesh={} revision={} scene_revision={} mesh_triangles={} analysis={} g001_in_mesh={} g002_in_mesh={} undo={} redo={} consistent={} mesh_vertices={} g003_in_mesh={} g012_in_mesh={} g004_in_mesh={} g005_in_mesh={}",
                     edit_name(kind),
                     mesh.0,
                     tag.revision,
@@ -612,7 +615,9 @@ impl App {
                         .get(mesh.0)
                         .map_or(0, |m| m.positions.len()),
                     count(ad_heal::RepairKind::UnusedVertices),
-                    count(ad_heal::RepairKind::DuplicateVertices)
+                    count(ad_heal::RepairKind::DuplicateVertices),
+                    count(ad_heal::RepairKind::MissingNormals),
+                    count(ad_heal::RepairKind::ZeroNormals)
                 );
                 self.ui
                     .set_status(format!("Правка применена; ревизия {}", tag.revision), false);
@@ -1479,7 +1484,9 @@ fn edit_name(kind: EditKind) -> &'static str {
         EditKind::RemoveDuplicates(_)
         | EditKind::RemoveDegenerate(_)
         | EditKind::RemoveUnused(_)
-        | EditKind::MergeVertices(_) => "remove",
+        | EditKind::MergeVertices(_)
+        | EditKind::CreateNormals(_)
+        | EditKind::FixNormals(_) => "remove",
         EditKind::Undo => "undo",
         EditKind::Redo => "redo",
     }
@@ -1536,7 +1543,13 @@ fn run() -> GpuResult<()> {
                     Some("g002") => ad_heal::RepairKind::DuplicateTriangles,
                     Some("g003") => ad_heal::RepairKind::UnusedVertices,
                     Some("g012") => ad_heal::RepairKind::DuplicateVertices,
-                    _ => return Err("--smoke-repair needs g001, g002, g003 or g012".into()),
+                    Some("g004") => ad_heal::RepairKind::MissingNormals,
+                    Some("g005") => ad_heal::RepairKind::ZeroNormals,
+                    _ => {
+                        return Err(
+                            "--smoke-repair needs g001, g002, g003, g004, g005 or g012".into()
+                        );
+                    }
                 }
             }
             "--smoke-save" => {
