@@ -25,6 +25,59 @@ pub struct Actions {
     /// HEAL-02 queue (ADR-0038).
     pub queue_start: bool,
     pub queue_stop: bool,
+    /// HEAL-03 history window (ADR-0039).
+    pub history_open: bool,
+    pub history_clear: bool,
+}
+/// Repair history as shown by the UI; filled by the application on demand.
+#[derive(Default)]
+pub struct HistoryUi {
+    pub open: bool,
+    /// (written by this run, formatted record), newest first.
+    pub lines: Vec<(bool, String)>,
+    pub corrupt: usize,
+    pub error: Option<String>,
+    pub path: String,
+    pub only_session: bool,
+    pub confirm_clear: bool,
+}
+/// One history record as a single readable line.
+pub fn history_line(r: &crate::history::Record) -> String {
+    let mesh = r
+        .mesh
+        .map_or(String::new(), |m| format!(" · примитив #{m}"));
+    let what = match r.action.as_str() {
+        "save" => "Сохранить".to_owned(),
+        "save-copy" => "Сохранить копию".to_owned(),
+        "undo" => "Отмена правки".to_owned(),
+        "redo" => "Возврат правки".to_owned(),
+        "queue" => format!("Очередь · {}", r.rule),
+        _ => format!("Ремонт {}", r.rule),
+    };
+    let mut line = format!(
+        "{} · {} · {what}{mesh}",
+        crate::history::format_utc(r.time),
+        r.model
+    );
+    if r.mesh.is_some() {
+        line.push_str(&format!(
+            " · треугольники {} -> {} · вершины {} -> {}",
+            r.triangles.0, r.triangles.1, r.vertices.0, r.vertices.1
+        ));
+        if r.normals > 0 {
+            line.push_str(&format!(" · нормалей {}", r.normals));
+        }
+        if let Some(left) = r.left {
+            line.push_str(&format!(" · осталось {} {left}", r.rule));
+        }
+        line.push_str(if r.complete {
+            " · анализ полный"
+        } else {
+            " · анализ неполный"
+        });
+    }
+    line.push_str(&format!(" · ревизия {}", r.revision));
+    line
 }
 /// Repair-queue state shown by the UI (ADR-0038).
 #[derive(Clone, Default)]
@@ -91,6 +144,7 @@ pub struct ViewerUi {
     pub status: String,
     /// Refusal or failure: drawn in the warning colour until the next status.
     pub status_warning: bool,
+    pub history: HistoryUi,
     pub error: Option<String>,
     pub edit: EditUi,
     #[cfg(test)]
@@ -156,6 +210,7 @@ impl Default for ViewerUi {
             scene: egui::Rect::NOTHING,
             status: "Готов к открытию GLB".into(),
             status_warning: false,
+            history: HistoryUi::default(),
             error: None,
             edit: EditUi::default(),
             #[cfg(test)]
@@ -530,8 +585,40 @@ impl ViewerUi {
                             actions.queue_start|=start.clicked();
                         }
                     }
+                    ui.separator();
+                    actions.history_open|=ui.button("История ремонта…").on_hover_text("Прошлые ремонты и сохранения из всех запусков программы. Это не проверка текущей модели.").clicked();
                 });
                 self.show_queue&=open;
+            }
+            if self.history.open {
+                let mut open=true;
+                egui::Window::new("История ремонта").id(egui::Id::new("repair_history")).open(&mut open).resizable(true).default_size([620.,360.]).show(&context,|ui| {
+                    ui.colored_label(Color32::from_rgb(255,190,120),"Записи описывают прошлые ремонты и проверки. Состояние текущей модели — только в окне «Диагностика».");
+                    if !self.history.path.is_empty() {ui.weak(format!("Файл: {}",self.history.path));}
+                    if let Some(error)=&self.history.error {ui.colored_label(Color32::from_rgb(255,173,173),error);}
+                    if self.history.corrupt>0 {ui.colored_label(Color32::from_rgb(255,190,120),format!("Пропущено повреждённых записей: {}",self.history.corrupt));}
+                    ui.checkbox(&mut self.history.only_session,"Только эта сессия");
+                    egui::ScrollArea::vertical().max_height(240.).show(ui,|ui|{
+                        let mut shown=0;
+                        for (session,line) in &self.history.lines {
+                            if self.history.only_session && !session {continue;}
+                            ui.label(line);
+                            shown+=1;
+                        }
+                        if shown==0 {ui.weak("Записей нет.");}
+                    });
+                    ui.separator();
+                    if self.history.confirm_clear {
+                        ui.horizontal(|ui| {
+                            ui.label("Удалить всю историю ремонта?");
+                            if ui.button("Да, очистить").clicked() {actions.history_clear=true;self.history.confirm_clear=false;}
+                            if ui.button("Нет").clicked() {self.history.confirm_clear=false;}
+                        });
+                    } else if ui.add_enabled(!self.history.lines.is_empty(),egui::Button::new("Очистить историю…")).clicked() {
+                        self.history.confirm_clear=true;
+                    }
+                });
+                self.history.open&=open;
             }
             egui::Window::new("Справка").open(&mut self.help).resizable(true).show(&context,|ui| {
                 ui.label("Открыть: Ctrl+O или перетащить GLB в окно.");
@@ -1027,6 +1114,35 @@ mod tests {
             click(&mut ui, None, rect, (1200., 760.))
         };
         assert!(!actions.save_copy);
+    }
+    #[test]
+    fn history_lines_read_as_past_records_with_counts() {
+        let record = crate::history::Record {
+            time: 0,
+            session: 1,
+            model: "m.glb".into(),
+            source_bytes: 10,
+            action: "remove".into(),
+            rule: "G012".into(),
+            mesh: Some(0),
+            triangles: (3, 3),
+            vertices: (9, 7),
+            normals: 0,
+            left: Some(0),
+            complete: true,
+            revision: 1,
+        };
+        assert_eq!(
+            history_line(&record),
+            "1970-01-01 00:00 UTC · m.glb · Ремонт G012 · примитив #0 · треугольники 3 -> 3 · вершины 9 -> 7 · осталось G012 0 · анализ полный · ревизия 1"
+        );
+        let save = crate::history::Record {
+            action: "save".into(),
+            rule: "-".into(),
+            mesh: None,
+            ..record
+        };
+        assert!(history_line(&save).contains("Сохранить · ревизия 1"));
     }
     #[test]
     fn repair_queue_window_lists_planned_steps_and_starts() {

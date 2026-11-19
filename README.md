@@ -22,6 +22,9 @@ written from scratch in Rust with a Vulkan renderer. Engineering prototype.
 - **Очередь ремонтов**: runs every available repair one by one, re-analysing
   after each step; refused steps are skipped with their reason, a regression
   or failure stops it, and each step can be undone separately.
+- **История ремонта** (in the queue window): past repairs, Undo/Redo and saves
+  from all runs, stored in `%LOCALAPPDATA%\AssetDoctorRTPT\repair-history.jsonl`;
+  clearly separate from the current model's diagnostics.
 - **Сохранить** (Ctrl+S) replaces the working file after a one-time
   confirmation and the same verification; a file changed by another program
   is never overwritten.

@@ -3,6 +3,7 @@
 mod camera;
 mod diagnostic_ui;
 mod edits;
+mod history;
 mod imports;
 mod native;
 mod queue;
@@ -127,6 +128,8 @@ struct App {
     pending_queue_stop: bool,
     smoke_queue: bool,
     queue_smoke_done: bool,
+    /// Repair report history (HEAL-03, ADR-0039); None when disabled.
+    history: Option<history::History>,
     /// Prepared, verified but unpublished G002 repair shown in Preview.
     pending_preview: Option<EditCandidate>,
     /// ADR-0031 B4 smoke without UI controls: queued edits on the G002 mesh,
@@ -621,6 +624,14 @@ impl App {
         let started = Instant::now();
         let queued = self.queue.as_ref().is_some_and(|q| q.current.is_some());
         let mut queue_failure = None;
+        let step = candidate.preview().map(|p| {
+            (
+                (p.before_triangles, p.after_triangles),
+                (p.before_vertices, p.after_vertices),
+                p.changed_normals,
+            )
+        });
+        let rule = kind.repair().map(|(_, k)| k);
         let published = publish_edit(asset, renderer, candidate, &Cancellation::default());
         eprintln!(
             "edit_timing stage=publish kind={} publish_ms={}",
@@ -665,9 +676,31 @@ impl App {
                 );
                 self.ui
                     .set_status(format!("Правка применена; ревизия {}", tag.revision), false);
+                let primitive = asset.document().primitives().get(mesh.0);
+                let (t, v) = (
+                    primitive.map_or(0, |m| m.indices.len() / 3),
+                    primitive.map_or(0, |m| m.positions.len()),
+                );
+                let (triangles, vertices, normals) = step.unwrap_or(((t, t), (v, v), 0));
+                let record = history::Record {
+                    time: history::now(),
+                    session: 0,
+                    model: asset.document().name().to_owned(),
+                    source_bytes: asset.document().source().len() as u64,
+                    action: if queued { "queue" } else { edit_name(kind) }.into(),
+                    rule: rule.map_or("-", edits::repair_label).into(),
+                    mesh: Some(mesh.0),
+                    triangles,
+                    vertices,
+                    normals,
+                    left: rule.and_then(|k| report.map(|r| edits::findings_in_mesh(r, mesh, k))),
+                    complete: report.is_some_and(|r| r.is_complete()),
+                    revision: tag.revision,
+                };
                 if let Some(q) = self.queue.as_mut().filter(|q| q.current.is_some()) {
                     q.completed();
                 }
+                self.record_history(record);
             }
             Err(error)
                 if !self.smoke_edit
@@ -767,6 +800,48 @@ impl App {
         }
         self.request_edit(kind);
         Ok(())
+    }
+    /// HEAL-03: appends one record; a failure is a warning, never an edit error.
+    fn record_history(&mut self, mut record: history::Record) {
+        let Some(history) = self.history.as_ref() else {
+            return;
+        };
+        record.session = history.session;
+        match history.append(&record) {
+            Ok(()) => eprintln!(
+                "history_append action={} rule={} ok=true",
+                record.action, record.rule
+            ),
+            Err(error) => {
+                eprintln!("history_append action={} ok=false", record.action);
+                self.ui.set_status(error, true);
+            }
+        }
+        if self.ui.history.open {
+            self.load_history();
+        }
+    }
+    fn load_history(&mut self) {
+        let view = &mut self.ui.history;
+        view.lines.clear();
+        view.corrupt = 0;
+        view.error = None;
+        let Some(history) = self.history.as_ref() else {
+            view.error = Some("История ремонта отключена в этом запуске".into());
+            return;
+        };
+        view.path = history.path().display().to_string();
+        match history.load() {
+            Ok((records, corrupt)) => {
+                view.corrupt = corrupt;
+                view.lines = records
+                    .iter()
+                    .rev()
+                    .map(|r| (r.session == history.session, viewer_ui::history_line(r)))
+                    .collect();
+            }
+            Err(error) => view.error = Some(error),
+        }
     }
     /// HEAL-02: starts a queue on the current model (ADR-0038).
     fn start_queue(&mut self) {
@@ -1057,6 +1132,30 @@ impl App {
                     outcome.replaced,
                     outcome.backup_kept
                 );
+                let saved = history::Record {
+                    time: history::now(),
+                    session: 0,
+                    model: self
+                        .current
+                        .as_ref()
+                        .map_or(String::new(), |a| a.document().name().to_owned()),
+                    source_bytes: outcome.bytes as u64,
+                    action: if outcome.replaced {
+                        "save"
+                    } else {
+                        "save-copy"
+                    }
+                    .into(),
+                    rule: "-".into(),
+                    mesh: None,
+                    triangles: (outcome.reimported_triangles, outcome.reimported_triangles),
+                    vertices: (0, 0),
+                    normals: 0,
+                    left: None,
+                    complete: true,
+                    revision: tag.revision,
+                };
+                self.record_history(saved);
                 if outcome.replaced && self.overwrite_smoke == Some(3) {
                     self.overwrite_smoke = Some(4);
                 }
@@ -1269,6 +1368,18 @@ impl App {
         }
         if actions.save {
             self.pending_overwrite = true;
+        }
+        if actions.history_open {
+            self.ui.history.open = true;
+            self.load_history();
+        }
+        if actions.history_clear {
+            if let Some(history) = self.history.as_ref()
+                && let Err(error) = history.clear()
+            {
+                self.ui.set_status(error, true);
+            }
+            self.load_history();
         }
         if actions.queue_start {
             self.pending_queue_start = true;
@@ -1700,6 +1811,7 @@ fn run() -> GpuResult<()> {
     let mut smoke_guard = 0u8;
     let mut smoke_overwrite = false;
     let mut smoke_queue = false;
+    let mut history_path = None;
     let mut smoke_repair = ad_heal::RepairKind::DuplicateTriangles;
     let mut ui = viewer_ui::ViewerUi::default();
     let mut args = std::env::args().skip(1);
@@ -1735,6 +1847,11 @@ fn run() -> GpuResult<()> {
             "--smoke-guard" => smoke_guard = 1,
             "--smoke-overwrite" => smoke_overwrite = true,
             "--smoke-queue" => smoke_queue = true,
+            "--history" => {
+                history_path = Some(PathBuf::from(
+                    args.next().ok_or("--history needs a file path")?,
+                ))
+            }
             "--smoke-repair" => {
                 smoke_repair = match args.next().as_deref() {
                     Some("g001") => ad_heal::RepairKind::DegenerateTriangles,
@@ -1835,6 +1952,20 @@ fn run() -> GpuResult<()> {
         pending_queue_stop: false,
         smoke_queue,
         queue_smoke_done: false,
+        history: history_path
+            .or_else(|| {
+                if smoke {
+                    None
+                } else {
+                    history::History::default_path()
+                }
+            })
+            .map(|path| {
+                let session = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos() as u64);
+                history::History::at(path, session)
+            }),
         pending_preview: None,
         smoke_edit,
         edit_fault,
