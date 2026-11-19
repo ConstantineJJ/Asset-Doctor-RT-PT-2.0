@@ -36,26 +36,28 @@ pub struct RemovalPreview {
 /// a complete replacement primitive with its source-vertex map.
 pub(crate) enum Alternate {
     Indices(Vec<u32>),
-    Primitive(Box<MeshPrimitive>, Option<Vec<u32>>),
+    Primitive(Box<MeshPrimitive>, Option<Vec<u32>>, bool),
 }
 impl Alternate {
     fn data(&self) -> CandidateData<'_> {
         match self {
             Self::Indices(v) => CandidateData::Indices(v),
-            Self::Primitive(p, map) => CandidateData::Primitive(p, map.as_deref()),
+            Self::Primitive(p, map, normals) => {
+                CandidateData::Primitive(p, map.as_deref(), *normals)
+            }
         }
     }
     /// Shape used for decoded-budget admission: (vertices, UV channels, indices).
     fn shape(&self, current: &MeshPrimitive) -> (usize, usize, usize) {
         match self {
             Self::Indices(v) => (current.positions.len(), current.uv_channels.len(), v.len()),
-            Self::Primitive(p, _) => (p.positions.len(), p.uv_channels.len(), p.indices.len()),
+            Self::Primitive(p, ..) => (p.positions.len(), p.uv_channels.len(), p.indices.len()),
         }
     }
     fn retained(&self) -> AssetResult<usize> {
         match self {
             Self::Indices(v) => v.capacity().checked_mul(4).ok_or_else(budget),
-            Self::Primitive(p, map) => crate::vertices::primitive_bytes(p, map.as_ref()),
+            Self::Primitive(p, map, _) => crate::vertices::primitive_bytes(p, map.as_ref()),
         }
     }
 }
@@ -80,7 +82,7 @@ impl PreparedRemoval {
         }
         Ok(match &self.replacement {
             Some(Alternate::Indices(v)) => v,
-            Some(Alternate::Primitive(p, _)) => &p.indices,
+            Some(Alternate::Primitive(p, ..)) => &p.indices,
             None => &document.parts.meshes[self.preview.mesh.0].indices,
         })
     }
@@ -93,7 +95,7 @@ impl PreparedRemoval {
     ) -> AssetResult<&'a MeshPrimitive> {
         self.indices_after(document, cancel)?;
         Ok(match &self.replacement {
-            Some(Alternate::Primitive(p, _)) => p,
+            Some(Alternate::Primitive(p, ..)) => p,
             _ => &document.parts.meshes[self.preview.mesh.0],
         })
     }
@@ -101,7 +103,7 @@ impl PreparedRemoval {
     /// identity. Index-only commands keep the current map.
     pub fn source_vertices_after<'a>(&'a self, document: &'a AssetDocument) -> Option<&'a [u32]> {
         match &self.replacement {
-            Some(Alternate::Primitive(_, map)) => map.as_deref(),
+            Some(Alternate::Primitive(_, map, _)) => map.as_deref(),
             _ => document.source_vertices(self.preview.mesh),
         }
     }
@@ -485,9 +487,10 @@ impl StagedExchange<'_> {
 fn swap_in(document: &mut AssetDocument, mesh: MeshId, alternate: &mut Alternate) {
     match alternate {
         Alternate::Indices(v) => std::mem::swap(&mut document.parts.meshes[mesh.0].indices, v),
-        Alternate::Primitive(p, map) => {
+        Alternate::Primitive(p, map, normals) => {
             std::mem::swap(&mut document.parts.meshes[mesh.0], &mut **p);
             std::mem::swap(&mut document.vertex_maps[mesh.0], map);
+            std::mem::swap(&mut document.normals_changed[mesh.0], normals);
         }
     }
 }

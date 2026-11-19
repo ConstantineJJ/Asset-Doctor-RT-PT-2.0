@@ -81,6 +81,40 @@ pub(crate) fn check_unused(
 /// vertex must be bitwise equal to its earlier, kept `targets` twin and its
 /// indices must point at that twin's rank. Unused vertices are not required
 /// to disappear; G012 completeness comes from complete candidate analysis.
+/// ADR-0037 postcheck: recomputes the area-weighted normals independently of
+/// the plan and compares the candidate bit for bit; with `keep_authored`
+/// every non-zero source normal must be unchanged.
+pub(crate) fn check_normals(
+    source: &MeshPrimitive,
+    candidate: &[[f32; 3]],
+    keep_authored: bool,
+    mut cancel: impl FnMut() -> AssetResult<()>,
+) -> AssetResult<()> {
+    cancel()?;
+    if candidate.len() != source.positions.len() {
+        return Err(mismatch());
+    }
+    let sums =
+        crate::normals::face_sums(&source.positions, &source.indices, usize::MAX, &mut cancel)?;
+    for (v, (sum, got)) in sums.iter().zip(candidate).enumerate() {
+        if v % 4096 == 0 {
+            cancel()?;
+        }
+        let authored = source
+            .normals
+            .as_ref()
+            .map(|n| n[v])
+            .filter(|n| *n != [0.; 3] && keep_authored);
+        let expected = match authored {
+            Some(n) => n,
+            None => crate::normals::unit(*sum).ok_or_else(mismatch)?,
+        };
+        if bits(&expected) != bits(got) {
+            return Err(mismatch());
+        }
+    }
+    cancel()
+}
 /// `merge` is (removed vertices, their earlier twins), index-aligned.
 pub(crate) fn check_merge(
     source: &MeshPrimitive,

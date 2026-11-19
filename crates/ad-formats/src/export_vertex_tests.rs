@@ -295,6 +295,52 @@ fn merged_twins_export_only_when_every_source_attribute_byte_matches() {
     }
 }
 
+/// ADR-0036/0037: a rewritten NORMAL stream is written from document values;
+/// other attributes keep their source accessors.
+#[test]
+fn rewritten_normals_export_bit_exact_and_siblings_keep_their_accessors() {
+    let (c, l) = (Cancellation::default(), ImportLimits::default());
+    let up = [0f32, 0., 1.];
+    // #0 has no NORMAL (gains one); #1 replaces two zero normals.
+    for (mesh, normals) in [
+        (0usize, vec![up; 4]),
+        (1, vec![[0., 0.6, 0.8], up, up, [0., 0.6, 0.8]]),
+    ] {
+        let mut doc = open(include_bytes!("../../../tests/fixtures/Normals_Repair.glb").to_vec());
+        let p = doc
+            .prepare_normals(doc.tag(), MeshId(mesh), normals.clone(), mesh == 1, l, &c)
+            .unwrap();
+        let appended = {
+            let view = doc
+                .candidate_view(p.candidate(&doc, &c).unwrap(), &c)
+                .unwrap();
+            preflight_changed_export(&view, ExportLimits::default(), l, &c).unwrap()
+        };
+        assert_eq!(appended, 4 * 12 + 6 * 4);
+        doc.apply_triangle_removal(p, l, &c).unwrap();
+        let copy = export(&doc).unwrap();
+        let (meta, _) = parts(copy.bytes());
+        let prims = |m: usize| &meta["meshes"][m]["primitives"][0]["attributes"];
+        assert_eq!(
+            prims(mesh)["POSITION"],
+            0,
+            "positions keep the source accessor"
+        );
+        let normal = prims(mesh)["NORMAL"].as_u64().unwrap() as usize;
+        assert_eq!(meta["accessors"][normal]["componentType"], 5126);
+        let reopened = open(copy.bytes().to_vec());
+        assert_eq!(
+            reopened.primitives()[mesh].normals.as_deref(),
+            Some(&normals[..])
+        );
+        let other = 1 - mesh;
+        assert_eq!(
+            reopened.primitives()[other].normals.is_some(),
+            doc.primitives()[other].normals.is_some()
+        );
+    }
+}
+
 #[test]
 fn undone_compaction_exports_the_exact_source_and_preflight_reports_growth() {
     let mut doc = open(rich());

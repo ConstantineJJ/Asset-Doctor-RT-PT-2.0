@@ -284,7 +284,172 @@ impl AssetDocument {
         Ok(PreparedRemoval::new(
             preview,
             self.origin.clone(),
-            Some(Alternate::Primitive(Box::new(primitive), Some(map))),
+            Some(Alternate::Primitive(
+                Box::new(primitive),
+                Some(map),
+                self.normals_changed[mesh.0],
+            )),
+            retained,
+        ))
+    }
+}
+
+impl AssetDocument {
+    /// True when the primitive's NORMAL values were rewritten (ADR-0036/0037).
+    pub fn normals_changed(&self, mesh: MeshId) -> bool {
+        self.normals_changed.get(mesh.0).copied().unwrap_or(false)
+    }
+    /// ADR-0037: replaces the NORMAL stream of one primitive. Accepted only
+    /// without tangents, with one finite unit-length normal per vertex and, when
+    /// `keep_authored`, every current non-zero normal unchanged bit for bit.
+    /// Never mutates the document; identical normals are a verified no-op.
+    pub fn prepare_normals(
+        &self,
+        expected: DocumentTag,
+        mesh: MeshId,
+        normals: Vec<[f32; 3]>,
+        keep_authored: bool,
+        limits: ImportLimits,
+        cancel: &Cancellation,
+    ) -> AssetResult<PreparedRemoval> {
+        self.verify_tag(expected, cancel)?;
+        let current = self.parts.meshes.get(mesh.0).ok_or_else(invalid)?;
+        if current.tangents.is_some() {
+            return Err(AssetError::new(
+                crate::ErrorCode::Unsupported,
+                "Normals of a primitive with tangents are not recomputed: the tangent basis would become stale",
+            ));
+        }
+        let bad = || {
+            AssetError::new(
+                crate::ErrorCode::InvalidGeometry,
+                "Replacement normals must be finite unit vectors, one per vertex, keeping authored normals",
+            )
+        };
+        if normals.len() != current.positions.len() {
+            return Err(bad());
+        }
+        for (i, n) in normals.iter().enumerate() {
+            if i % 4096 == 0 {
+                cancel.check()?;
+            }
+            let length = n
+                .iter()
+                .map(|&v| f64::from(v) * f64::from(v))
+                .sum::<f64>()
+                .sqrt();
+            let authored = current
+                .normals
+                .as_ref()
+                .map(|v| v[i])
+                .filter(|v| *v != [0.; 3]);
+            if n.iter().any(|v| !v.is_finite())
+                || (length - 1.).abs() > 1e-5
+                || (keep_authored
+                    && authored.is_some_and(|a| a.map(f32::to_bits) != n.map(f32::to_bits)))
+            {
+                return Err(bad());
+            }
+        }
+        let triangles = current.indices.len() / 3;
+        let preview = RemovalPreview {
+            tag: expected,
+            mesh,
+            before_triangles: triangles,
+            after_triangles: triangles,
+            before_vertices: current.positions.len(),
+            after_vertices: current.positions.len(),
+        };
+        let same = current.normals.as_ref().is_some_and(|c| {
+            c.iter()
+                .zip(&normals)
+                .all(|(a, b)| a.map(f32::to_bits) == b.map(f32::to_bits))
+        });
+        if same {
+            cancel.check()?;
+            return Ok(PreparedRemoval::new(preview, self.origin.clone(), None, 0));
+        }
+        self.check_index_budget(
+            mesh,
+            (
+                current.positions.len(),
+                current.uv_channels.len(),
+                current.indices.len(),
+            ),
+            limits,
+            cancel,
+        )?;
+        let copy = |v: &[[f32; 2]]| -> AssetResult<Vec<[f32; 2]>> {
+            let mut out = Vec::new();
+            out.try_reserve_exact(v.len()).map_err(|_| budget())?;
+            out.extend_from_slice(v);
+            Ok(out)
+        };
+        let mut uv_channels = Vec::new();
+        uv_channels
+            .try_reserve_exact(current.uv_channels.len())
+            .map_err(|_| budget())?;
+        for channel in &current.uv_channels {
+            uv_channels.push(UvChannel {
+                set: channel.set,
+                values: copy(&channel.values)?,
+            });
+        }
+        let mut positions = Vec::new();
+        positions
+            .try_reserve_exact(current.positions.len())
+            .map_err(|_| budget())?;
+        positions.extend_from_slice(&current.positions);
+        let mut indices = Vec::new();
+        indices
+            .try_reserve_exact(current.indices.len())
+            .map_err(|_| budget())?;
+        indices.extend_from_slice(&current.indices);
+        let colors = match &current.colors {
+            Some(c) => {
+                let mut out = Vec::new();
+                out.try_reserve_exact(c.len()).map_err(|_| budget())?;
+                out.extend_from_slice(c);
+                Some(out)
+            }
+            None => None,
+        };
+        let map = match self.vertex_maps[mesh.0].as_ref() {
+            Some(m) => {
+                let mut out = Vec::new();
+                out.try_reserve_exact(m.len()).map_err(|_| budget())?;
+                out.extend_from_slice(m);
+                Some(out)
+            }
+            None => None,
+        };
+        let primitive = MeshPrimitive {
+            uv_channels,
+            uv_bindings: current.uv_bindings,
+            positions,
+            normals: Some(normals),
+            tangents: None,
+            normal_texture: current.normal_texture.clone(),
+            normal_scale: current.normal_scale,
+            occlusion_texture: current.occlusion_texture.clone(),
+            occlusion_strength: current.occlusion_strength,
+            emissive_factor: current.emissive_factor,
+            emissive_texture: current.emissive_texture.clone(),
+            metallic_roughness: current.metallic_roughness,
+            indices,
+            base_color: current.base_color,
+            colors,
+            color_texture: current.color_texture.clone(),
+            metallic_roughness_texture: current.metallic_roughness_texture.clone(),
+            alpha_cutoff: current.alpha_cutoff,
+        };
+        let retained =
+            primitive_bytes(&primitive, map.as_ref())?.max(self.primitive_capacity_bytes(mesh)?);
+        cancel.check()?;
+        Ok(PreparedRemoval::new(
+            preview,
+            self.origin.clone(),
+            Some(Alternate::Primitive(Box::new(primitive), map, true)),
             retained,
         ))
     }

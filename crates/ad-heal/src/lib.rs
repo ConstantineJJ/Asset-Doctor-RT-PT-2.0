@@ -1,10 +1,12 @@
 //! Bounded read-only repair plans; no renderer, IO, format or report ownership.
+mod normals;
 mod verify;
 use ad_commands::Session;
 use ad_document::{
     AssetDocument, AssetError, AssetResult, Cancellation, DocumentStamp, DocumentTag, ErrorCode,
     MeshId, PreparedRemoval,
 };
+pub use normals::plan_normals;
 
 #[derive(Clone, Copy)]
 pub struct PlanLimits {
@@ -40,6 +42,8 @@ pub struct DuplicatePreview {
     pub after_triangles: usize,
     pub before_vertices: usize,
     pub after_vertices: usize,
+    /// Normals a G004/G005 repair rewrites (ADR-0037); 0 for other kinds.
+    pub changed_normals: usize,
     /// All source nodes referencing this primitive, including inactive nodes.
     /// This is not a count of currently displayed instances.
     pub source_node_references: usize,
@@ -56,6 +60,10 @@ pub enum RepairKind {
     UnusedVertices,
     /// G012 / REPAIR-04 (ADR-0034): exact duplicate vertices are merged.
     DuplicateVertices,
+    /// G004 / REPAIR-03 (ADR-0037): create normals for a primitive without them.
+    MissingNormals,
+    /// G005 / REPAIR-03 (ADR-0037): replace zero normals, keep authored ones.
+    ZeroNormals,
 }
 /// Complete removal plan for one source primitive and one repair kind.
 /// `removed` holds triangle ordinals, or vertex ordinals for
@@ -67,6 +75,8 @@ pub struct DuplicatePlan {
     /// For [`RepairKind::DuplicateVertices`]: the earlier twin of each removed
     /// vertex; empty otherwise.
     targets: Vec<u32>,
+    /// For normals repairs: the complete replacement NORMAL stream.
+    normals: Vec<[f32; 3]>,
     kind: RepairKind,
 }
 /// Kind-neutral name for the same plan type.
@@ -81,9 +91,13 @@ impl DuplicatePlan {
     /// Triangle ordinals removed; empty for a vertex repair.
     pub fn removed_triangles(&self) -> &[u32] {
         match self.kind {
-            RepairKind::UnusedVertices | RepairKind::DuplicateVertices => &[],
-            _ => &self.removed,
+            RepairKind::DuplicateTriangles | RepairKind::DegenerateTriangles => &self.removed,
+            _ => &[],
         }
+    }
+    /// A verified complete scan that changes nothing.
+    pub fn is_empty(&self) -> bool {
+        self.removed.is_empty() && self.preview.changed_normals == 0
     }
     /// Vertex ordinals removed; empty for a triangle repair.
     pub fn removed_vertices(&self) -> &[u32] {
@@ -99,6 +113,7 @@ impl DuplicatePlan {
     /// Retained Vec capacity only; excludes the fixed plan header.
     pub fn retained_bytes(&self) -> usize {
         (self.removed.capacity() + self.targets.capacity()) * std::mem::size_of::<u32>()
+            + self.normals.capacity() * std::mem::size_of::<[f32; 3]>()
     }
     pub fn is_current(&self, document: &AssetDocument) -> bool {
         self.stamp.is_current(document)
@@ -121,6 +136,23 @@ impl DuplicatePlan {
         }
         let (tag, mesh) = (self.preview.tag, self.preview.mesh);
         let source = &doc.primitives()[mesh.0];
+        if matches!(
+            self.kind,
+            RepairKind::MissingNormals | RepairKind::ZeroNormals
+        ) {
+            let keep = self.kind == RepairKind::ZeroNormals;
+            let mut normals = reserve::<[f32; 3]>(self.normals.len(), usize::MAX)?;
+            normals.extend_from_slice(&self.normals);
+            let command = session.prepare_normals(tag, mesh, normals, keep, cancel)?;
+            let after = command.primitive_after(doc, cancel)?;
+            verify::check_normals(
+                source,
+                after.normals.as_deref().ok_or_else(mismatch)?,
+                keep,
+                || cancel.check(),
+            )?;
+            return Ok(command);
+        }
         if self.kind == RepairKind::DuplicateVertices {
             let mut pairs = reserve::<[u32; 2]>(self.removed.len(), usize::MAX)?;
             pairs.extend(
@@ -157,9 +189,10 @@ impl DuplicatePlan {
         let command = session.prepare_removal(tag, mesh, &self.removed, cancel)?;
         let candidate = command.indices_after(doc, cancel)?;
         match self.kind {
-            RepairKind::UnusedVertices | RepairKind::DuplicateVertices => {
-                unreachable!("handled above")
-            }
+            RepairKind::UnusedVertices
+            | RepairKind::DuplicateVertices
+            | RepairKind::MissingNormals
+            | RepairKind::ZeroNormals => unreachable!("handled above"),
             RepairKind::DuplicateTriangles => {
                 verify::check(&source.indices, &self.removed, candidate, limits, || {
                     cancel.check()
@@ -235,10 +268,12 @@ pub fn plan_duplicates(
             after_triangles: primitive.indices.len() / 3 - removed.len(),
             before_vertices: primitive.positions.len(),
             after_vertices: primitive.positions.len(),
+            changed_normals: 0,
             source_node_references: references,
         },
         removed,
         targets: Vec::new(),
+        normals: Vec::new(),
         kind: RepairKind::DuplicateTriangles,
     })
 }
@@ -306,10 +341,12 @@ pub fn plan_degenerate(
             after_triangles: faces.len() - removed.len(),
             before_vertices: primitive.positions.len(),
             after_vertices: primitive.positions.len(),
+            changed_normals: 0,
             source_node_references: references,
         },
         removed,
         targets: Vec::new(),
+        normals: Vec::new(),
         kind: RepairKind::DegenerateTriangles,
     })
 }
@@ -367,10 +404,12 @@ pub fn plan_unused(
             after_triangles: triangles,
             before_vertices: count,
             after_vertices: count - removed.len(),
+            changed_normals: 0,
             source_node_references: references,
         },
         removed,
         targets: Vec::new(),
+        normals: Vec::new(),
         kind: RepairKind::UnusedVertices,
     })
 }
@@ -441,10 +480,12 @@ pub fn plan_vertex_merge(
             after_triangles: triangles,
             before_vertices: count,
             after_vertices: count - removed.len(),
+            changed_normals: 0,
             source_node_references: references,
         },
         removed,
         targets,
+        normals: Vec::new(),
         kind: RepairKind::DuplicateVertices,
     })
 }
@@ -546,6 +587,8 @@ fn scan(
 mod degenerate_tests;
 #[cfg(test)]
 mod merge_tests;
+#[cfg(test)]
+mod normals_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

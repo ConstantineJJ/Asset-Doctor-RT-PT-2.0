@@ -12,13 +12,13 @@ use std::sync::Arc;
 #[derive(Clone, Copy)]
 pub(crate) enum CandidateData<'a> {
     Indices(&'a [u32]),
-    Primitive(&'a MeshPrimitive, Option<&'a [u32]>),
+    Primitive(&'a MeshPrimitive, Option<&'a [u32]>, bool),
 }
 impl<'a> CandidateData<'a> {
     fn indices(self) -> &'a [u32] {
         match self {
             Self::Indices(v) => v,
-            Self::Primitive(p, _) => &p.indices,
+            Self::Primitive(p, ..) => &p.indices,
         }
     }
 }
@@ -97,7 +97,7 @@ impl<'a> DocumentView<'a> {
     /// candidate the vertex streams are current; read indices via `indices`.
     pub fn primitive(&self, mesh: MeshId) -> &'a MeshPrimitive {
         match self.candidate {
-            Some((id, CandidateData::Primitive(p, _))) if id == mesh => p,
+            Some((id, CandidateData::Primitive(p, ..))) if id == mesh => p,
             _ => &self.document.parts.meshes[mesh.0],
         }
     }
@@ -112,8 +112,16 @@ impl<'a> DocumentView<'a> {
     /// the identity (ADR-0033).
     pub fn source_vertices(&self, mesh: MeshId) -> Option<&'a [u32]> {
         match self.candidate {
-            Some((id, CandidateData::Primitive(_, map))) if id == mesh => map,
+            Some((id, CandidateData::Primitive(_, map, _))) if id == mesh => map,
             _ => self.document.source_vertices(mesh),
+        }
+    }
+    /// True when this view's NORMAL stream of the primitive was rewritten
+    /// (ADR-0036/0037) and must be exported from document values.
+    pub fn normals_changed(&self, mesh: MeshId) -> bool {
+        match self.candidate {
+            Some((id, CandidateData::Primitive(_, _, normals))) if id == mesh => normals,
+            _ => self.document.normals_changed(mesh),
         }
     }
 }
@@ -176,7 +184,7 @@ impl AssetDocument {
             .ok_or_else(invalid)?;
         let vertices = match candidate.data {
             CandidateData::Indices(_) => current.positions.len(),
-            CandidateData::Primitive(p, map) => {
+            CandidateData::Primitive(p, map, _) => {
                 let n = p.positions.len();
                 let channels_match = p.uv_channels.len() == current.uv_channels.len()
                     && p.uv_channels

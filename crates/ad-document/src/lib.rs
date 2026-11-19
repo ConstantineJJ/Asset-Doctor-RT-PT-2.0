@@ -15,6 +15,8 @@ mod index_tests;
 #[cfg(test)]
 mod merge_tests;
 #[cfg(test)]
+mod normals_tests;
+#[cfg(test)]
 mod vertex_tests;
 #[cfg(test)]
 mod view_tests;
@@ -155,6 +157,8 @@ pub struct AssetDocument {
     origin: Arc<()>,
     /// Per primitive: current vertex -> original source vertex (ADR-0033).
     vertex_maps: Vec<Option<Vec<u32>>>,
+    /// Per primitive: NORMAL values were rewritten (ADR-0036/0037).
+    normals_changed: Vec<bool>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -366,7 +370,9 @@ impl AssetDocument {
                 AssetError::new(ErrorCode::ResourceLimit, "Cannot allocate primitive maps")
             })?;
         vertex_maps.resize_with(parts.meshes.len(), || None);
+        let normals_changed = vec![false; parts.meshes.len()];
         Ok(Self {
+            normals_changed,
             vertex_maps,
             parts,
             texture_stats: textures.stats,

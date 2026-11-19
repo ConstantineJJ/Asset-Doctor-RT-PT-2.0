@@ -183,6 +183,31 @@ impl Session {
         }
         Ok(plan)
     }
+    /// ADR-0037: replace one primitive's NORMAL stream (see
+    /// `AssetDocument::prepare_normals`). Same admission as vertex edits.
+    pub fn prepare_normals(
+        &self,
+        expected: DocumentTag,
+        mesh: MeshId,
+        normals: Vec<[f32; 3]>,
+        keep_authored: bool,
+        cancel: &Cancellation,
+    ) -> AssetResult<PreparedRemoval> {
+        self.document.verify_tag(expected, cancel)?;
+        self.admit(self.document.primitive_capacity_bytes(mesh)?)?;
+        let plan = self.document.prepare_normals(
+            expected,
+            mesh,
+            normals,
+            keep_authored,
+            self.import_limits,
+            cancel,
+        )?;
+        if plan.changes() {
+            self.admit(plan.retained_bytes())?;
+        }
+        Ok(plan)
+    }
     /// ADR-0034: merge exact duplicate vertices, `[removed, kept]` pairs.
     /// Same history admission as a vertex removal.
     pub fn prepare_vertex_merge(

@@ -70,6 +70,8 @@ struct Binding {
     current: usize,
     /// ADR-0033: vertex streams were compacted; every attribute is gathered.
     vertices: bool,
+    /// ADR-0036: NORMAL values were rewritten; written from the document.
+    normals: bool,
 }
 /// One gathered vertex attribute of a compacted primitive (ADR-0033): the
 /// source accessor's elements, tightly packed with a 4-byte element stride.
@@ -243,7 +245,11 @@ fn bindings(
             };
             let wanted = current_indices.as_chunks::<3>().0;
             let mut kept = 0;
-            let mut same = count == current_indices.len() && map.is_none();
+            let normals = view.normals_changed(MeshId(ordinal));
+            if normals && current.normals.is_none() {
+                return Err(roundtrip::mismatch());
+            }
+            let mut same = count == current_indices.len() && map.is_none() && !normals;
             for face in 0..count / 3 {
                 if face % 1024 == 0 {
                     cancel.check()?;
@@ -281,6 +287,7 @@ fn bindings(
                     primitive: primitive.index(),
                     current: ordinal,
                     vertices: map.is_some(),
+                    normals,
                 });
             }
             ordinal += 1;
@@ -374,9 +381,19 @@ fn changed_admission(
                     .ok_or_else(budget)?,
             )
             .ok_or_else(budget)?;
+        let count = view.primitive(MeshId(binding.current)).positions.len();
+        if binding.normals {
+            items = items.checked_add(24).ok_or_else(budget)?;
+            bin_len = count
+                .checked_mul(12)
+                .and_then(|n| bin_len.checked_add(n))
+                .ok_or_else(budget)?;
+        }
         if binding.vertices {
-            let count = view.primitive(MeshId(binding.current)).positions.len();
             for gather in gathers(parsed, &meta, binding)? {
+                if binding.normals && gather.key == "NORMAL" {
+                    continue;
+                }
                 items = items.checked_add(24).ok_or_else(budget)?;
                 bin_len = gather
                     .stride
@@ -434,6 +451,7 @@ pub fn preflight_changed_export(
 /// Bytes appended after the original BIN, in metadata order.
 enum Append<'a> {
     Indices(&'a [u32]),
+    Normals(&'a [[f32; 3]]),
     Gather(Gather, &'a [u32]),
 }
 fn primitive_json<'a>(
@@ -484,6 +502,9 @@ pub fn prepare_glb(
                 let positions = &view.primitive(current).positions;
                 for gather in gathers(&parsed, &meta, binding)? {
                     cancel.check()?;
+                    if binding.normals && gather.key == "NORMAL" {
+                        continue;
+                    }
                     let size = gather.stride.checked_mul(map.len()).ok_or_else(budget)?;
                     let views = array(&mut meta, "bufferViews")?;
                     let id = views.len();
@@ -523,6 +544,30 @@ pub fn prepare_glb(
                     appends.push(Append::Gather(gather, map));
                     offset += size;
                 }
+            }
+            if binding.normals {
+                let normals = view
+                    .primitive(current)
+                    .normals
+                    .as_deref()
+                    .ok_or_else(invalid)?;
+                let size = normals.len().checked_mul(12).ok_or_else(budget)?;
+                let views = array(&mut meta, "bufferViews")?;
+                let id = views.len();
+                views
+                    .push(json!({"buffer":0,"byteOffset":offset,"byteLength":size,"target":34962}));
+                let accessors = array(&mut meta, "accessors")?;
+                let accessor = accessors.len();
+                accessors.push(json!({"bufferView":id,"componentType":5126,"count":normals.len(),"type":"VEC3"}));
+                primitive_json(&mut meta, binding)?
+                    .entry("attributes")
+                    .or_insert_with(|| json!({}))
+                    .as_object_mut()
+                    .ok_or_else(invalid)?
+                    .insert("NORMAL".into(), json!(accessor));
+                appends.try_reserve(1).map_err(|_| budget())?;
+                appends.push(Append::Normals(normals));
+                offset += size;
             }
             let current_indices = view.indices(current);
             let count = current_indices.len();
@@ -601,6 +646,16 @@ pub fn prepare_glb(
                         cancel.check()?;
                         for index in chunk {
                             result.extend(index.to_le_bytes());
+                        }
+                    }
+                }
+                Append::Normals(normals) => {
+                    for chunk in normals.chunks(4096) {
+                        cancel.check()?;
+                        for normal in chunk {
+                            for value in normal {
+                                result.extend(value.to_le_bytes());
+                            }
                         }
                     }
                 }
