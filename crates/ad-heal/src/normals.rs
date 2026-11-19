@@ -108,12 +108,24 @@ pub fn plan_normals(
             continue;
         }
         let Some(normal) = unit(*sum) else {
+            // Distinguish why the sum is zero: unused, only zero-area faces,
+            // or opposite-facing triangles that cancel each other out.
+            let faces_with_area = primitive.indices.as_chunks::<3>().0.iter().any(|f| {
+                f.contains(&(v as u32))
+                    && !ad_analysis::zero_area(
+                        primitive.positions[f[0] as usize],
+                        primitive.positions[f[1] as usize],
+                        primitive.positions[f[2] as usize],
+                    )
+            });
             return Err(unsupported(format!(
-                "Vertex {v} has no non-degenerate triangle, so its normal cannot be computed; {}",
-                if used[v] {
-                    "remove zero-area triangles (G001) first"
+                "The normal of vertex {v} cannot be computed: {}",
+                if !used[v] {
+                    "no triangle uses it; remove unused vertices (G003) first"
+                } else if faces_with_area {
+                    "its triangles face opposite directions and cancel out (e.g. a double-sided face); fix the geometry or keep authored normals"
                 } else {
-                    "remove unused vertices (G003) first"
+                    "it has only zero-area triangles; remove them (G001) first"
                 }
             )));
         };

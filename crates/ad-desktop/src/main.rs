@@ -5,6 +5,7 @@ mod diagnostic_ui;
 mod edits;
 mod imports;
 mod native;
+mod queue;
 mod saving;
 mod ui_model;
 mod viewer_ui;
@@ -120,6 +121,12 @@ struct App {
     pending_path: Option<PathBuf>,
     /// Working file whose overwrite the user already confirmed once.
     overwrite_confirmed: Option<PathBuf>,
+    /// Safe repair queue (HEAL-02, ADR-0038); None when not started.
+    queue: Option<queue::Queue>,
+    pending_queue_start: bool,
+    pending_queue_stop: bool,
+    smoke_queue: bool,
+    queue_smoke_done: bool,
     /// Prepared, verified but unpublished G002 repair shown in Preview.
     pending_preview: Option<EditCandidate>,
     /// ADR-0031 B4 smoke without UI controls: queued edits on the G002 mesh,
@@ -218,6 +225,7 @@ impl App {
                     || !self.failed_replacement_preserved
                     || (self.smoke_gpu_fault.is_some() && !self.gpu_fault_preserved)
                     || (self.smoke_edit && !self.edit_smoke_done)
+                    || (self.smoke_queue && !self.queue_smoke_done)
                     || !matches!(self.smoke_guard, 0 | 3)
                     || mesh_frames < 15
                     || (pbr_required && pbr_frames < 15)
@@ -299,6 +307,10 @@ impl App {
         self.editing = false;
         self.pending_preview = None;
         self.pending_path = Some(path.clone());
+        if self.queue.as_ref().is_some_and(queue::Queue::running) {
+            eprintln!("queue_stopped reason=model_replaced");
+        }
+        self.queue = None;
         let ticket = self.imports.request(path);
         self.importing = true;
         self.ui.error = None;
@@ -505,6 +517,36 @@ impl App {
         }
         self.editing = false;
         let prepare_ms = self.edit_started.elapsed().as_millis();
+        let queued = self
+            .queue
+            .as_ref()
+            .is_some_and(|q| q.running() && q.current.is_some());
+        if queued {
+            match &completion.result {
+                Ok(EditOutcome::NoChange(_)) => {
+                    self.queue_skip("нечего исправлять");
+                    return Ok(());
+                }
+                Err(error)
+                    if matches!(
+                        error.code,
+                        ad_document::ErrorCode::Unsupported
+                            | ad_document::ErrorCode::InvalidGeometry
+                    ) =>
+                {
+                    let reason = error.message.clone();
+                    self.queue_skip(&reason);
+                    return Ok(());
+                }
+                Err(error) => {
+                    eprintln!("edit_failed code={:?}", error.code);
+                    let reason = format!("шаг не подготовлен: {error}");
+                    self.stop_queue(&reason);
+                    return Ok(());
+                }
+                Ok(EditOutcome::Candidate(_)) => {}
+            }
+        }
         let candidate = match completion.result {
             Ok(EditOutcome::NoChange(preview)) => {
                 eprintln!(
@@ -548,7 +590,7 @@ impl App {
             self.ui
                 .set_status("Предпросмотр готов; модель не изменена", false);
             self.pending_preview = Some(candidate);
-            if self.smoke_edit {
+            if self.smoke_edit || queued {
                 return self.apply_preview();
             }
             return Ok(());
@@ -577,6 +619,8 @@ impl App {
             return Ok(());
         };
         let started = Instant::now();
+        let queued = self.queue.as_ref().is_some_and(|q| q.current.is_some());
+        let mut queue_failure = None;
         let published = publish_edit(asset, renderer, candidate, &Cancellation::default());
         eprintln!(
             "edit_timing stage=publish kind={} publish_ms={}",
@@ -621,6 +665,9 @@ impl App {
                 );
                 self.ui
                     .set_status(format!("Правка применена; ревизия {}", tag.revision), false);
+                if let Some(q) = self.queue.as_mut().filter(|q| q.current.is_some()) {
+                    q.completed();
+                }
             }
             Err(error)
                 if !self.smoke_edit
@@ -631,6 +678,9 @@ impl App {
                     format!("Правка не применена: {error}. Повторите предпросмотр."),
                     true,
                 );
+                if queued {
+                    queue_failure = Some(format!("шаг не применён: {error}"));
+                }
             }
             Err(error) => {
                 let revision = asset.document().revision();
@@ -638,6 +688,9 @@ impl App {
                     "edit_refused kind={} reason={error:?} revision={revision}",
                     edit_name(kind)
                 );
+                if queued {
+                    queue_failure = Some(format!("шаг не применён: {error}"));
+                }
                 if std::mem::take(&mut self.edit_fault_expected)
                     && matches!(error, PublishError::Gpu(_))
                 {
@@ -664,6 +717,9 @@ impl App {
                     true,
                 );
             }
+        }
+        if let Some(reason) = queue_failure {
+            self.stop_queue(&reason);
         }
         self.title();
         Ok(())
@@ -711,6 +767,109 @@ impl App {
         }
         self.request_edit(kind);
         Ok(())
+    }
+    /// HEAL-02: starts a queue on the current model (ADR-0038).
+    fn start_queue(&mut self) {
+        if self.current.is_none() || self.importing || self.saving {
+            return;
+        }
+        if self.queue.as_ref().is_some_and(queue::Queue::running) {
+            return;
+        }
+        // A pending manual preview would be stale once the queue edits.
+        self.pending_preview = None;
+        self.queue = Some(queue::Queue::default());
+        eprintln!("queue_started");
+        self.ui.set_status("Очередь ремонтов запущена", false);
+    }
+    fn stop_queue(&mut self, reason: &str) {
+        let Some(q) = self.queue.as_mut().filter(|q| q.running()) else {
+            return;
+        };
+        q.fail(reason);
+        if self.editing {
+            self.edits.cancel();
+            self.editing = false;
+        }
+        self.pending_preview = None;
+        self.finish_queue();
+    }
+    fn queue_skip(&mut self, reason: &str) {
+        if let Some(q) = self.queue.as_mut() {
+            if let Some((mesh, kind)) = q.current {
+                eprintln!(
+                    "queue_skip step={} mesh={} reason={reason}",
+                    edits::repair_label(kind),
+                    mesh.0
+                );
+            }
+            q.skip(reason);
+        }
+    }
+    /// Chooses and requests the next step when nothing else is running.
+    fn advance_queue(&mut self) {
+        if self.editing || self.importing || self.saving {
+            return;
+        }
+        let Some(mut q) = self.queue.take() else {
+            return;
+        };
+        if !q.running() || q.current.is_some() {
+            self.queue = Some(q);
+            return;
+        }
+        let next = match self.current.as_ref().map(|a| a.diagnostics().as_ref()) {
+            Some(Ok(report)) => q.next(report),
+            _ => {
+                q.fail("анализ модели недоступен");
+                queue::Next::Finished
+            }
+        };
+        self.queue = Some(q);
+        match next {
+            queue::Next::Step(mesh, kind) => {
+                eprintln!(
+                    "queue_step step={} mesh={}",
+                    edits::repair_label(kind),
+                    mesh.0
+                );
+                if !self.request_edit(EditKind::from_repair(mesh, kind)) {
+                    self.stop_queue("шаг не запущен");
+                }
+            }
+            queue::Next::Finished => self.finish_queue(),
+        }
+    }
+    fn finish_queue(&mut self) {
+        let Some(q) = self.queue.as_ref() else {
+            return;
+        };
+        let remaining = self
+            .current
+            .as_ref()
+            .and_then(|a| a.diagnostics().as_ref().ok())
+            .map_or(usize::MAX, queue::Queue::remaining);
+        eprintln!(
+            "queue_done done={} skipped={} remaining={remaining} stopped={} reason={}",
+            q.done.len(),
+            q.skipped.len(),
+            q.stop.is_some(),
+            q.stop.as_deref().unwrap_or("-")
+        );
+        let summary = format!(
+            "Очередь ремонтов: выполнено {}, пропущено {}",
+            q.done.len(),
+            q.skipped.len()
+        );
+        match &q.stop {
+            Some(reason) => self
+                .ui
+                .set_status(format!("{summary}; остановлена: {reason}"), true),
+            None => self.ui.set_status(summary, false),
+        }
+        if self.smoke_queue {
+            self.queue_smoke_done = true;
+        }
     }
     fn is_dirty(&self) -> bool {
         match (self.current.as_ref(), self.confirmed.as_ref()) {
@@ -1111,6 +1270,12 @@ impl App {
         if actions.save {
             self.pending_overwrite = true;
         }
+        if actions.queue_start {
+            self.pending_queue_start = true;
+        }
+        if actions.queue_stop {
+            self.pending_queue_stop = true;
+        }
         if actions.save_copy {
             self.pending_save = true;
         }
@@ -1168,6 +1333,21 @@ impl App {
             can_redo: history.is_some_and(|h| h.1),
             can_save: self.current.is_some(),
             can_overwrite: self.current.is_some() && self.working_path.is_some(),
+            queue: self.queue.as_ref().map(|q| viewer_ui::QueueUi {
+                running: q.running(),
+                done: q
+                    .done
+                    .iter()
+                    .map(|&(m, k)| queue::step_name(m, k))
+                    .collect(),
+                skipped: q
+                    .skipped
+                    .iter()
+                    .map(|(m, k, r)| format!("{} — {r}", queue::step_name(*m, *k)))
+                    .collect(),
+                current: q.current.map(|(m, k)| queue::step_name(m, k)),
+                stop: q.stop.clone(),
+            }),
             dirty: self.is_dirty(),
         };
         if self.saving {
@@ -1195,6 +1375,21 @@ impl App {
             }
         }
         self.advance_edit_smoke()?;
+        if self.smoke_queue
+            && self.queue.is_none()
+            && self.failed_replacement_preserved
+            && self.current.is_some()
+            && !self.importing
+        {
+            self.pending_queue_start = true;
+        }
+        if std::mem::take(&mut self.pending_queue_stop) {
+            self.stop_queue("остановлено пользователем");
+        }
+        if std::mem::take(&mut self.pending_queue_start) {
+            self.start_queue();
+        }
+        self.advance_queue();
         if self.smoke_import
             && matches!(self.smoke, Some(SmokeStage::Initial))
             && self.current.is_some()
@@ -1250,7 +1445,8 @@ impl App {
                 || self.importing
                 || !self.failed_replacement_preserved
                 || (self.smoke_gpu_fault.is_some() && !self.gpu_fault_preserved)
-                || (self.smoke_edit && !self.edit_smoke_done))
+                || (self.smoke_edit && !self.edit_smoke_done)
+                || (self.smoke_queue && !self.queue_smoke_done))
         {
             if self.started.elapsed() > Duration::from_secs(20) {
                 return Err("Import smoke timed out".into());
@@ -1503,6 +1699,7 @@ fn run() -> GpuResult<()> {
     let mut smoke_save = None;
     let mut smoke_guard = 0u8;
     let mut smoke_overwrite = false;
+    let mut smoke_queue = false;
     let mut smoke_repair = ad_heal::RepairKind::DuplicateTriangles;
     let mut ui = viewer_ui::ViewerUi::default();
     let mut args = std::env::args().skip(1);
@@ -1537,6 +1734,7 @@ fn run() -> GpuResult<()> {
             "--smoke-edit" => smoke_edit = true,
             "--smoke-guard" => smoke_guard = 1,
             "--smoke-overwrite" => smoke_overwrite = true,
+            "--smoke-queue" => smoke_queue = true,
             "--smoke-repair" => {
                 smoke_repair = match args.next().as_deref() {
                     Some("g001") => ad_heal::RepairKind::DegenerateTriangles,
@@ -1632,6 +1830,11 @@ fn run() -> GpuResult<()> {
         working_path: None,
         pending_path: None,
         overwrite_confirmed: None,
+        queue: None,
+        pending_queue_start: false,
+        pending_queue_stop: false,
+        smoke_queue,
+        queue_smoke_done: false,
         pending_preview: None,
         smoke_edit,
         edit_fault,

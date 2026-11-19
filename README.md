@@ -19,6 +19,9 @@ written from scratch in Rust with a Vulkan renderer. Engineering prototype.
   unused vertices (G003); merge exact duplicate vertices (G012), refused if the
   topology would get worse; create missing normals (G004) or replace zero
   normals (G005) from area-weighted faces.
+- **Очередь ремонтов**: runs every available repair one by one, re-analysing
+  after each step; refused steps are skipped with their reason, a regression
+  or failure stops it, and each step can be undone separately.
 - **Сохранить** (Ctrl+S) replaces the working file after a one-time
   confirmation and the same verification; a file changed by another program
   is never overwritten.

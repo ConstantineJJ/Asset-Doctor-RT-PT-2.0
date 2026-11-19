@@ -22,6 +22,18 @@ pub struct Actions {
     pub save_copy: bool,
     /// «Сохранить» over the working file (ADR-0035).
     pub save: bool,
+    /// HEAL-02 queue (ADR-0038).
+    pub queue_start: bool,
+    pub queue_stop: bool,
+}
+/// Repair-queue state shown by the UI (ADR-0038).
+#[derive(Clone, Default)]
+pub struct QueueUi {
+    pub running: bool,
+    pub done: Vec<String>,
+    pub skipped: Vec<String>,
+    pub current: Option<String>,
+    pub stop: Option<String>,
 }
 /// Facts of a prepared, not yet applied repair (ADR-0031 Preview).
 #[derive(Clone)]
@@ -57,6 +69,7 @@ pub struct EditUi {
     pub can_save: bool,
     /// A working file exists that «Сохранить» may replace.
     pub can_overwrite: bool,
+    pub queue: Option<QueueUi>,
     /// Revision/origin differs from the imported file or last verified copy.
     pub dirty: bool,
 }
@@ -98,6 +111,11 @@ pub struct ViewerUi {
     save_rect: egui::Rect,
     #[cfg(test)]
     overwrite_rect: egui::Rect,
+    show_queue: bool,
+    #[cfg(test)]
+    queue_rect: egui::Rect,
+    #[cfg(test)]
+    queue_start_rect: egui::Rect,
     #[cfg(test)]
     reset_lighting_rect: egui::Rect,
     #[cfg(test)]
@@ -158,6 +176,11 @@ impl Default for ViewerUi {
             save_rect: egui::Rect::NOTHING,
             #[cfg(test)]
             overwrite_rect: egui::Rect::NOTHING,
+            show_queue: false,
+            #[cfg(test)]
+            queue_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            queue_start_rect: egui::Rect::NOTHING,
             #[cfg(test)]
             reset_lighting_rect: egui::Rect::NOTHING,
             #[cfg(test)]
@@ -292,6 +315,10 @@ impl ViewerUi {
                         #[cfg(test)]
                         {self.save_rect=save.rect;}
                         actions.save_copy|=save.clicked();
+                        let queue=ui.add_enabled(!loading,egui::Button::new("Очередь ремонтов…")).on_hover_text("Выполнить все доступные ремонты по очереди с проверкой после каждого шага.");
+                        #[cfg(test)]
+                        {self.queue_rect=queue.rect;}
+                        if queue.clicked() {self.show_queue=true;}
                         if self.edit.dirty {ui.colored_label(Color32::from_rgb(255,190,120),"* не сохранено").on_hover_text("Есть правки, которых нет ни в исходном файле, ни в последней проверенной копии.");}
                     }
                     if width>=680. {
@@ -469,6 +496,42 @@ impl ViewerUi {
                         actions.discard_preview|=discard.clicked();
                     });
                 });
+            }
+            if self.show_queue {
+                let mut open=true;
+                let ready=!loading && self.edit.busy.is_none();
+                egui::Window::new("Очередь ремонтов").id(egui::Id::new("repair_queue")).open(&mut open).collapsible(false).resizable(false).default_width(460.).show(&context,|ui| {
+                    match &self.edit.queue {
+                        Some(q) if q.running => {
+                            ui.label(format!("Выполнено: {} · пропущено: {}",q.done.len(),q.skipped.len()));
+                            if let Some(current)=&q.current {ui.label(format!("Сейчас: {current}"));}
+                            actions.queue_stop|=ui.button("Остановить").on_hover_text("Текущий шаг отменяется; уже применённые ремонты остаются и отменяются через «Отменить правку».").clicked();
+                        }
+                        _ => {
+                            if let Some(q)=&self.edit.queue {
+                                ui.strong(format!("Итог: выполнено {}, пропущено {}",q.done.len(),q.skipped.len()));
+                                for step in &q.done {ui.label(format!("выполнено: {step}"));}
+                                for step in &q.skipped {ui.colored_label(Color32::from_rgb(255,190,120),format!("пропущено: {step}"));}
+                                if let Some(reason)=&q.stop {ui.colored_label(Color32::from_rgb(255,190,120),format!("Остановлена: {reason}"));}
+                                ui.separator();
+                            }
+                            let planned=asset.and_then(|a|a.diagnostics().as_ref().ok()).map(crate::queue::candidates).unwrap_or_default();
+                            if planned.is_empty() {
+                                ui.label("Ремонтируемых замечаний нет.");
+                            } else {
+                                ui.label("Первый проход (после каждого шага анализ повторяется и список пересчитывается):");
+                                for (mesh,kind) in planned.iter().take(12) {ui.label(crate::queue::step_name(*mesh,*kind));}
+                                if planned.len()>12 {ui.weak(format!("… и ещё {}",planned.len()-12));}
+                            }
+                            ui.weak("Каждый шаг — обычный проверенный ремонт и отдельная запись истории (Undo по шагам). Отказы пропускаются с причиной; регрессия или сбой останавливают очередь. Файл не сохраняется.");
+                            let start=ui.add_enabled(ready && !planned.is_empty(),egui::Button::new("Запустить очередь"));
+                            #[cfg(test)]
+                            {self.queue_start_rect=start.rect;}
+                            actions.queue_start|=start.clicked();
+                        }
+                    }
+                });
+                self.show_queue&=open;
             }
             egui::Window::new("Справка").open(&mut self.help).resizable(true).show(&context,|ui| {
                 ui.label("Открыть: Ctrl+O или перетащить GLB в окно.");
@@ -964,6 +1027,40 @@ mod tests {
             click(&mut ui, None, rect, (1200., 760.))
         };
         assert!(!actions.save_copy);
+    }
+    #[test]
+    fn repair_queue_window_lists_planned_steps_and_starts() {
+        let asset = crate::imports::prepare(&crate::worker::Request {
+            ticket: 1,
+            input: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/Geometry_Findings.glb"),
+            cancel: ad_document::Cancellation::default(),
+        })
+        .unwrap();
+        let mut ui = ViewerUi::default();
+        ui.edit.can_save = true;
+        for _ in 0..3 {
+            let (out, _, _) = ui.layout(raw(1300., 900.), Some(&asset), false);
+            out.drop_without_applying_deltas();
+        }
+        let rect = ui.queue_rect;
+        assert!(rect.is_positive());
+        click(&mut ui, Some(&asset), rect, (1300., 900.));
+        for _ in 0..3 {
+            let (out, _, _) = ui.layout(raw(1300., 900.), Some(&asset), false);
+            out.drop_without_applying_deltas();
+        }
+        assert!(ui.show_queue && ui.queue_start_rect.is_positive());
+        let rect = ui.queue_start_rect;
+        assert!(click(&mut ui, Some(&asset), rect, (1300., 900.)).queue_start);
+        // While running, the window offers Stop instead of Start.
+        ui.edit.queue = Some(QueueUi {
+            running: true,
+            ..Default::default()
+        });
+        ui.edit.busy = Some("Расчёт".into());
+        let actions = click(&mut ui, Some(&asset), rect, (1300., 900.));
+        assert!(!actions.queue_start);
     }
     #[test]
     fn save_over_working_file_needs_a_working_path_and_unsaved_edits() {
