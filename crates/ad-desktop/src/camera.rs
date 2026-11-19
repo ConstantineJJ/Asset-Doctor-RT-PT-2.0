@@ -53,7 +53,9 @@ impl Camera {
         let aspect = width.max(1) as f32 / height.max(1) as f32;
         let distance = self.distance / aspect.clamp(0.05, 1.0);
         let eye = Vec3::from_array(self.eye(width, height));
-        let near = (self.radius * 0.0001).max(0.000001);
+        // Near plane scales with viewing distance (as Legacy does with dist/500),
+        // so zooming out does not waste depth precision on empty space.
+        let near = (self.radius * 0.0001).max(distance / 500.).max(0.000001);
         let far = (distance + self.radius * 4.0)
             .max(self.radius * 10.0)
             .max(near * 100.0);
@@ -103,8 +105,9 @@ mod tests {
         assert!(front > back, "nearer layer must win: {front} vs {back}");
         assert!((0.0..=1.0).contains(&back) && (0.0..=1.0).contains(&front));
         // The eye-side end of the view volume maps to 1, the far end towards 0.
-        // Near plane is radius * 1e-4 in front of the eye.
-        assert!(depth(eye - toward_eye * (camera.radius * 1.0001e-4)) > 0.99);
+        // The near plane is distance / 500 in front of the eye.
+        let near = (eye - camera.center).length() / 500.;
+        assert!(depth(eye - toward_eye * (near * 1.0001)) > 0.99);
     }
     #[test]
     fn camera_fit_orbit_pan_zoom_stay_finite_for_small_and_large_bounds() {
