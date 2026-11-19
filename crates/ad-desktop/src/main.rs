@@ -21,7 +21,7 @@ use edits::{
     EditCandidate, EditInput, EditKind, EditOutcome, Edits, PublishError, new_edits, publish_edit,
 };
 use imports::{Imports, PreparedAsset, new_imports};
-use saving::{AfterSave, Confirmed, Guard, SaveInput, Saves, guard, new_saves};
+use saving::{AfterSave, Confirmed, Guard, SaveInput, SaveTarget, Saves, guard, new_saves};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::{
@@ -112,6 +112,14 @@ struct App {
     pending_guard: Option<AfterSave>,
     /// Save Copy requested; the native dialog opens from tick, not an event.
     pending_save: bool,
+    /// «Сохранить» requested (Ctrl+S or button); runs from tick.
+    pending_overwrite: bool,
+    /// File the current model was opened from (or last saved and reopened).
+    working_path: Option<PathBuf>,
+    /// Path of the import in flight; becomes the working path when published.
+    pending_path: Option<PathBuf>,
+    /// Working file whose overwrite the user already confirmed once.
+    overwrite_confirmed: Option<PathBuf>,
     /// Prepared, verified but unpublished G002 repair shown in Preview.
     pending_preview: Option<EditCandidate>,
     /// ADR-0031 B4 smoke without UI controls: queued edits on the G002 mesh,
@@ -287,6 +295,7 @@ impl App {
         self.edits.cancel();
         self.editing = false;
         self.pending_preview = None;
+        self.pending_path = Some(path.clone());
         let ticket = self.imports.request(path);
         self.importing = true;
         self.ui.error = None;
@@ -367,6 +376,7 @@ impl App {
                 self.ui.error = None;
                 self.confirmed = Some(Confirmed::imported(&asset));
                 self.current = Some(asset);
+                self.working_path = self.pending_path.take();
                 eprintln!("import_published ticket={}", completion.ticket);
                 if let Some((dir, 5)) = self.save_smoke.as_ref() {
                     let dir = dir.clone();
@@ -742,12 +752,53 @@ impl App {
         let ticket = self.saves.request(SaveInput {
             session: asset.session.clone(),
             base: asset.generation.stamp.clone(),
-            path,
+            target: SaveTarget::Copy(path),
         });
         self.saving = true;
         self.after_save = after;
         eprintln!(
             "save_started ticket={ticket} revision={}",
+            asset.document().revision()
+        );
+    }
+    /// «Сохранить» (ADR-0035): replaces the working file after verification.
+    /// The first overwrite of each working file is confirmed in a native dialog.
+    fn start_overwrite(&mut self) {
+        if self.saving || self.editing || self.importing {
+            return;
+        }
+        let (Some(asset), Some(path)) = (self.current.as_ref(), self.working_path.clone()) else {
+            return;
+        };
+        if !self.is_dirty() {
+            self.ui
+                .set_status("Изменений нет; рабочий файл уже совпадает с моделью", false);
+            return;
+        }
+        if self.overwrite_confirmed.as_ref() != Some(&path) {
+            let Some(window) = self.window.as_ref() else {
+                return;
+            };
+            if !native::ask_overwrite(window, &path.display().to_string()) {
+                eprintln!("save_overwrite_declined");
+                self.ui
+                    .set_status("Сохранение отменено; правки не сохранены", false);
+                return;
+            }
+            self.overwrite_confirmed = Some(path.clone());
+        }
+        let ticket = self.saves.request(SaveInput {
+            session: asset.session.clone(),
+            base: asset.generation.stamp.clone(),
+            target: SaveTarget::Replace {
+                path,
+                on_disk: asset.document().source().clone(),
+            },
+        });
+        self.saving = true;
+        self.after_save = None;
+        eprintln!(
+            "save_started ticket={ticket} revision={} replace=true",
             asset.document().revision()
         );
     }
@@ -770,14 +821,33 @@ impl App {
                     _ => false,
                 };
                 eprintln!(
-                    "save_published revision={} bytes={} exact_copy={} reimported_triangles={} cleanup_warning={} accepted={accepted} dirty={}",
+                    "save_published revision={} bytes={} exact_copy={} reimported_triangles={} cleanup_warning={} accepted={accepted} dirty={} replaced={} backup_kept={}",
                     tag.revision,
                     outcome.bytes,
                     outcome.exact_copy,
                     outcome.reimported_triangles,
                     outcome.cleanup_warning,
-                    self.is_dirty()
+                    self.is_dirty(),
+                    outcome.replaced,
+                    outcome.backup_kept
                 );
+                if outcome.replaced {
+                    // The working file now holds the saved bytes: reopen it as
+                    // a fresh revision-0 document (ADR-0035 safe default).
+                    self.ui.set_status(
+                        if outcome.backup_kept {
+                            format!(
+                                "Сохранено и проверено: {path}. Резервная копия рядом не удалена"
+                            )
+                        } else {
+                            format!("Сохранено и проверено: {path}")
+                        },
+                        outcome.backup_kept,
+                    );
+                    self.start_import(PathBuf::from(&path));
+                    self.title();
+                    return Ok(());
+                }
                 if stage == Some(1) {
                     return Err("Smoke Save Copy replaced an existing destination".into());
                 }
@@ -789,6 +859,15 @@ impl App {
                         .set_status(format!("Копия сохранена и проверена: {path}"), false);
                     if let Some(after) = after {
                         self.perform(after, event_loop);
+                    } else if self.smoke.is_none()
+                        && self
+                            .window
+                            .as_ref()
+                            .is_some_and(|w| native::ask_rebind(w, &path))
+                    {
+                        // ADR-0035: the verified copy becomes the working file.
+                        eprintln!("save_rebind path_changed=true");
+                        self.start_import(PathBuf::from(&path));
                     }
                 } else {
                     self.ui.set_status(format!(
@@ -808,9 +887,14 @@ impl App {
                 } else if self.smoke.is_some() {
                     return Err(error.into());
                 } else {
+                    let what = if error.code == ad_document::ErrorCode::Conflict {
+                        "Рабочий файл изменён на диске другой программой и не перезаписан. Сохраните копию"
+                    } else {
+                        "Файл не сохранён"
+                    };
                     self.ui
-                        .set_status("Копия не сохранена; правки остаются несохранёнными", true);
-                    native::show_error(&format!("Копия не сохранена: {error}"));
+                        .set_status(format!("{what}; правки остаются несохранёнными"), true);
+                    native::show_error(&format!("{what}: {error}"));
                 }
             }
         }
@@ -932,6 +1016,9 @@ impl App {
         if actions.open {
             self.pending_guard = Some(AfterSave::Choose);
         }
+        if actions.save {
+            self.pending_overwrite = true;
+        }
         if actions.save_copy {
             self.pending_save = true;
         }
@@ -988,6 +1075,7 @@ impl App {
             can_undo: history.is_some_and(|h| h.0),
             can_redo: history.is_some_and(|h| h.1),
             can_save: self.current.is_some(),
+            can_overwrite: self.current.is_some() && self.working_path.is_some(),
             dirty: self.is_dirty(),
         };
         if self.saving {
@@ -1002,6 +1090,9 @@ impl App {
         self.poll_import()?;
         self.poll_edit()?;
         self.poll_save(event_loop)?;
+        if std::mem::take(&mut self.pending_overwrite) {
+            self.start_overwrite();
+        }
         if std::mem::take(&mut self.pending_save) {
             self.start_save(None);
         }
@@ -1176,6 +1267,9 @@ impl ApplicationHandler for App {
                         if self.modifiers.control_key() && self.modifiers.shift_key() =>
                     {
                         self.pending_save = true
+                    }
+                    PhysicalKey::Code(KeyCode::KeyS) if self.modifiers.control_key() => {
+                        self.pending_overwrite = true
                     }
                     PhysicalKey::Code(KeyCode::KeyF) => {
                         if let Some(asset) = self.current.as_ref() {
@@ -1432,6 +1526,10 @@ fn run() -> GpuResult<()> {
         edit_started: Instant::now(),
         pending_guard: None,
         pending_save: false,
+        pending_overwrite: false,
+        working_path: None,
+        pending_path: None,
+        overwrite_confirmed: None,
         pending_preview: None,
         smoke_edit,
         edit_fault,

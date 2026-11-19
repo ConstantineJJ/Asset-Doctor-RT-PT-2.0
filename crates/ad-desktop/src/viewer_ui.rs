@@ -20,6 +20,8 @@ pub struct Actions {
     pub redo: bool,
     pub cancel_edit: bool,
     pub save_copy: bool,
+    /// «Сохранить» over the working file (ADR-0035).
+    pub save: bool,
 }
 /// Facts of a prepared, not yet applied repair (ADR-0031 Preview).
 #[derive(Clone)]
@@ -51,6 +53,8 @@ pub struct EditUi {
     pub can_redo: bool,
     /// A model is open; Save Copy also works for an unchanged model.
     pub can_save: bool,
+    /// A working file exists that «Сохранить» may replace.
+    pub can_overwrite: bool,
     /// Revision/origin differs from the imported file or last verified copy.
     pub dirty: bool,
 }
@@ -90,6 +94,8 @@ pub struct ViewerUi {
     preview_rects: Vec<(ad_heal::RepairKind, egui::Rect)>,
     #[cfg(test)]
     save_rect: egui::Rect,
+    #[cfg(test)]
+    overwrite_rect: egui::Rect,
     #[cfg(test)]
     reset_lighting_rect: egui::Rect,
     #[cfg(test)]
@@ -148,6 +154,8 @@ impl Default for ViewerUi {
             preview_rects: Vec::new(),
             #[cfg(test)]
             save_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            overwrite_rect: egui::Rect::NOTHING,
             #[cfg(test)]
             reset_lighting_rect: egui::Rect::NOTHING,
             #[cfg(test)]
@@ -274,7 +282,11 @@ impl ViewerUi {
                         {self.undo_rect=undo.rect;self.redo_rect=redo.rect;}
                         actions.undo|=undo.clicked();
                         actions.redo|=redo.clicked();
-                        let save=ui.add_enabled(idle && self.edit.can_save,egui::Button::new("Сохранить копию…")).on_hover_text("Проверенная копия GLB в новый файл · Ctrl+Shift+S. Исходный файл и существующие файлы не перезаписываются; рабочий файл не меняется.");
+                        let overwrite=ui.add_enabled(idle && self.edit.can_overwrite && self.edit.dirty,egui::Button::new("Сохранить")).on_hover_text("Перезаписать рабочий файл проверенной версией · Ctrl+S. Первый раз спрашивает подтверждение; если файл изменён другой программой, перезаписи не будет.");
+                        #[cfg(test)]
+                        {self.overwrite_rect=overwrite.rect;}
+                        actions.save|=overwrite.clicked();
+                        let save=ui.add_enabled(idle && self.edit.can_save,egui::Button::new("Сохранить копию…")).on_hover_text("Проверенная копия GLB в новый файл · Ctrl+Shift+S. Существующие файлы не перезаписываются; после сохранения можно сделать копию рабочим файлом.");
                         #[cfg(test)]
                         {self.save_rect=save.rect;}
                         actions.save_copy|=save.clicked();
@@ -944,6 +956,25 @@ mod tests {
             click(&mut ui, None, rect, (1200., 760.))
         };
         assert!(!actions.save_copy);
+    }
+    #[test]
+    fn save_over_working_file_needs_a_working_path_and_unsaved_edits() {
+        let mut ui = ViewerUi::default();
+        ui.edit.can_save = true;
+        ui.edit.can_overwrite = true;
+        ui.edit.dirty = true;
+        let (out, _, _) = ui.layout(raw(1200., 760.), None, false);
+        out.drop_without_applying_deltas();
+        assert!(ui.overwrite_rect.is_positive());
+        let rect = ui.overwrite_rect;
+        let actions = click(&mut ui, None, rect, (1200., 760.));
+        assert!(actions.save && !actions.save_copy);
+        for (overwrite, dirty) in [(false, true), (true, false)] {
+            ui.edit.can_overwrite = overwrite;
+            ui.edit.dirty = dirty;
+            let actions = click(&mut ui, None, rect, (1200., 760.));
+            assert!(!actions.save);
+        }
     }
     /// Every non-ASCII character inside UI string literals must exist in the
     /// bundled egui fonts; otherwise it renders as an empty box (found in the
