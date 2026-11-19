@@ -255,6 +255,11 @@ impl Default for ViewerUi {
     }
 }
 impl ViewerUi {
+    /// G key: shows or hides the floor grid; returns the new state.
+    pub fn toggle_floor_grid(&mut self) -> bool {
+        self.floor_grid = !self.floor_grid;
+        self.floor_grid
+    }
     /// Replaces the status line; `warning` marks a refusal or failure.
     pub fn set_status(&mut self, text: impl Into<String>, warning: bool) {
         self.status = text.into();
@@ -434,7 +439,7 @@ impl ViewerUi {
                     egui::ScrollArea::vertical().show(ui,|ui| {
                         ui.heading("Сводка");ui.separator();
                         ui.checkbox(&mut self.textures,"Базовые текстуры").on_hover_text("Включить выборку встроенных PNG/JPEG. Исходные материалы не изменяются.");
-                    ui.checkbox(&mut self.floor_grid,"Сетка пола").on_hover_text("Сетка на уровне нижней точки модели, шаг по её размеру; красная ось X, синяя Z. Только вид — в модель и файл не попадает.");
+                    ui.checkbox(&mut self.floor_grid,"Сетка пола").on_hover_text("Сетка на уровне нижней точки модели, шаг по её размеру; красная ось X, синяя Z. Только вид — в модель и файл не попадает. Клавиша G.");
                         egui::ComboBox::from_id_salt("shading_mode").selected_text(match self.lighting.mode {ShadingMode::BaseColor=>"Базовый вид", ShadingMode::DirectPbr=>"PBR · направленный свет"}).show_ui(ui,|ui| {
                             ui.selectable_value(&mut self.lighting.mode,ShadingMode::BaseColor,"Базовый вид");
                             ui.selectable_value(&mut self.lighting.mode,ShadingMode::DirectPbr,"PBR · направленный свет");
@@ -627,9 +632,9 @@ impl ViewerUi {
             egui::Window::new("Справка").open(&mut self.help).resizable(true).show(&context,|ui| {
                 ui.label("Открыть: Ctrl+O или перетащить GLB в окно.");
                 ui.label("ЛКМ — вращение; ПКМ / средняя — перемещение; колесо — масштаб.");
-                ui.label("F — вписать модель; Esc — отменить загрузку или подготовку правки; H — справка.");
-                ui.label("Ремонт G001 и G002: «Диагностика», затем «Предпросмотр ремонта…» в строке замечания, затем «Применить». Ctrl+Z — отменить правку, Ctrl+Y — вернуть.");
-                ui.label("«Сохранить копию…» (Ctrl+Shift+S) пишет проверенный GLB только в новый файл и заново открывает его для сверки. При закрытии или открытии другой модели с несохранёнными правками программа спросит, что делать.");
+                ui.label("F — вписать модель; G — сетка пола вкл/выкл; Esc — отменить загрузку или подготовку правки; H — справка.");
+                ui.label("Ремонты G001–G005 и G012: «Диагностика», затем «Предпросмотр ремонта…» в строке замечания, затем «Применить»; все сразу — «Очередь ремонтов…». Ctrl+Z — отменить правку, Ctrl+Y — вернуть.");
+                ui.label("«Сохранить» (Ctrl+S) перезаписывает рабочий файл после подтверждения и проверки; «Сохранить копию…» (Ctrl+Shift+S) пишет проверенный GLB в новый файл. При закрытии или открытии другой модели с несохранёнными правками программа спросит, что делать.");
                 ui.separator();ui.label("Выбор узла показывает сведения. Подсветка узлов появится позднее.");
                 ui.label("В Сводке: базовый вид или PBR с авторскими нормалями, металлом и шероховатостью. Экспозиция и свет меняют только просмотр.");
                 ui.label("Цвет, металл/шероховатость, нормали, окклюзия и свечение: встроенные PNG/JPEG до 8 бит/канал с независимыми переключателями. AO влияет только на заполняющий свет. Нормали используют авторские касательные либо приближённую UV-основу без MikkTSpace. Свечение не освещает соседние объекты; ореол, HDR-окружение и тени пока не отображаются. Обе стороны граней видимы.");
@@ -1118,6 +1123,13 @@ mod tests {
             click(&mut ui, None, rect, (1200., 760.))
         };
         assert!(!actions.save_copy);
+    }
+    #[test]
+    fn g_key_toggle_flips_the_floor_grid() {
+        let mut ui = ViewerUi::default();
+        assert!(ui.floor_grid, "grid is on by default");
+        assert!(!ui.toggle_floor_grid());
+        assert!(ui.toggle_floor_grid());
     }
     #[test]
     fn history_lines_read_as_past_records_with_counts() {

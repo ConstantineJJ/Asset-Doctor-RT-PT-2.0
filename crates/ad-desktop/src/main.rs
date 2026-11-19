@@ -1680,6 +1680,10 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::KeyS) if self.modifiers.control_key() => {
                         self.pending_overwrite = true
                     }
+                    PhysicalKey::Code(KeyCode::KeyG) if !self.modifiers.control_key() => {
+                        let on = self.ui.toggle_floor_grid();
+                        eprintln!("grid_toggle on={on}");
+                    }
                     PhysicalKey::Code(KeyCode::KeyF) => {
                         if let Some(asset) = self.current.as_ref() {
                             self.camera.fit(asset.snapshot().bounds);
