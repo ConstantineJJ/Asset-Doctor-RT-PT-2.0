@@ -137,6 +137,9 @@ struct App {
     after_save: Option<AfterSave>,
     /// Smoke-only Save Copy sequence: refused existing target, new copy, reopen.
     save_smoke: Option<(PathBuf, u8)>,
+    /// ADR-0035 smoke: 0 outside edit + refused Save, 1 waiting, 2 Save,
+    /// 3 waiting, 4 reopening, 5 done.
+    overwrite_smoke: Option<u8>,
     /// Smoke-only close guard: 1 = answer Cancel, 2 = answer No, 3 = done.
     smoke_guard: u8,
     /// Repair kind exercised by --smoke-edit (default G002).
@@ -378,6 +381,32 @@ impl App {
                 self.current = Some(asset);
                 self.working_path = self.pending_path.take();
                 eprintln!("import_published ticket={}", completion.ticket);
+                if self.overwrite_smoke == Some(4) {
+                    let asset = self.current.as_ref().expect("Published above");
+                    let report = asset.diagnostics().as_ref().ok();
+                    let mesh = self.edit_mesh.unwrap_or(MeshId(0));
+                    eprintln!(
+                        "reopened_overwrite revision={} dirty={} mesh_vertices={} analysis={} target_in_mesh={}",
+                        asset.document().revision(),
+                        self.is_dirty(),
+                        asset
+                            .document()
+                            .primitives()
+                            .get(mesh.0)
+                            .map_or(0, |m| m.positions.len()),
+                        if report.is_some_and(|r| r.is_complete()) {
+                            "complete"
+                        } else {
+                            "incomplete"
+                        },
+                        report.map_or(usize::MAX, |r| edits::findings_in_mesh(
+                            r,
+                            mesh,
+                            self.smoke_repair
+                        ))
+                    );
+                    self.overwrite_smoke = Some(5);
+                }
                 if let Some((dir, 5)) = self.save_smoke.as_ref() {
                     let dir = dir.clone();
                     let asset = self.current.as_ref().expect("Published above");
@@ -662,7 +691,7 @@ impl App {
             ]);
         }
         let Some(kind) = self.edit_queue.pop_front() else {
-            if self.saving || !self.advance_save_smoke() {
+            if self.saving || !self.advance_overwrite_smoke() || !self.advance_save_smoke() {
                 return Ok(());
             }
             if !self.edit_smoke_done {
@@ -683,6 +712,35 @@ impl App {
             (Some(asset), Some(confirmed)) => confirmed.is_dirty(asset),
             _ => false,
         }
+    }
+    /// Smoke-only «Сохранить» sequence (ADR-0035); true when finished or absent.
+    fn advance_overwrite_smoke(&mut self) -> bool {
+        let Some(stage) = self.overwrite_smoke else {
+            return true;
+        };
+        let Some(path) = self.working_path.clone() else {
+            return false;
+        };
+        match stage {
+            0 => {
+                // Another program edits the working file: Save must refuse.
+                use std::io::Write;
+                let appended = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&path)
+                    .and_then(|mut f| f.write_all(b"outside edit"));
+                eprintln!("overwrite_smoke outside_edit={}", appended.is_ok());
+                self.overwrite_smoke = Some(1);
+                self.start_overwrite();
+            }
+            2 => {
+                self.overwrite_smoke = Some(3);
+                self.start_overwrite();
+            }
+            5 => return true,
+            _ => (),
+        }
+        false
     }
     /// Smoke-only Save Copy sequence; returns true when finished or absent.
     /// Stages: 0 start refused save, 1 waiting, 2 start new copy, 3 waiting,
@@ -779,6 +837,10 @@ impl App {
             let Some(window) = self.window.as_ref() else {
                 return;
             };
+            if self.overwrite_smoke.is_some() {
+                native::answer_next_dialog(saving::UnsavedChoice::SaveCopy);
+            }
+            eprintln!("save_overwrite_confirm asked=true");
             if !native::ask_overwrite(window, &path.display().to_string()) {
                 eprintln!("save_overwrite_declined");
                 self.ui
@@ -831,6 +893,9 @@ impl App {
                     outcome.replaced,
                     outcome.backup_kept
                 );
+                if outcome.replaced && self.overwrite_smoke == Some(3) {
+                    self.overwrite_smoke = Some(4);
+                }
                 if outcome.replaced {
                     // The working file now holds the saved bytes: reopen it as
                     // a fresh revision-0 document (ADR-0035 safe default).
@@ -882,7 +947,29 @@ impl App {
                     self.is_dirty(),
                     error.message
                 );
-                if let (Some(1), Some((dir, _))) = (stage, self.save_smoke.clone()) {
+                if self.overwrite_smoke == Some(1) && error.code == ad_document::ErrorCode::Conflict
+                {
+                    // The outside edit must survive untouched; then restore the
+                    // bytes the program opened and try «Сохранить» again.
+                    let path = self.working_path.clone().ok_or("No working path")?;
+                    let source = self
+                        .current
+                        .as_ref()
+                        .ok_or("No model")?
+                        .document()
+                        .source()
+                        .clone();
+                    let on_disk = std::fs::read(&path)?;
+                    let untouched = on_disk.len() == source.len() + 12
+                        && on_disk.starts_with(&source)
+                        && on_disk.ends_with(b"outside edit");
+                    eprintln!("overwrite_conflict refused=true outside_edit_kept={untouched}");
+                    if !untouched {
+                        return Err("Refused Save changed the working file".into());
+                    }
+                    std::fs::write(&path, &source)?;
+                    self.overwrite_smoke = Some(2);
+                } else if let (Some(1), Some((dir, _))) = (stage, self.save_smoke.clone()) {
                     self.save_smoke = Some((dir, 2));
                 } else if self.smoke.is_some() {
                     return Err(error.into());
@@ -1408,6 +1495,7 @@ fn run() -> GpuResult<()> {
     let mut smoke_edit = false;
     let mut smoke_save = None;
     let mut smoke_guard = 0u8;
+    let mut smoke_overwrite = false;
     let mut smoke_repair = ad_heal::RepairKind::DuplicateTriangles;
     let mut ui = viewer_ui::ViewerUi::default();
     let mut args = std::env::args().skip(1);
@@ -1441,6 +1529,7 @@ fn run() -> GpuResult<()> {
             }
             "--smoke-edit" => smoke_edit = true,
             "--smoke-guard" => smoke_guard = 1,
+            "--smoke-overwrite" => smoke_overwrite = true,
             "--smoke-repair" => {
                 smoke_repair = match args.next().as_deref() {
                     Some("g001") => ad_heal::RepairKind::DegenerateTriangles,
@@ -1542,6 +1631,7 @@ fn run() -> GpuResult<()> {
         confirmed: None,
         after_save: None,
         save_smoke: smoke_save.map(|dir| (dir, 0)),
+        overwrite_smoke: smoke_overwrite.then_some(0),
         smoke_guard,
         smoke_repair,
         ui,
