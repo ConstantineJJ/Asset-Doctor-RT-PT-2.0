@@ -75,6 +75,9 @@ pub struct Renderer {
     overlay: Option<Overlay>,
     frame: Option<FrameBinding>,
     view_projection: [[f32; 4]; 4],
+    /// ADR-0040 floor grid; None hides it.
+    grid: Option<crate::grid::GridSettings>,
+    grid_frames: u64,
     sample_textures: bool,
     sample_mr_maps: bool,
     sample_normal_maps: bool,
@@ -125,6 +128,8 @@ impl Renderer {
                 [0., 0., 1., 0.],
                 [0., 0., 0., 1.],
             ],
+            grid: None,
+            grid_frames: 0,
             frames: 0,
             mesh_frames: 0,
             pbr_frames: 0,
@@ -203,6 +208,20 @@ impl Renderer {
         self.scene
             .as_ref()
             .map(|scene| (scene.document_id, scene.revision))
+    }
+    /// ADR-0040: show the floor grid at `grid`, or hide it with None.
+    pub fn set_grid(&mut self, grid: Option<crate::grid::GridSettings>) {
+        self.grid = grid.filter(|g| {
+            [g.floor_y, g.center[0], g.center[1], g.extent, g.spacing]
+                .iter()
+                .all(|v| v.is_finite())
+                && g.extent > 0.
+                && g.spacing > 0.
+        });
+    }
+    /// Frames in which the floor grid was recorded (smoke evidence).
+    pub fn grid_frames(&self) -> u64 {
+        self.grid_frames
     }
     pub fn set_camera(&mut self, matrix: [[f32; 4]; 4], eye: [f32; 3]) -> GpuResult<()> {
         if matrix
@@ -502,6 +521,28 @@ impl Renderer {
                         0,
                         0,
                     );
+                }
+                // ADR-0040: floor grid after the model, depth-tested only.
+                if let (Some(grid), Some(pipeline)) = (self.grid, chain.grid.as_ref()) {
+                    let push = crate::grid::GridPush::new(self.view_projection, grid);
+                    device.cmd_bind_pipeline(
+                        self.command,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        pipeline.handle,
+                    );
+                    let bytes = std::slice::from_raw_parts(
+                        (&push as *const crate::grid::GridPush).cast::<u8>(),
+                        std::mem::size_of::<crate::grid::GridPush>(),
+                    );
+                    device.cmd_push_constants(
+                        self.command,
+                        pipeline.layout,
+                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                        0,
+                        bytes,
+                    );
+                    device.cmd_draw(self.command, 6, 1, 0, 0);
+                    self.grid_frames += 1;
                 }
             } else if ui.is_none() {
                 // Visible clear marker only until a real scene has been imported.

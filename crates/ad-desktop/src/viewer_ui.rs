@@ -133,6 +133,8 @@ pub struct ViewerUi {
     pub show_summary: bool,
     pub textures: bool,
     pub mr_maps: bool,
+    /// ADR-0040 floor grid under the model (view only).
+    pub floor_grid: bool,
     pub normal_maps: bool,
     pub ao_maps: bool,
     pub emission: bool,
@@ -200,6 +202,7 @@ impl Default for ViewerUi {
             show_summary: true,
             textures: true,
             mr_maps: true,
+            floor_grid: true,
             normal_maps: true,
             ao_maps: true,
             emission: true,
@@ -431,6 +434,7 @@ impl ViewerUi {
                     egui::ScrollArea::vertical().show(ui,|ui| {
                         ui.heading("Сводка");ui.separator();
                         ui.checkbox(&mut self.textures,"Базовые текстуры").on_hover_text("Включить выборку встроенных PNG/JPEG. Исходные материалы не изменяются.");
+                    ui.checkbox(&mut self.floor_grid,"Сетка пола").on_hover_text("Сетка на уровне нижней точки модели, шаг по её размеру; красная ось X, синяя Z. Только вид — в модель и файл не попадает.");
                         egui::ComboBox::from_id_salt("shading_mode").selected_text(match self.lighting.mode {ShadingMode::BaseColor=>"Базовый вид", ShadingMode::DirectPbr=>"PBR · направленный свет"}).show_ui(ui,|ui| {
                             ui.selectable_value(&mut self.lighting.mode,ShadingMode::BaseColor,"Базовый вид");
                             ui.selectable_value(&mut self.lighting.mode,ShadingMode::DirectPbr,"PBR · направленный свет");

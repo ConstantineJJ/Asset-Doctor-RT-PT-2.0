@@ -18,12 +18,12 @@ pub(crate) struct MeshPipeline {
     frame_layout: FrameLayout,
     gpu: Arc<Gpu>,
 }
-struct Shader {
-    handle: vk::ShaderModule,
+pub(crate) struct Shader {
+    pub handle: vk::ShaderModule,
     gpu: Arc<Gpu>,
 }
 impl Shader {
-    fn new(gpu: Arc<Gpu>, bytes: &[u8]) -> GpuResult<Self> {
+    pub fn new(gpu: Arc<Gpu>, bytes: &[u8]) -> GpuResult<Self> {
         let code = ash::util::read_spv(&mut Cursor::new(bytes))?;
         // SAFETY: Build-time validated SPIR-V, correctly aligned u32 input.
         let handle = unsafe {

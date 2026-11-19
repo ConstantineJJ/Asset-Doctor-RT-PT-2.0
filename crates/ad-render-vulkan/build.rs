@@ -3,6 +3,8 @@ fn main() {
     for (name, stage) in [
         ("mesh.vert", naga::ShaderStage::Vertex),
         ("mesh.frag", naga::ShaderStage::Fragment),
+        ("grid.vert", naga::ShaderStage::Vertex),
+        ("grid.frag", naga::ShaderStage::Fragment),
     ] {
         let path = format!("shaders/{name}");
         println!("cargo:rerun-if-changed={path}");

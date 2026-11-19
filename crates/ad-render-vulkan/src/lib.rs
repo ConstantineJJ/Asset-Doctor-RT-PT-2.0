@@ -3,6 +3,7 @@
 pub mod context;
 mod frame;
 mod gpu;
+pub mod grid;
 pub mod lighting;
 mod pipeline;
 pub mod presentation;

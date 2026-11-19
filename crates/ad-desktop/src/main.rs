@@ -169,6 +169,7 @@ impl App {
             let frames = renderer.frames;
             let mesh_frames = renderer.mesh_frames;
             let pbr_frames = renderer.pbr_frames;
+            let grid_frames = renderer.grid_frames();
             let mr_frames = renderer.mr_frames;
             let normal_frames = renderer.normal_frames;
             let ao_frames = renderer.occlusion_frames;
@@ -259,6 +260,7 @@ impl App {
                         "lighting_smoke mode={:?} pbr_frames={pbr_frames} mr_frames={mr_frames} normal_frames={normal_frames} ao_frames={ao_frames} emission_frames={emission_frames}",
                         self.ui.lighting.mode
                     );
+                    eprintln!("grid_smoke grid_frames={}", grid_frames);
                     eprintln!(
                         "SMOKE_PASS frames={frames} resize=true minimize=true restore=true close_requested=true validation_enabled={} validation_errors=0",
                         context.validation
@@ -1344,6 +1346,14 @@ impl App {
         }
         let renderer = self.renderer.as_mut().expect("Drawable renderer checked");
         let (width, height) = frame.scene.map_or((1, 1), |r| (r.width, r.height));
+        renderer.set_grid(if self.ui.floor_grid {
+            self.current.as_ref().and_then(|asset| {
+                let bounds = asset.snapshot().bounds;
+                ad_render_vulkan::grid::grid_for_bounds(bounds.min, bounds.max)
+            })
+        } else {
+            None
+        });
         renderer.set_camera(
             self.camera.matrix(width, height),
             self.camera.eye(width, height),
