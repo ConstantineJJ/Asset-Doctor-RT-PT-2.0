@@ -26,6 +26,11 @@ impl SurfaceSize {
     }
 }
 
+/// Depth convention of every scene pass: callers supply a view-projection
+/// matrix mapping the near plane to depth 1 and the far plane to 0 (reversed-Z
+/// on a D32 float buffer); depth clears to 0 and the GREATER fragment wins.
+pub const REVERSED_Z: bool = true;
+
 #[cfg(test)]
 mod tests {
     use super::*;

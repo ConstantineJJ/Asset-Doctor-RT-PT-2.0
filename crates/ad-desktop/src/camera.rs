@@ -58,7 +58,18 @@ impl Camera {
             .max(self.radius * 10.0)
             .max(near * 100.0);
         let projection = rh::proj::vulkan::perspective(45f32.to_radians(), aspect, near, far);
-        (projection * rh::view::look_at_mat4(eye, self.center, Vec3::Y)).to_cols_array_2d()
+        // Reversed-Z (z' = w - z): near → 1, far → 0. With the D32 float depth
+        // buffer this spreads precision evenly over distance, so close layers
+        // (decals) do not z-fight when zoomed out. The renderer clears depth to
+        // 0 and keeps the GREATER fragment (ad_render_vulkan::REVERSED_Z).
+        let reverse = glam::Mat4::from_cols_array_2d(&[
+            [1., 0., 0., 0.],
+            [0., 1., 0., 0.],
+            [0., 0., -1., 0.],
+            [0., 0., 1., 1.],
+        ]);
+        (reverse * projection * rh::view::look_at_mat4(eye, self.center, Vec3::Y))
+            .to_cols_array_2d()
     }
     pub fn eye(&self, width: u32, height: u32) -> [f32; 3] {
         let aspect = width.max(1) as f32 / height.max(1) as f32;
@@ -68,6 +79,33 @@ impl Camera {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Owner report 2026-11-19: layered surfaces (eye/blush/apron decals)
+    /// flickered when zoomed out. With reversed-Z on the D32 float buffer,
+    /// surfaces 1e-4 radius apart far from the camera keep distinct depths,
+    /// and nearer surfaces get the larger depth (compare GREATER).
+    #[test]
+    fn reversed_depth_keeps_close_layers_apart_when_zoomed_out() {
+        let mut camera = Camera::default();
+        camera.fit(Bounds {
+            min: [-1.; 3],
+            max: [1.; 3],
+        });
+        camera.zoom(-14.); // about 20 radii away
+        let m = glam::Mat4::from_cols_array_2d(&camera.matrix(1200, 760));
+        let eye = Vec3::from_array(camera.eye(1200, 760));
+        let toward_eye = (eye - camera.center).normalize();
+        let depth = |p: Vec3| {
+            let c = m * p.extend(1.);
+            c.z / c.w
+        };
+        let back = depth(camera.center);
+        let front = depth(camera.center + toward_eye * (camera.radius * 1e-4));
+        assert!(front > back, "nearer layer must win: {front} vs {back}");
+        assert!((0.0..=1.0).contains(&back) && (0.0..=1.0).contains(&front));
+        // The eye-side end of the view volume maps to 1, the far end towards 0.
+        // Near plane is radius * 1e-4 in front of the eye.
+        assert!(depth(eye - toward_eye * (camera.radius * 1.0001e-4)) > 0.99);
+    }
     #[test]
     fn camera_fit_orbit_pan_zoom_stay_finite_for_small_and_large_bounds() {
         for size in [0., 0.0001, 1., 1e9] {

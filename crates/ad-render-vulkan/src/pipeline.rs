@@ -202,7 +202,8 @@ impl MeshPipeline {
             let depth = vk::PipelineDepthStencilStateCreateInfo::default()
                 .depth_test_enable(true)
                 .depth_write_enable(true)
-                .depth_compare_op(vk::CompareOp::LESS);
+                // Reversed-Z: nearer fragments have larger depth.
+                .depth_compare_op(vk::CompareOp::GREATER);
             let attachments = [vk::PipelineColorBlendAttachmentState::default()
                 .color_write_mask(vk::ColorComponentFlags::RGBA)];
             let blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&attachments);
