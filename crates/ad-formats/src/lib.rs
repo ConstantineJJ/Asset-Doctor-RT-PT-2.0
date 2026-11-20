@@ -4,6 +4,7 @@ mod export;
 mod metadata;
 mod roundtrip;
 mod uv;
+pub use color::decode_image_file;
 pub use export::{ExportLimits, VerifiedGlb, preflight_changed_export, prepare_glb};
 
 /// Independent comparison of a freshly reimported document with the document
@@ -15,10 +16,13 @@ pub fn compare_reimported(
     reimported: &ad_document::AssetDocument,
     cancel: &ad_document::Cancellation,
 ) -> ad_document::AssetResult<()> {
-    roundtrip::compare(original, reimported, cancel)
+    let roots = export::expected_roots(original, ad_document::ImportLimits::default(), cancel)?;
+    roundtrip::compare(original, reimported, &roots, cancel)
 }
 #[cfg(test)]
 mod export_tests;
+#[cfg(test)]
+mod export_vertex_tests;
 mod source;
 use ad_document::{
     AssetDocument, AssetError, AssetResult, Cancellation, DocumentId, DocumentParts, ErrorCode,

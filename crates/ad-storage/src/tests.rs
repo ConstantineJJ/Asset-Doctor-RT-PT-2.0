@@ -68,6 +68,76 @@ fn document() -> ad_document::AssetDocument {
     )
     .unwrap()
 }
+/// ADR-0035: «Сохранить» over the working file.
+#[test]
+fn replace_writes_verified_bytes_keeps_a_backup_and_discards_it_on_request() {
+    let dir = Directory::new();
+    let target = dir.path("work.glb");
+    let mut doc = document();
+    let original = doc.source().to_vec();
+    fs::write(&target, &original).unwrap();
+    let (c, l) = (Cancellation::default(), ImportLimits::default());
+    let p = doc
+        .prepare_triangle_removal(doc.tag(), MeshId(0), &[1], l, &c)
+        .unwrap();
+    doc.apply_triangle_removal(p, l, &c).unwrap();
+    let verified = proof(&doc);
+    let replaced = save_replace(&verified, &doc, &target, &original, &c).unwrap();
+    assert!(replaced.receipt.is_current(&doc));
+    assert_eq!(fs::read(&target).unwrap(), verified.bytes().as_ref());
+    assert_eq!(fs::read(&replaced.backup).unwrap(), original);
+    assert_eq!(dir.stages(), 0);
+    discard_backup(&replaced.backup).unwrap();
+    assert!(!replaced.backup.exists());
+}
+
+#[test]
+fn replace_refuses_a_file_changed_on_disk_and_bad_targets_without_touching_them() {
+    let dir = Directory::new();
+    let target = dir.path("work.glb");
+    let doc = document();
+    let verified = proof(&doc);
+    let c = Cancellation::default();
+    fs::write(&target, b"edited elsewhere").unwrap();
+    let e = save_replace(&verified, &doc, &target, doc.source(), &c)
+        .err()
+        .unwrap();
+    assert_eq!(e.code, ErrorCode::Conflict);
+    assert_eq!(fs::read(&target).unwrap(), b"edited elsewhere");
+    assert_eq!(dir.stages(), 0);
+    assert_eq!(
+        fs::read_dir(&dir.0).unwrap().count(),
+        1,
+        "no backup or staging left"
+    );
+    for bad in [
+        dir.path("missing.glb"),
+        PathBuf::from("relative.glb"),
+        dir.path("work.txt"),
+    ] {
+        assert!(save_replace(&verified, &doc, &bad, doc.source(), &c).is_err());
+    }
+}
+
+#[test]
+fn replace_failure_after_staging_keeps_the_original_and_leaves_nothing_behind() {
+    let dir = Directory::new();
+    let target = dir.path("work.glb");
+    let doc = document();
+    fs::write(&target, doc.source().as_ref()).unwrap();
+    let verified = proof(&doc);
+    let c = Cancellation::default();
+    let result = save_replace_with(&verified, &doc, &target, doc.source(), &c, |stage, _| {
+        if stage == Stage::Ready {
+            c.cancel();
+        }
+        Ok(())
+    });
+    assert!(matches!(result, Err(e) if e.code == ErrorCode::Cancelled));
+    assert_eq!(fs::read(&target).unwrap(), doc.source().as_ref());
+    assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+}
+
 fn proof(doc: &ad_document::AssetDocument) -> ad_formats::VerifiedGlb {
     ad_formats::prepare_glb(
         doc,

@@ -93,14 +93,15 @@ fn candidate_view_is_bound_to_origin_revision_cancellation_and_valid_indices() {
 
     // Hostile in-crate candidates are refused before any snapshot/analysis read.
     let hostile = [0, 1, 9];
-    let bad = CandidateIndices::new(&d, MeshId(0), &hostile).unwrap();
+    let ix = |v| crate::view::CandidateData::Indices(v);
+    let bad = CandidateIndices::new(&d, MeshId(0), ix(&hostile)).unwrap();
     assert!(matches!(d.candidate_view(bad, &c), Err(e) if e.code == ErrorCode::InvalidGeometry));
     let partial = [0, 1];
-    let bad = CandidateIndices::new(&d, MeshId(0), &partial).unwrap();
+    let bad = CandidateIndices::new(&d, MeshId(0), ix(&partial)).unwrap();
     assert!(matches!(d.candidate_view(bad, &c), Err(e) if e.code == ErrorCode::InvalidGeometry));
-    let bad = CandidateIndices::new(&d, MeshId(0), &[]).unwrap();
+    let bad = CandidateIndices::new(&d, MeshId(0), ix(&[])).unwrap();
     assert!(matches!(d.candidate_view(bad, &c), Err(e) if e.code == ErrorCode::InvalidGeometry));
-    assert!(CandidateIndices::new(&d, MeshId(5), &hostile).is_err());
+    assert!(CandidateIndices::new(&d, MeshId(5), ix(&hostile)).is_err());
 
     // After a real commit the old plan cannot produce a candidate any more.
     let other = d

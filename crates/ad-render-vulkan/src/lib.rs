@@ -3,12 +3,14 @@
 pub mod context;
 mod frame;
 mod gpu;
+pub mod grid;
 pub mod lighting;
 mod pipeline;
 pub mod presentation;
 pub mod renderer;
 mod resources;
 mod scene;
+pub mod sky;
 mod swapchain;
 mod textures;
 pub mod ui;
@@ -25,6 +27,11 @@ impl SurfaceSize {
         self.width > 0 && self.height > 0
     }
 }
+
+/// Depth convention of every scene pass: callers supply a view-projection
+/// matrix mapping the near plane to depth 1 and the far plane to 0 (reversed-Z
+/// on a D32 float buffer); depth clears to 0 and the GREATER fragment wins.
+pub const REVERSED_Z: bool = true;
 
 #[cfg(test)]
 mod tests {

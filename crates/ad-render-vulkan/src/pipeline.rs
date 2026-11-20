@@ -18,12 +18,12 @@ pub(crate) struct MeshPipeline {
     frame_layout: FrameLayout,
     gpu: Arc<Gpu>,
 }
-struct Shader {
-    handle: vk::ShaderModule,
+pub(crate) struct Shader {
+    pub handle: vk::ShaderModule,
     gpu: Arc<Gpu>,
 }
 impl Shader {
-    fn new(gpu: Arc<Gpu>, bytes: &[u8]) -> GpuResult<Self> {
+    pub fn new(gpu: Arc<Gpu>, bytes: &[u8]) -> GpuResult<Self> {
         let code = ash::util::read_spv(&mut Cursor::new(bytes))?;
         // SAFETY: Build-time validated SPIR-V, correctly aligned u32 input.
         let handle = unsafe {
@@ -202,7 +202,8 @@ impl MeshPipeline {
             let depth = vk::PipelineDepthStencilStateCreateInfo::default()
                 .depth_test_enable(true)
                 .depth_write_enable(true)
-                .depth_compare_op(vk::CompareOp::LESS);
+                // Reversed-Z: nearer fragments have larger depth.
+                .depth_compare_op(vk::CompareOp::GREATER);
             let attachments = [vk::PipelineColorBlendAttachmentState::default()
                 .color_write_mask(vk::ColorComponentFlags::RGBA)];
             let blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&attachments);

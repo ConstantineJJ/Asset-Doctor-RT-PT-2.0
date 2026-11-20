@@ -71,7 +71,14 @@ impl Images {
         Ok(())
     }
 }
-pub(crate) fn compare(a: &AssetDocument, b: &AssetDocument, c: &Cancellation) -> AssetResult<()> {
+/// `roots`: ADR-0041 placed root nodes and the local transform the export
+/// wrote for them; every other node must be unchanged.
+pub(crate) fn compare(
+    a: &AssetDocument,
+    b: &AssetDocument,
+    roots: &[(usize, [[f32; 4]; 4])],
+    c: &Cancellation,
+) -> AssetResult<()> {
     c.check()?;
     if a.nodes().len() != b.nodes().len()
         || a.primitives().len() != b.primitives().len()
@@ -80,9 +87,18 @@ pub(crate) fn compare(a: &AssetDocument, b: &AssetDocument, c: &Cancellation) ->
         return Err(mismatch());
     }
     equal(a.roots(), b.roots(), c)?;
-    for (a, b) in a.nodes().iter().zip(b.nodes()) {
+    if b.placement() != ad_document::Placement::IDENTITY
+        || (roots.is_empty() != a.placement().is_identity())
+    {
+        return Err(mismatch());
+    }
+    for (index, (a, b)) in a.nodes().iter().zip(b.nodes()).enumerate() {
         c.check()?;
-        if a.name != b.name || a.local != b.local {
+        let local = roots
+            .iter()
+            .find(|(i, _)| *i == index)
+            .map_or(a.local, |(_, m)| *m);
+        if a.name != b.name || local != b.local {
             return Err(mismatch());
         }
         equal(&a.children, &b.children, c)?;

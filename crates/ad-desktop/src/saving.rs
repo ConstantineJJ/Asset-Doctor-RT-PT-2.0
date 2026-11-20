@@ -14,13 +14,25 @@ use ad_document::{
 use ad_storage::SavedCopy;
 use std::{io::Read, path::PathBuf, sync::Arc};
 
+/// Where a verified GLB goes.
+pub enum SaveTarget {
+    /// «Сохранить копию»: a new file only (ADR-0029).
+    Copy(PathBuf),
+    /// «Сохранить» (ADR-0035): replace the working file, which must still hold
+    /// `on_disk` — the bytes the program opened or last saved.
+    Replace { path: PathBuf, on_disk: Arc<[u8]> },
+}
 pub struct SaveInput {
     pub session: Arc<Session>,
     pub base: DocumentStamp,
-    pub path: PathBuf,
+    pub target: SaveTarget,
 }
 pub struct SaveOutcome {
     pub receipt: SavedCopy,
+    /// The working file was replaced (not a new copy).
+    pub replaced: bool,
+    /// A backup of the replaced file could not be removed and stays beside it.
+    pub backup_kept: bool,
     pub bytes: usize,
     /// Unchanged content: the original source bytes were copied exactly.
     pub exact_copy: bool,
@@ -66,7 +78,20 @@ pub fn save_copy_job(input: &SaveInput, cancel: &Cancellation) -> AssetResult<Sa
     )?;
     let exact_copy = Arc::ptr_eq(verified.bytes(), document.source());
     let bytes = verified.bytes().len();
-    let receipt = ad_storage::save_copy(&verified, document, &input.path, cancel)?;
+    let (receipt, backup) = match &input.target {
+        SaveTarget::Copy(path) => (
+            ad_storage::save_copy(&verified, document, path, cancel)?,
+            None,
+        ),
+        SaveTarget::Replace { path, on_disk } => {
+            let r = ad_storage::save_replace(&verified, document, path, on_disk, cancel)?;
+            (r.receipt, Some(r.backup))
+        }
+    };
+    let kept = |message: String| match &backup {
+        Some(b) => format!("{message}; the previous file is kept at {}", b.display()),
+        None => message,
+    };
     // The file is published. A late cancel must not turn that into failure,
     // so the independent readback uses its own token.
     let after = Cancellation::default();
@@ -74,10 +99,10 @@ pub fn save_copy_job(input: &SaveInput, cancel: &Cancellation) -> AssetResult<Sa
     if saved.as_slice() != verified.bytes().as_ref() {
         return Err(AssetError::new(
             ErrorCode::VerificationFailed,
-            format!(
-                "Saved copy {} differs from the verified bytes; it is not treated as saved",
+            kept(format!(
+                "Saved file {} differs from the verified bytes; it is not treated as saved",
                 receipt.path().display()
-            ),
+            )),
         ));
     }
     let reimported = ad_formats::import_glb(
@@ -90,11 +115,11 @@ pub fn save_copy_job(input: &SaveInput, cancel: &Cancellation) -> AssetResult<Sa
     ad_formats::compare_reimported(document, &reimported, &after).map_err(|e| {
         AssetError::new(
             ErrorCode::VerificationFailed,
-            format!(
-                "Saved copy {} failed independent reimport ({}); it is not treated as saved",
+            kept(format!(
+                "Saved file {} failed independent reimport ({}); it is not treated as saved",
                 receipt.path().display(),
                 e.message
-            ),
+            )),
         )
     })?;
     let reimported_triangles = reimported
@@ -102,8 +127,12 @@ pub fn save_copy_job(input: &SaveInput, cancel: &Cancellation) -> AssetResult<Sa
         .iter()
         .map(|m| m.indices.len() / 3)
         .sum();
+    // Verified: the backup of the replaced working file is no longer needed.
+    let backup_kept = backup.is_some_and(|b| ad_storage::discard_backup(&b).is_err());
     Ok(SaveOutcome {
         cleanup_warning: receipt.cleanup_warning(),
+        replaced: matches!(input.target, SaveTarget::Replace { .. }),
+        backup_kept,
         receipt,
         bytes,
         exact_copy,

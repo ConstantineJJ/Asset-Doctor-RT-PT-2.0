@@ -1,6 +1,6 @@
 use crate::{
     AssetDocument, AssetError, AssetResult, Cancellation, DocumentId, ErrorCode, ImportLimits,
-    MeshId, geometry_bytes, source_uv_bytes,
+    MeshId, MeshPrimitive, geometry_bytes, source_uv_bytes, view::CandidateData,
 };
 use std::sync::Arc;
 
@@ -29,12 +29,52 @@ pub struct RemovalPreview {
     pub mesh: MeshId,
     pub before_triangles: usize,
     pub after_triangles: usize,
+    pub before_vertices: usize,
+    pub after_vertices: usize,
+}
+/// What a command publishes for its primitive: only new indices, or (ADR-0033)
+/// a complete replacement primitive with its source-vertex map.
+pub(crate) enum Alternate {
+    Indices(Vec<u32>),
+    Primitive(Box<MeshPrimitive>, Option<Vec<u32>>, bool),
+    /// ADR-0041: the other model placement.
+    Placement(crate::Placement),
+}
+impl Alternate {
+    fn data(&self) -> CandidateData<'_> {
+        match self {
+            Self::Indices(v) => CandidateData::Indices(v),
+            Self::Primitive(p, map, normals) => {
+                CandidateData::Primitive(p, map.as_deref(), *normals)
+            }
+            Self::Placement(p) => CandidateData::Placement(*p),
+        }
+    }
+    /// Shape used for decoded-budget admission: (vertices, UV channels, indices).
+    fn shape(&self, current: &MeshPrimitive) -> (usize, usize, usize) {
+        match self {
+            Self::Indices(v) => (current.positions.len(), current.uv_channels.len(), v.len()),
+            Self::Primitive(p, ..) => (p.positions.len(), p.uv_channels.len(), p.indices.len()),
+            Self::Placement(_) => (
+                current.positions.len(),
+                current.uv_channels.len(),
+                current.indices.len(),
+            ),
+        }
+    }
+    fn retained(&self) -> AssetResult<usize> {
+        match self {
+            Self::Indices(v) => v.capacity().checked_mul(4).ok_or_else(budget),
+            Self::Primitive(p, map, _) => crate::vertices::primitive_bytes(p, map.as_ref()),
+            Self::Placement(_) => Ok(std::mem::size_of::<crate::Placement>()),
+        }
+    }
 }
 /// Opaque, single-use proposal. It never owns a mutable document reference.
 pub struct PreparedRemoval {
     preview: RemovalPreview,
     owner: Arc<()>,
-    replacement: Option<Vec<u32>>,
+    replacement: Option<Alternate>,
     retained_bytes: usize,
 }
 impl PreparedRemoval {
@@ -49,10 +89,34 @@ impl PreparedRemoval {
         if !Arc::ptr_eq(&self.owner, &document.origin) {
             return Err(conflict());
         }
-        Ok(self
-            .replacement
-            .as_deref()
-            .unwrap_or(&document.parts.meshes[self.preview.mesh.0].indices))
+        Ok(match &self.replacement {
+            Some(Alternate::Indices(v)) => v,
+            Some(Alternate::Primitive(p, ..)) => &p.indices,
+            Some(Alternate::Placement(_)) | None => {
+                &document.parts.meshes[self.preview.mesh.0].indices
+            }
+        })
+    }
+    /// Immutable primitive this command would publish, for independent checks
+    /// of a vertex compaction. Index-only commands keep the current streams.
+    pub fn primitive_after<'a>(
+        &'a self,
+        document: &'a AssetDocument,
+        cancel: &Cancellation,
+    ) -> AssetResult<&'a MeshPrimitive> {
+        self.indices_after(document, cancel)?;
+        Ok(match &self.replacement {
+            Some(Alternate::Primitive(p, ..)) => p,
+            _ => &document.parts.meshes[self.preview.mesh.0],
+        })
+    }
+    /// Source-vertex map this command would publish (ADR-0033); `None` is the
+    /// identity. Index-only commands keep the current map.
+    pub fn source_vertices_after<'a>(&'a self, document: &'a AssetDocument) -> Option<&'a [u32]> {
+        match &self.replacement {
+            Some(Alternate::Primitive(_, map, _)) => map.as_deref(),
+            _ => document.source_vertices(self.preview.mesh),
+        }
     }
     pub fn preview(&self) -> RemovalPreview {
         self.preview
@@ -60,15 +124,33 @@ impl PreparedRemoval {
     pub fn retained_bytes(&self) -> usize {
         self.retained_bytes
     }
-    pub(crate) fn changes_indices(&self) -> bool {
+    /// False for a verified no-op, which has nothing to publish.
+    pub fn changes(&self) -> bool {
         self.replacement.is_some()
     }
+    pub(crate) fn data(&self) -> Option<CandidateData<'_>> {
+        self.replacement.as_ref().map(Alternate::data)
+    }
+    pub(crate) fn new(
+        preview: RemovalPreview,
+        owner: Arc<()>,
+        replacement: Option<Alternate>,
+        retained_bytes: usize,
+    ) -> Self {
+        Self {
+            preview,
+            owner,
+            replacement,
+            retained_bytes,
+        }
+    }
 }
-/// An applied change owns the alternate index buffer, never copied attributes.
+/// An applied change owns the alternate index buffer or, for a vertex
+/// compaction (ADR-0033), the alternate primitive and its source-vertex map.
 pub struct IndexExchange {
     owner: Arc<()>,
     mesh: MeshId,
-    alternate: Vec<u32>,
+    alternate: Alternate,
     retained_bytes: usize,
 }
 impl IndexExchange {
@@ -84,20 +166,24 @@ impl IndexExchange {
         if !Arc::ptr_eq(&self.owner, &document.origin) {
             return Err(conflict());
         }
-        crate::CandidateIndices::new(document, self.mesh, &self.alternate)
+        crate::CandidateIndices::new(document, self.mesh, self.alternate.data())
+    }
+    /// Source primitive this exchange changes.
+    pub fn mesh(&self) -> MeshId {
+        self.mesh
     }
 }
 pub struct AppliedRemoval {
     pub tag: DocumentTag,
     pub change: Option<IndexExchange>,
 }
-fn budget() -> AssetError {
+pub(crate) fn budget() -> AssetError {
     AssetError::new(
         ErrorCode::ResourceLimit,
         "Index command exceeds resource or revision limits",
     )
 }
-fn conflict() -> AssetError {
+pub(crate) fn conflict() -> AssetError {
     AssetError::new(
         ErrorCode::Conflict,
         "Command document or revision is no longer current",
@@ -198,7 +284,12 @@ impl AssetDocument {
         let replacement = if removed.is_empty() {
             None
         } else {
-            self.check_index_budget(mesh, after * 3, limits, cancel)?;
+            let shape = (
+                current.positions.len(),
+                current.uv_channels.len(),
+                after * 3,
+            );
+            self.check_index_budget(mesh, shape, limits, cancel)?;
             Some(copy_retained(&current.indices, removed, || cancel.check())?)
         };
         let retained_bytes = match &replacement {
@@ -217,29 +308,33 @@ impl AssetDocument {
                 mesh,
                 before_triangles: count,
                 after_triangles: after,
+                before_vertices: current.positions.len(),
+                after_vertices: current.positions.len(),
             },
             owner: self.origin.clone(),
-            replacement,
+            replacement: replacement.map(Alternate::Indices),
             retained_bytes,
         })
     }
-    fn check_index_budget(
+    /// Decoded-geometry admission with one primitive replaced by `shape`
+    /// (vertices, UV channels, indices).
+    pub(crate) fn check_index_budget(
         &self,
         mesh: MeshId,
-        replacement_len: usize,
+        shape: (usize, usize, usize),
         limits: ImportLimits,
         cancel: &Cancellation,
     ) -> AssetResult<()> {
         let mut total = 0usize;
         for (index, m) in self.parts.meshes.iter().enumerate() {
             cancel.check()?;
-            let indices = if index == mesh.0 {
-                replacement_len
+            let (vertices, channels, indices) = if index == mesh.0 {
+                shape
             } else {
-                m.indices.len()
+                (m.positions.len(), m.uv_channels.len(), m.indices.len())
             };
-            let bytes = geometry_bytes(m.positions.len(), indices)?;
-            let uv = source_uv_bytes(m.positions.len(), m.uv_channels.len())?;
+            let bytes = geometry_bytes(vertices, indices)?;
+            let uv = source_uv_bytes(vertices, channels)?;
             total = total
                 .checked_add(bytes)
                 .and_then(|v| v.checked_add(uv))
@@ -292,7 +387,13 @@ impl AssetDocument {
                 "A no-op command has nothing to publish",
             ));
         };
-        self.check_index_budget(plan.preview.mesh, replacement.len(), limits, cancel)?;
+        let current = self
+            .parts
+            .meshes
+            .get(plan.preview.mesh.0)
+            .ok_or_else(invalid)?;
+        let shape = replacement.shape(current);
+        self.check_index_budget(plan.preview.mesh, shape, limits, cancel)?;
         let next = self.revision.checked_add(1).ok_or_else(budget)?;
         cancel.check()?;
         Ok(StagedRemoval {
@@ -333,16 +434,16 @@ impl AssetDocument {
             return Err(conflict());
         }
         let mesh = self.parts.meshes.get(change.mesh.0).ok_or_else(invalid)?;
-        let bytes = mesh
-            .indices
-            .capacity()
-            .max(change.alternate.capacity())
-            .checked_mul(4)
-            .ok_or_else(budget)?;
-        if bytes > change.retained_bytes {
+        let current = match &change.alternate {
+            Alternate::Indices(_) => mesh.indices.capacity().checked_mul(4).ok_or_else(budget)?,
+            Alternate::Primitive(..) => self.primitive_capacity_bytes(change.mesh)?,
+            Alternate::Placement(_) => std::mem::size_of::<crate::Placement>(),
+        };
+        if current.max(change.alternate.retained()?) > change.retained_bytes {
             return Err(budget());
         }
-        self.check_index_budget(change.mesh, change.alternate.len(), limits, cancel)?;
+        let shape = change.alternate.shape(mesh);
+        self.check_index_budget(change.mesh, shape, limits, cancel)?;
         let next = self.revision.checked_add(1).ok_or_else(budget)?;
         cancel.check()?;
         Ok(StagedExchange {
@@ -369,10 +470,7 @@ impl StagedRemoval<'_> {
     }
     /// Infallible: no allocation, no checks. Returns the Undo payload.
     pub fn publish(mut self) -> IndexExchange {
-        std::mem::swap(
-            &mut self.document.parts.meshes[self.change.mesh.0].indices,
-            &mut self.change.alternate,
-        );
+        swap_in(self.document, self.change.mesh, &mut self.change.alternate);
         self.document.revision = self.next;
         self.change
     }
@@ -392,12 +490,21 @@ impl StagedExchange<'_> {
     }
     /// Infallible: swaps the alternate buffer and sets the checked revision.
     pub fn publish(self) -> DocumentTag {
-        std::mem::swap(
-            &mut self.document.parts.meshes[self.change.mesh.0].indices,
-            &mut self.change.alternate,
-        );
+        swap_in(self.document, self.change.mesh, &mut self.change.alternate);
         self.document.revision = self.next;
         self.document.tag()
+    }
+}
+/// Infallible buffer/primitive swap shared by every publication.
+fn swap_in(document: &mut AssetDocument, mesh: MeshId, alternate: &mut Alternate) {
+    match alternate {
+        Alternate::Indices(v) => std::mem::swap(&mut document.parts.meshes[mesh.0].indices, v),
+        Alternate::Primitive(p, map, normals) => {
+            std::mem::swap(&mut document.parts.meshes[mesh.0], &mut **p);
+            std::mem::swap(&mut document.vertex_maps[mesh.0], map);
+            std::mem::swap(&mut document.normals_changed[mesh.0], normals);
+        }
+        Alternate::Placement(p) => std::mem::swap(&mut document.placement, p),
     }
 }
 

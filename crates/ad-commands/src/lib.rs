@@ -152,7 +152,99 @@ impl Session {
             self.import_limits,
             cancel,
         )?;
-        if plan.preview().before_triangles != plan.preview().after_triangles {
+        if plan.changes() {
+            self.admit(plan.retained_bytes())?;
+        }
+        Ok(plan)
+    }
+    /// ADR-0033: removal of unused vertices of one primitive. History keeps
+    /// the whole previous primitive, so admission is checked before the
+    /// replacement streams are built.
+    pub fn prepare_vertex_removal(
+        &self,
+        expected: DocumentTag,
+        mesh: MeshId,
+        vertices: &[u32],
+        cancel: &Cancellation,
+    ) -> AssetResult<PreparedRemoval> {
+        self.document.verify_tag(expected, cancel)?;
+        if !vertices.is_empty() {
+            self.admit(self.document.primitive_capacity_bytes(mesh)?)?;
+        }
+        let plan = self.document.prepare_vertex_removal(
+            expected,
+            mesh,
+            vertices,
+            self.import_limits,
+            cancel,
+        )?;
+        if plan.changes() {
+            self.admit(plan.retained_bytes())?;
+        }
+        Ok(plan)
+    }
+    /// ADR-0037: replace one primitive's NORMAL stream (see
+    /// `AssetDocument::prepare_normals`). Same admission as vertex edits.
+    pub fn prepare_normals(
+        &self,
+        expected: DocumentTag,
+        mesh: MeshId,
+        normals: Vec<[f32; 3]>,
+        keep_authored: bool,
+        cancel: &Cancellation,
+    ) -> AssetResult<PreparedRemoval> {
+        self.document.verify_tag(expected, cancel)?;
+        self.admit(self.document.primitive_capacity_bytes(mesh)?)?;
+        let plan = self.document.prepare_normals(
+            expected,
+            mesh,
+            normals,
+            keep_authored,
+            self.import_limits,
+            cancel,
+        )?;
+        if plan.changes() {
+            self.admit(plan.retained_bytes())?;
+        }
+        Ok(plan)
+    }
+    /// ADR-0034: merge exact duplicate vertices, `[removed, kept]` pairs.
+    /// Same history admission as a vertex removal.
+    pub fn prepare_vertex_merge(
+        &self,
+        expected: DocumentTag,
+        mesh: MeshId,
+        pairs: &[[u32; 2]],
+        cancel: &Cancellation,
+    ) -> AssetResult<PreparedRemoval> {
+        self.document.verify_tag(expected, cancel)?;
+        if !pairs.is_empty() {
+            self.admit(self.document.primitive_capacity_bytes(mesh)?)?;
+        }
+        let plan = self.document.prepare_vertex_merge(
+            expected,
+            mesh,
+            pairs,
+            self.import_limits,
+            cancel,
+        )?;
+        if plan.changes() {
+            self.admit(plan.retained_bytes())?;
+        }
+        Ok(plan)
+    }
+    /// ADR-0041: replace the model placement. History keeps the previous one.
+    pub fn prepare_placement(
+        &self,
+        expected: DocumentTag,
+        placement: ad_document::Placement,
+        cancel: &Cancellation,
+    ) -> AssetResult<PreparedRemoval> {
+        self.document.verify_tag(expected, cancel)?;
+        let plan = self
+            .document
+            .prepare_placement(expected, placement, cancel)?;
+        if plan.changes() {
             self.admit(plan.retained_bytes())?;
         }
         Ok(plan)
@@ -162,7 +254,7 @@ impl Session {
         plan: PreparedRemoval,
         cancel: &Cancellation,
     ) -> AssetResult<CommandOutcome> {
-        if plan.preview().before_triangles == plan.preview().after_triangles {
+        if !plan.changes() {
             self.document.verify_tag(plan.preview().tag, cancel)?;
             let applied = self
                 .document
@@ -371,3 +463,5 @@ impl StagedEdit<'_> {
 mod stage_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod vertex_tests;

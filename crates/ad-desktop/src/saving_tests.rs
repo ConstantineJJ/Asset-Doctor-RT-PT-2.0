@@ -68,8 +68,49 @@ fn input(asset: &PreparedAsset, path: PathBuf) -> SaveInput {
     SaveInput {
         session: asset.session.clone(),
         base: asset.generation.stamp.clone(),
-        path,
+        target: SaveTarget::Copy(path),
     }
+}
+
+/// ADR-0035: «Сохранить» replaces the working file only after verification,
+/// removes its backup afterwards and refuses a file changed on disk.
+#[test]
+fn save_over_working_file_verifies_replaces_and_refuses_outside_changes() {
+    let dir = directory();
+    let work = dir.join("work.glb");
+    fs::copy(fixture(), &work).unwrap();
+    let mut asset = prepare(&Request {
+        ticket: 1,
+        input: work.clone(),
+        cancel: Cancellation::default(),
+    })
+    .unwrap();
+    edit(&mut asset, EditKind::RemoveDuplicates(MeshId(0)));
+    let replace = |asset: &PreparedAsset| SaveInput {
+        session: asset.session.clone(),
+        base: asset.generation.stamp.clone(),
+        target: SaveTarget::Replace {
+            path: work.clone(),
+            on_disk: asset.document().source().clone(),
+        },
+    };
+    let outcome = save_copy_job(&replace(&asset), &Cancellation::default()).unwrap();
+    assert!(outcome.replaced && !outcome.backup_kept);
+    assert!(outcome.receipt.is_current(asset.document()));
+    let saved = fs::read(&work).unwrap();
+    assert_ne!(saved, fs::read(fixture()).unwrap());
+    assert_eq!(
+        fs::read_dir(&dir).unwrap().count(),
+        1,
+        "backup removed after verification"
+    );
+    // The program still believes the old bytes are on disk: a second Save must
+    // refuse instead of overwriting what is now there.
+    let e = save_copy_job(&replace(&asset), &Cancellation::default())
+        .err()
+        .unwrap();
+    assert_eq!(e.code, ErrorCode::Conflict);
+    assert_eq!(fs::read(&work).unwrap(), saved);
 }
 
 #[test]
@@ -132,7 +173,7 @@ fn existing_destination_cancel_stale_and_late_receipts_never_count_as_saved() {
     let stale = SaveInput {
         session: asset.session.clone(),
         base: stale_stamp,
-        path: dir.join("stale.glb"),
+        target: SaveTarget::Copy(dir.join("stale.glb")),
     };
     let result = save_copy_job(&stale, &Cancellation::default());
     assert!(matches!(result, Err(e) if e.code == ErrorCode::Conflict));

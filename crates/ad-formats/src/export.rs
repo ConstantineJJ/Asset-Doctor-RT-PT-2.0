@@ -68,6 +68,70 @@ struct Binding {
     mesh: usize,
     primitive: usize,
     current: usize,
+    /// ADR-0033: vertex streams were compacted; every attribute is gathered.
+    vertices: bool,
+    /// ADR-0036: NORMAL values were rewritten; written from the document.
+    normals: bool,
+}
+/// One gathered vertex attribute of a compacted primitive (ADR-0033): the
+/// source accessor's elements, tightly packed with a 4-byte element stride.
+struct Gather {
+    key: String,
+    accessor: Value,
+    source_offset: usize,
+    source_stride: usize,
+    element: usize,
+    stride: usize,
+}
+fn padded(element: usize) -> usize {
+    element.div_ceil(4) * 4
+}
+/// Gathers for every attribute of a compacted binding, in metadata key order.
+fn gathers(
+    parsed: &source::Parsed<'_>,
+    meta: &Value,
+    binding: &Binding,
+) -> AssetResult<Vec<Gather>> {
+    let attributes = meta
+        .get("meshes")
+        .and_then(|m| m.get(binding.mesh))
+        .and_then(|m| m.get("primitives"))
+        .and_then(|p| p.get(binding.primitive))
+        .and_then(|p| p.get("attributes"))
+        .and_then(Value::as_object)
+        .ok_or_else(invalid)?;
+    let mut result = Vec::new();
+    result
+        .try_reserve_exact(attributes.len())
+        .map_err(|_| budget())?;
+    for (key, id) in attributes {
+        let id = id.as_u64().ok_or_else(invalid)? as usize;
+        let accessor = parsed.document.accessors().nth(id).ok_or_else(invalid)?;
+        let view = accessor.view().ok_or_else(metadata::unsupported)?;
+        if accessor.sparse().is_some() {
+            return Err(metadata::unsupported());
+        }
+        let element = accessor.size();
+        let mut json = json!({
+            "componentType": accessor.data_type().as_gl_enum(),
+            "type": meta["accessors"][id]["type"].clone(),
+        });
+        if accessor.normalized() {
+            json["normalized"] = json!(true);
+        }
+        result.push(Gather {
+            key: key.clone(),
+            accessor: json,
+            source_offset: view
+                .offset()
+                .checked_add(accessor.offset())
+                .ok_or_else(invalid)?,
+            source_stride: view.stride().unwrap_or(element),
+            element,
+            stride: padded(element),
+        });
+    }
+    Ok(result)
 }
 
 fn bindings(
@@ -95,9 +159,64 @@ fn bindings(
             let position = primitive
                 .get(&gltf::Semantic::Positions)
                 .ok_or_else(invalid)?;
-            if position.count() != current.positions.len() || position.count() > u32::MAX as usize {
+            if position.count() > u32::MAX as usize {
                 return Err(roundtrip::mismatch());
             }
+            // ADR-0033: a compacted primitive maps its vertices to a strictly
+            // increasing subsequence of the source vertices.
+            let map = view.source_vertices(MeshId(ordinal));
+            match map {
+                None if position.count() != current.positions.len() => {
+                    return Err(roundtrip::mismatch());
+                }
+                Some(m)
+                    if m.len() != current.positions.len()
+                        || m.windows(2).any(|w| w[0] >= w[1])
+                        || m.last().is_some_and(|&v| v as usize >= position.count()) =>
+                {
+                    return Err(roundtrip::mismatch());
+                }
+                _ => {}
+            }
+            // ADR-0034: a merged vertex may stand for a source vertex only if
+            // every source attribute element (decoded or not) is byte-identical.
+            let mut elements = Vec::new();
+            if map.is_some() {
+                elements
+                    .try_reserve_exact(primitive.attributes().len())
+                    .map_err(|_| budget())?;
+                for (_, accessor) in primitive.attributes() {
+                    let view = accessor.view().ok_or_else(metadata::unsupported)?;
+                    elements.push((
+                        view.offset() + accessor.offset(),
+                        view.stride().unwrap_or(accessor.size()),
+                        accessor.size(),
+                    ));
+                }
+            }
+            let same_bytes = |a: u32, b: u32| {
+                a == b
+                    || elements.iter().all(|&(start, stride, size)| {
+                        let at = |v: u32| {
+                            let begin = start + v as usize * stride;
+                            bin.get(begin..begin + size)
+                        };
+                        at(a).is_some() && at(a) == at(b)
+                    })
+            };
+            let equivalent = |current: [u32; 3], source: [u32; 3]| {
+                (0..3).all(|i| same_bytes(current[i], source[i]))
+            };
+            let source_of = |face: &[u32; 3]| -> Option<[u32; 3]> {
+                match map {
+                    None => Some(*face),
+                    Some(m) => Some([
+                        *m.get(face[0] as usize)?,
+                        *m.get(face[1] as usize)?,
+                        *m.get(face[2] as usize)?,
+                    ]),
+                }
+            };
             let count = primitive.indices().map_or(position.count(), |v| v.count());
             if !count.is_multiple_of(3) {
                 return Err(invalid());
@@ -126,7 +245,11 @@ fn bindings(
             };
             let wanted = current_indices.as_chunks::<3>().0;
             let mut kept = 0;
-            let mut same = count == current_indices.len();
+            let normals = view.normals_changed(MeshId(ordinal));
+            if normals && current.normals.is_none() {
+                return Err(roundtrip::mismatch());
+            }
+            let mut same = count == current_indices.len() && map.is_none() && !normals;
             for face in 0..count / 3 {
                 if face % 1024 == 0 {
                     cancel.check()?;
@@ -139,8 +262,12 @@ fn bindings(
                 if triangle.iter().any(|&v| v as usize >= position.count()) {
                     return Err(invalid());
                 }
-                same &= wanted.get(face) == Some(&triangle);
-                if wanted.get(kept) == Some(&triangle) {
+                same &= wanted.get(face).and_then(source_of) == Some(triangle);
+                if wanted
+                    .get(kept)
+                    .and_then(source_of)
+                    .is_some_and(|w| equivalent(w, triangle))
+                {
                     kept += 1;
                 }
             }
@@ -159,6 +286,8 @@ fn bindings(
                     mesh: mesh.index(),
                     primitive: primitive.index(),
                     current: ordinal,
+                    vertices: map.is_some(),
+                    normals,
                 });
             }
             ordinal += 1;
@@ -239,16 +368,11 @@ fn changed_admission(
     strict_chunks(document.source(), parsed.glb.json.len(), bin.len())?;
     let (meta, values) = metadata::parse(&parsed.glb.json, limits.metadata_values, cancel)?;
     metadata::core_only(&meta, cancel)?;
-    if changed
-        .len()
-        .checked_mul(11)
-        .and_then(|n| n.checked_add(values))
-        .is_none_or(|n| n > limits.metadata_values)
-    {
-        return Err(budget());
-    }
+    let mut items = values;
     let mut bin_len = bin.len();
     for binding in changed {
+        cancel.check()?;
+        items = items.checked_add(11).ok_or_else(budget)?;
         bin_len = bin_len
             .checked_add(
                 view.indices(MeshId(binding.current))
@@ -257,6 +381,30 @@ fn changed_admission(
                     .ok_or_else(budget)?,
             )
             .ok_or_else(budget)?;
+        let count = view.primitive(MeshId(binding.current)).positions.len();
+        if binding.normals {
+            items = items.checked_add(24).ok_or_else(budget)?;
+            bin_len = count
+                .checked_mul(12)
+                .and_then(|n| bin_len.checked_add(n))
+                .ok_or_else(budget)?;
+        }
+        if binding.vertices {
+            for gather in gathers(parsed, &meta, binding)? {
+                if binding.normals && gather.key == "NORMAL" {
+                    continue;
+                }
+                items = items.checked_add(24).ok_or_else(budget)?;
+                bin_len = gather
+                    .stride
+                    .checked_mul(count)
+                    .and_then(|n| bin_len.checked_add(n))
+                    .ok_or_else(budget)?;
+            }
+        }
+    }
+    if items > limits.metadata_values {
+        return Err(budget());
     }
     let max = limits
         .output_bytes
@@ -273,13 +421,14 @@ fn changed_admission(
 /// stable source bindings, order-preserving removal only, strict chunks,
 /// core-only metadata and output/metadata/changed-primitive budgets. The
 /// candidate is not serialized or reimported here; Save Copy still performs
-/// the full verified export. Never mutates the document.
+/// the full verified export. Never mutates the document. Returns the BIN
+/// bytes the copy would append to the original (0 for an exact copy).
 pub fn preflight_changed_export(
     view: &DocumentView<'_>,
     limits: ExportLimits,
     import: ImportLimits,
     cancel: &Cancellation,
-) -> AssetResult<()> {
+) -> AssetResult<usize> {
     cancel.check()?;
     let document = view.document();
     let parsed = source::parse(document.source(), import, cancel)?;
@@ -287,14 +436,130 @@ pub fn preflight_changed_export(
         return Err(budget());
     }
     let changed = bindings(&parsed, view, limits, cancel)?;
-    if changed.is_empty() {
+    let roots = placed_roots(&parsed, document, view.placement(), cancel)?;
+    if changed.is_empty() && roots.is_empty() {
         if document.source().len() > limits.output_bytes {
             return Err(budget());
         }
-        return Ok(());
+        return Ok(0);
     }
-    changed_admission(&parsed, view, &changed, limits, import, cancel)?;
-    cancel.check()
+    let (_, bin_len, _) = changed_admission(&parsed, view, &changed, limits, import, cancel)?;
+    let original = parsed.glb.bin.as_deref().map_or(0, <[u8]>::len);
+    cancel.check()?;
+    Ok(bin_len - original)
+}
+
+/// ADR-0041: new transforms of the scene roots for a non-identity placement,
+/// in each node's own form (TRS or matrix), as f32 values the importer reads
+/// back exactly. Empty for the identity.
+fn placed_roots(
+    parsed: &source::Parsed<'_>,
+    document: &AssetDocument,
+    placement: ad_document::Placement,
+    cancel: &Cancellation,
+) -> AssetResult<Vec<(usize, gltf::scene::Transform)>> {
+    use gltf::scene::Transform;
+    if placement.is_identity() {
+        return Ok(Vec::new());
+    }
+    if !placement.valid() {
+        return Err(invalid());
+    }
+    let mut roots = Vec::new();
+    roots
+        .try_reserve_exact(document.roots().len())
+        .map_err(|_| budget())?;
+    for root in document.roots() {
+        cancel.check()?;
+        let node = parsed.document.nodes().nth(root.0).ok_or_else(invalid)?;
+        let placed = match node.transform() {
+            Transform::Matrix { matrix } => Transform::Matrix {
+                matrix: placement.apply_matrix(matrix),
+            },
+            Transform::Decomposed {
+                translation,
+                rotation,
+                scale,
+            } => Transform::Decomposed {
+                translation: placement.apply(translation),
+                rotation,
+                scale: scale.map(|v| v * placement.scale),
+            },
+        };
+        let finite = match &placed {
+            Transform::Matrix { matrix } => matrix.iter().flatten().all(|v| v.is_finite()),
+            Transform::Decomposed {
+                translation, scale, ..
+            } => translation.iter().chain(scale).all(|v| v.is_finite()),
+        };
+        if !finite {
+            return Err(AssetError::new(
+                ErrorCode::ResourceLimit,
+                "Placed root transform overflows f32",
+            ));
+        }
+        roots.push((root.0, placed));
+    }
+    Ok(roots)
+}
+/// Root locals a saved copy of `document` must read back with (ADR-0041).
+pub(crate) fn expected_roots(
+    document: &AssetDocument,
+    import: ImportLimits,
+    cancel: &Cancellation,
+) -> AssetResult<Vec<(usize, [[f32; 4]; 4])>> {
+    if document.placement().is_identity() {
+        return Ok(Vec::new());
+    }
+    let parsed = source::parse(document.source(), import, cancel)?;
+    Ok(
+        placed_roots(&parsed, document, document.placement(), cancel)?
+            .into_iter()
+            .map(|(i, t)| (i, t.matrix()))
+            .collect(),
+    )
+}
+/// Writes placed root transforms into node metadata (ADR-0041).
+fn write_roots(meta: &mut Value, roots: &[(usize, gltf::scene::Transform)]) -> AssetResult<()> {
+    use gltf::scene::Transform;
+    let numbers = |values: &[f32]| json!(values.iter().map(|v| f64::from(*v)).collect::<Vec<_>>());
+    for (index, transform) in roots {
+        let node = array(meta, "nodes")?
+            .get_mut(*index)
+            .and_then(Value::as_object_mut)
+            .ok_or_else(invalid)?;
+        match transform {
+            Transform::Matrix { matrix } => {
+                node.insert("matrix".into(), numbers(matrix.as_flattened()));
+            }
+            Transform::Decomposed {
+                translation, scale, ..
+            } => {
+                node.insert("translation".into(), numbers(translation));
+                node.insert("scale".into(), numbers(scale));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Bytes appended after the original BIN, in metadata order.
+enum Append<'a> {
+    Indices(&'a [u32]),
+    Normals(&'a [[f32; 3]]),
+    Gather(Gather, &'a [u32]),
+}
+fn primitive_json<'a>(
+    meta: &'a mut Value,
+    binding: &Binding,
+) -> AssetResult<&'a mut serde_json::Map<String, Value>> {
+    array(meta, "meshes")?
+        .get_mut(binding.mesh)
+        .and_then(|m| m.get_mut("primitives"))
+        .and_then(Value::as_array_mut)
+        .and_then(|p| p.get_mut(binding.primitive))
+        .and_then(Value::as_object_mut)
+        .ok_or_else(invalid)
 }
 
 pub fn prepare_glb(
@@ -312,7 +577,8 @@ pub fn prepare_glb(
     }
     let view = document.view();
     let changed = bindings(&parsed, &view, limits, cancel)?;
-    let bytes = if changed.is_empty() {
+    let roots = placed_roots(&parsed, document, document.placement(), cancel)?;
+    let bytes = if changed.is_empty() && roots.is_empty() {
         if document.source().len() > limits.output_bytes {
             return Err(budget());
         }
@@ -322,9 +588,85 @@ pub fn prepare_glb(
         let (mut meta, bin_len, max) =
             changed_admission(&parsed, &view, &changed, limits, import, cancel)?;
         let mut offset = bin.len();
+        let mut appends = Vec::new();
+        appends.try_reserve(changed.len()).map_err(|_| budget())?;
         for binding in &changed {
             cancel.check()?;
-            let count = document.primitives()[binding.current].indices.len();
+            let current = MeshId(binding.current);
+            if binding.vertices {
+                let map = view.source_vertices(current).ok_or_else(invalid)?;
+                let positions = &view.primitive(current).positions;
+                for gather in gathers(&parsed, &meta, binding)? {
+                    cancel.check()?;
+                    if binding.normals && gather.key == "NORMAL" {
+                        continue;
+                    }
+                    let size = gather.stride.checked_mul(map.len()).ok_or_else(budget)?;
+                    let views = array(&mut meta, "bufferViews")?;
+                    let id = views.len();
+                    let mut buffer_view =
+                        json!({"buffer":0,"byteOffset":offset,"byteLength":size,"target":34962});
+                    if gather.stride != gather.element {
+                        buffer_view["byteStride"] = json!(gather.stride);
+                    }
+                    views.push(buffer_view);
+                    let mut accessor = gather.accessor.clone();
+                    accessor["bufferView"] = json!(id);
+                    accessor["count"] = json!(map.len());
+                    if gather.key == "POSITION" {
+                        let mut min = [f32::INFINITY; 3];
+                        let mut max = [f32::NEG_INFINITY; 3];
+                        for (i, p) in positions.iter().enumerate() {
+                            if i % 4096 == 0 {
+                                cancel.check()?;
+                            }
+                            for axis in 0..3 {
+                                min[axis] = min[axis].min(p[axis]);
+                                max[axis] = max[axis].max(p[axis]);
+                            }
+                        }
+                        accessor["min"] = json!(min.map(f64::from));
+                        accessor["max"] = json!(max.map(f64::from));
+                    }
+                    let accessors = array(&mut meta, "accessors")?;
+                    let accessor_id = accessors.len();
+                    accessors.push(accessor);
+                    primitive_json(&mut meta, binding)?
+                        .get_mut("attributes")
+                        .and_then(Value::as_object_mut)
+                        .ok_or_else(invalid)?
+                        .insert(gather.key.clone(), json!(accessor_id));
+                    appends.try_reserve(1).map_err(|_| budget())?;
+                    appends.push(Append::Gather(gather, map));
+                    offset += size;
+                }
+            }
+            if binding.normals {
+                let normals = view
+                    .primitive(current)
+                    .normals
+                    .as_deref()
+                    .ok_or_else(invalid)?;
+                let size = normals.len().checked_mul(12).ok_or_else(budget)?;
+                let views = array(&mut meta, "bufferViews")?;
+                let id = views.len();
+                views
+                    .push(json!({"buffer":0,"byteOffset":offset,"byteLength":size,"target":34962}));
+                let accessors = array(&mut meta, "accessors")?;
+                let accessor = accessors.len();
+                accessors.push(json!({"bufferView":id,"componentType":5126,"count":normals.len(),"type":"VEC3"}));
+                primitive_json(&mut meta, binding)?
+                    .entry("attributes")
+                    .or_insert_with(|| json!({}))
+                    .as_object_mut()
+                    .ok_or_else(invalid)?
+                    .insert("NORMAL".into(), json!(accessor));
+                appends.try_reserve(1).map_err(|_| budget())?;
+                appends.push(Append::Normals(normals));
+                offset += size;
+            }
+            let current_indices = view.indices(current);
+            let count = current_indices.len();
             let size = count.checked_mul(4).ok_or_else(budget)?;
             let views = array(&mut meta, "bufferViews")?;
             let view = views.len();
@@ -334,16 +676,12 @@ pub fn prepare_glb(
             accessors.push(
                 json!({"bufferView":view,"componentType":5125,"count":count,"type":"SCALAR"}),
             );
-            let primitive = array(&mut meta, "meshes")?
-                .get_mut(binding.mesh)
-                .and_then(|m| m.get_mut("primitives"))
-                .and_then(Value::as_array_mut)
-                .and_then(|p| p.get_mut(binding.primitive))
-                .and_then(Value::as_object_mut)
-                .ok_or_else(invalid)?;
-            primitive.insert("indices".into(), json!(accessor));
+            primitive_json(&mut meta, binding)?.insert("indices".into(), json!(accessor));
+            appends.try_reserve(1).map_err(|_| budget())?;
+            appends.push(Append::Indices(current_indices));
             offset += size;
         }
+        write_roots(&mut meta, &roots)?;
         let buffer = array(&mut meta, "buffers")?
             .first_mut()
             .and_then(Value::as_object_mut)
@@ -398,13 +736,45 @@ pub fn prepare_glb(
             cancel.check()?;
             result.extend_from_slice(chunk);
         }
-        for binding in &changed {
-            for chunk in document.primitives()[binding.current].indices.chunks(4096) {
-                cancel.check()?;
-                for index in chunk {
-                    result.extend(index.to_le_bytes());
+        for append in &appends {
+            match append {
+                Append::Indices(indices) => {
+                    for chunk in indices.chunks(4096) {
+                        cancel.check()?;
+                        for index in chunk {
+                            result.extend(index.to_le_bytes());
+                        }
+                    }
+                }
+                Append::Normals(normals) => {
+                    for chunk in normals.chunks(4096) {
+                        cancel.check()?;
+                        for normal in chunk {
+                            for value in normal {
+                                result.extend(value.to_le_bytes());
+                            }
+                        }
+                    }
+                }
+                Append::Gather(gather, map) => {
+                    let padding = gather.stride - gather.element;
+                    for (i, &v) in map.iter().enumerate() {
+                        if i % 4096 == 0 {
+                            cancel.check()?;
+                        }
+                        let start = (v as usize)
+                            .checked_mul(gather.source_stride)
+                            .and_then(|n| n.checked_add(gather.source_offset))
+                            .ok_or_else(invalid)?;
+                        let element = bin.get(start..start + gather.element).ok_or_else(invalid)?;
+                        result.extend_from_slice(element);
+                        result.extend(std::iter::repeat_n(0u8, padding));
+                    }
                 }
             }
+        }
+        if result.len() != total {
+            return Err(roundtrip::mismatch());
         }
         Arc::from(result)
     };
@@ -415,7 +785,11 @@ pub fn prepare_glb(
         import,
         cancel,
     )?;
-    roundtrip::compare(document, &decoded, cancel)?;
+    let expected: Vec<(usize, [[f32; 4]; 4])> = roots
+        .iter()
+        .map(|(i, t)| (*i, t.clone().matrix()))
+        .collect();
+    roundtrip::compare(document, &decoded, &expected, cancel)?;
     let verified = VerifiedGlb { stamp, bytes };
     verified.verify_current(document, cancel)?;
     Ok(verified)

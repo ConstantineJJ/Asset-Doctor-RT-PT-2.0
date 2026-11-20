@@ -14,12 +14,22 @@ use ad_document::{
 use ad_heal::{DuplicatePreview, PlanLimits, RepairKind, VerificationLimits};
 use std::sync::Arc;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EditKind {
     /// G002 for one explicit source primitive and all its references.
     RemoveDuplicates(MeshId),
     /// G001 for one explicit source primitive and all its references.
     RemoveDegenerate(MeshId),
+    /// G003 (ADR-0033): compact the primitive's vertex streams.
+    RemoveUnused(MeshId),
+    /// G012 (ADR-0034): merge exact duplicate vertices.
+    MergeVertices(MeshId),
+    /// G004 (ADR-0037): create normals for a primitive without them.
+    CreateNormals(MeshId),
+    /// G005 (ADR-0037): replace zero normals, keep authored ones.
+    FixNormals(MeshId),
+    /// ADR-0041: replace the model placement (move / uniform scale).
+    Place(ad_document::Placement),
     Undo,
     Redo,
 }
@@ -29,13 +39,21 @@ impl EditKind {
         match self {
             Self::RemoveDuplicates(mesh) => Some((mesh, RepairKind::DuplicateTriangles)),
             Self::RemoveDegenerate(mesh) => Some((mesh, RepairKind::DegenerateTriangles)),
-            Self::Undo | Self::Redo => None,
+            Self::RemoveUnused(mesh) => Some((mesh, RepairKind::UnusedVertices)),
+            Self::MergeVertices(mesh) => Some((mesh, RepairKind::DuplicateVertices)),
+            Self::CreateNormals(mesh) => Some((mesh, RepairKind::MissingNormals)),
+            Self::FixNormals(mesh) => Some((mesh, RepairKind::ZeroNormals)),
+            Self::Undo | Self::Redo | Self::Place(_) => None,
         }
     }
     pub fn from_repair(mesh: MeshId, kind: RepairKind) -> Self {
         match kind {
             RepairKind::DuplicateTriangles => Self::RemoveDuplicates(mesh),
             RepairKind::DegenerateTriangles => Self::RemoveDegenerate(mesh),
+            RepairKind::UnusedVertices => Self::RemoveUnused(mesh),
+            RepairKind::DuplicateVertices => Self::MergeVertices(mesh),
+            RepairKind::MissingNormals => Self::CreateNormals(mesh),
+            RepairKind::ZeroNormals => Self::FixNormals(mesh),
         }
     }
 }
@@ -44,6 +62,10 @@ pub fn target_code(kind: RepairKind) -> ad_analysis::Code {
     match kind {
         RepairKind::DuplicateTriangles => ad_analysis::Code::DuplicateTriangle,
         RepairKind::DegenerateTriangles => ad_analysis::Code::ZeroArea,
+        RepairKind::UnusedVertices => ad_analysis::Code::UnusedVertex,
+        RepairKind::DuplicateVertices => ad_analysis::Code::DuplicateVertex,
+        RepairKind::MissingNormals => ad_analysis::Code::MissingNormals,
+        RepairKind::ZeroNormals => ad_analysis::Code::ZeroNormal,
     }
 }
 /// Findings of the rule a repair kind removes, on one source primitive.
@@ -59,6 +81,10 @@ pub fn repair_label(kind: RepairKind) -> &'static str {
     match kind {
         RepairKind::DuplicateTriangles => "G002",
         RepairKind::DegenerateTriangles => "G001",
+        RepairKind::UnusedVertices => "G003",
+        RepairKind::DuplicateVertices => "G012",
+        RepairKind::MissingNormals => "G004",
+        RepairKind::ZeroNormals => "G005",
     }
 }
 pub struct EditInput {
@@ -79,6 +105,10 @@ pub struct EditCandidate {
     base: DocumentStamp,
     change: Change,
     preview: Option<DuplicatePreview>,
+    /// BIN bytes a saved copy appends to the original (export preflight).
+    appended: usize,
+    /// G006 boundary edges of the primitive before/after a merge.
+    boundary: Option<(usize, usize)>,
     snapshot: Arc<GeometrySnapshot>,
     diagnostics: AssetResult<ad_analysis::Report>,
 }
@@ -103,6 +133,11 @@ impl EditCandidate {
             mesh: preview.mesh,
             before: preview.before_triangles,
             after: preview.after_triangles,
+            vertices_before: preview.before_vertices,
+            vertices_after: preview.after_vertices,
+            appended_bytes: self.appended,
+            boundary_edges: self.boundary,
+            changed_normals: preview.changed_normals,
             references: preview.source_node_references,
             complete: report.is_some_and(|r| r.is_complete()),
             target_left: report.map(|r| {
@@ -153,8 +188,31 @@ pub fn prepare_edit(
     }
     let (change, preview, removal);
     match kind {
-        EditKind::RemoveDuplicates(mesh) | EditKind::RemoveDegenerate(mesh) => {
+        EditKind::RemoveDuplicates(mesh)
+        | EditKind::RemoveDegenerate(mesh)
+        | EditKind::RemoveUnused(mesh)
+        | EditKind::MergeVertices(mesh)
+        | EditKind::CreateNormals(mesh)
+        | EditKind::FixNormals(mesh) => {
             let plan = match kind {
+                EditKind::CreateNormals(_) | EditKind::FixNormals(_) => ad_heal::plan_normals(
+                    document,
+                    base.tag(),
+                    mesh,
+                    kind.repair().expect("repair edit").1,
+                    PlanLimits::default(),
+                    cancel,
+                )?,
+                EditKind::MergeVertices(_) => ad_heal::plan_vertex_merge(
+                    document,
+                    base.tag(),
+                    mesh,
+                    PlanLimits::default(),
+                    cancel,
+                )?,
+                EditKind::RemoveUnused(_) => {
+                    ad_heal::plan_unused(document, base.tag(), mesh, PlanLimits::default(), cancel)?
+                }
                 EditKind::RemoveDegenerate(_) => ad_heal::plan_degenerate(
                     document,
                     base.tag(),
@@ -170,12 +228,23 @@ pub fn prepare_edit(
                     cancel,
                 )?,
             };
-            if plan.removed_triangles().is_empty() {
+            if plan.is_empty() {
                 return Ok(EditOutcome::NoChange(plan.preview()));
             }
             removal = plan.prepare(session, VerificationLimits::default(), cancel)?;
             preview = Some(plan.preview());
             change = Change::Remove(removal);
+        }
+        EditKind::Place(placement) => {
+            let plan = session.prepare_placement(base.tag(), placement, cancel)?;
+            if !plan.changes() {
+                return Err(AssetError::new(
+                    ad_document::ErrorCode::Unsupported,
+                    "положение модели не изменилось",
+                ));
+            }
+            preview = None;
+            change = Change::Remove(plan);
         }
         EditKind::Undo => {
             preview = None;
@@ -193,10 +262,11 @@ pub fn prepare_edit(
     };
     let mesh = candidate.mesh();
     let view = document.candidate_view(candidate, cancel)?;
-    if kind.repair().is_some() {
+    let mut appended = 0;
+    if kind.repair().is_some() || matches!(kind, EditKind::Place(_)) {
         // G002-06: refuse before Apply if the result could not be saved by
         // the verified static exporter (ADR-0028), with its exact reason.
-        ad_formats::preflight_changed_export(
+        appended = ad_formats::preflight_changed_export(
             &view,
             ad_formats::ExportLimits::default(),
             ImportLimits::default(),
@@ -207,6 +277,12 @@ pub fn prepare_edit(
     // Like import, an analysis resource refusal keeps a viewable result with
     // an incomplete report; whole-job cancellation still discards everything.
     let diagnostics = ad_analysis::analyze_view(&view, ad_analysis::Limits::default(), cancel);
+    let boundary = match kind {
+        EditKind::MergeVertices(mesh) => {
+            Some(merge_regression(document, &diagnostics, mesh, cancel)?)
+        }
+        _ => None,
+    };
     cancel.check()?;
     Ok(EditOutcome::Candidate(Box::new(EditCandidate {
         kind,
@@ -214,9 +290,65 @@ pub fn prepare_edit(
         base: base.clone(),
         change,
         preview,
+        appended,
+        boundary,
         snapshot,
         diagnostics,
     })))
+}
+
+/// Per-primitive counts a merge must not increase (ADR-0034 decision 6):
+/// G001, G002, G006, G007 findings and G008 groups.
+const TOPOLOGY: [ad_analysis::Code; 5] = [
+    ad_analysis::Code::ZeroArea,
+    ad_analysis::Code::DuplicateTriangle,
+    ad_analysis::Code::BoundaryEdge,
+    ad_analysis::Code::HighIncidenceEdge,
+    ad_analysis::Code::DisconnectedComponents,
+];
+fn topology(report: &ad_analysis::Report, mesh: MeshId) -> [usize; 5] {
+    TOPOLOGY.map(|code| {
+        report
+            .findings
+            .iter()
+            .filter(|f| f.mesh == mesh && f.code == code)
+            .map(|f| f.count)
+            .sum()
+    })
+}
+/// Refuses a merge whose complete candidate analysis shows any topology count
+/// above the current complete analysis; returns G006 before/after.
+fn merge_regression(
+    document: &ad_document::AssetDocument,
+    after: &AssetResult<ad_analysis::Report>,
+    mesh: MeshId,
+    cancel: &Cancellation,
+) -> AssetResult<(usize, usize)> {
+    let refused = |message: String| AssetError::new(ad_document::ErrorCode::Unsupported, message);
+    let before = ad_analysis::analyze(document, ad_analysis::Limits::default(), cancel)?;
+    let after = match after {
+        Ok(report) if report.is_complete() && before.is_complete() => report,
+        _ => {
+            return Err(refused(
+                "слияние не проверено: анализ топологии неполный".into(),
+            ));
+        }
+    };
+    let (b, a) = (topology(&before, mesh), topology(after, mesh));
+    if a.iter().zip(&b).any(|(a, b)| a > b) {
+        let changes = ["G001", "G002", "G006", "G007", "G008"]
+            .iter()
+            .zip(b.iter().zip(&a))
+            .filter(|(_, (b, a))| a > b)
+            .map(|(code, (b, a))| format!("{code} {b} -> {a}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(refused(format!(
+            "слияние ухудшит топологию примитива #{}: {changes}",
+            mesh.0
+        )));
+    }
+    Ok((b[2], a[2]))
 }
 
 pub type Edits = Worker<EditInput, EditOutcome>;

@@ -3,9 +3,14 @@
 mod camera;
 mod diagnostic_ui;
 mod edits;
+mod history;
 mod imports;
+mod lamp;
+mod model_gizmo;
 mod native;
+mod queue;
 mod saving;
+mod skybox;
 mod ui_model;
 mod viewer_ui;
 mod worker;
@@ -21,7 +26,7 @@ use edits::{
     EditCandidate, EditInput, EditKind, EditOutcome, Edits, PublishError, new_edits, publish_edit,
 };
 use imports::{Imports, PreparedAsset, new_imports};
-use saving::{AfterSave, Confirmed, Guard, SaveInput, Saves, guard, new_saves};
+use saving::{AfterSave, Confirmed, Guard, SaveInput, SaveTarget, Saves, guard, new_saves};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::{
@@ -112,6 +117,35 @@ struct App {
     pending_guard: Option<AfterSave>,
     /// Save Copy requested; the native dialog opens from tick, not an event.
     pending_save: bool,
+    /// «Сохранить» requested (Ctrl+S or button); runs from tick.
+    pending_overwrite: bool,
+    /// ADR-0040 skybox: dialog requested, background decode, decoded image
+    /// waiting for upload.
+    pending_skybox_choose: bool,
+    /// Viewport size of the last frame (lamp gizmo projection).
+    last_view: (u32, u32),
+    /// ADR-0041 gizmo drag preview, kept until its placement edit finishes.
+    model_preview: Option<model_gizmo::Delta>,
+    model_pending: bool,
+    /// Smoke: place, Undo, Redo, then a verified export of the placement.
+    smoke_place: bool,
+    place_smoke_done: bool,
+    skybox_job: Option<std::sync::mpsc::Receiver<Result<skybox::Loaded, String>>>,
+    pending_skybox: Option<skybox::Loaded>,
+    /// File the current model was opened from (or last saved and reopened).
+    working_path: Option<PathBuf>,
+    /// Path of the import in flight; becomes the working path when published.
+    pending_path: Option<PathBuf>,
+    /// Working file whose overwrite the user already confirmed once.
+    overwrite_confirmed: Option<PathBuf>,
+    /// Safe repair queue (HEAL-02, ADR-0038); None when not started.
+    queue: Option<queue::Queue>,
+    pending_queue_start: bool,
+    pending_queue_stop: bool,
+    smoke_queue: bool,
+    queue_smoke_done: bool,
+    /// Repair report history (HEAL-03, ADR-0039); None when disabled.
+    history: Option<history::History>,
     /// Prepared, verified but unpublished G002 repair shown in Preview.
     pending_preview: Option<EditCandidate>,
     /// ADR-0031 B4 smoke without UI controls: queued edits on the G002 mesh,
@@ -129,6 +163,9 @@ struct App {
     after_save: Option<AfterSave>,
     /// Smoke-only Save Copy sequence: refused existing target, new copy, reopen.
     save_smoke: Option<(PathBuf, u8)>,
+    /// ADR-0035 smoke: 0 outside edit + refused Save, 1 waiting, 2 Save,
+    /// 3 waiting, 4 reopening, 5 done.
+    overwrite_smoke: Option<u8>,
     /// Smoke-only close guard: 1 = answer Cancel, 2 = answer No, 3 = done.
     smoke_guard: u8,
     /// Repair kind exercised by --smoke-edit (default G002).
@@ -148,6 +185,10 @@ impl App {
             let frames = renderer.frames;
             let mesh_frames = renderer.mesh_frames;
             let pbr_frames = renderer.pbr_frames;
+            let grid_frames = renderer.grid_frames();
+            let sky_frames = renderer.sky_frames();
+            let environment_light_frames = renderer.environment_light_frames();
+            let panorama_frames = renderer.panorama_frames();
             let mr_frames = renderer.mr_frames;
             let normal_frames = renderer.normal_frames;
             let ao_frames = renderer.occlusion_frames;
@@ -207,6 +248,7 @@ impl App {
                     || !self.failed_replacement_preserved
                     || (self.smoke_gpu_fault.is_some() && !self.gpu_fault_preserved)
                     || (self.smoke_edit && !self.edit_smoke_done)
+                    || (self.smoke_queue && !self.queue_smoke_done)
                     || !matches!(self.smoke_guard, 0 | 3)
                     || mesh_frames < 15
                     || (pbr_required && pbr_frames < 15)
@@ -236,6 +278,17 @@ impl App {
                     eprintln!(
                         "lighting_smoke mode={:?} pbr_frames={pbr_frames} mr_frames={mr_frames} normal_frames={normal_frames} ao_frames={ao_frames} emission_frames={emission_frames}",
                         self.ui.lighting.mode
+                    );
+                    eprintln!("grid_smoke grid_frames={}", grid_frames);
+                    let (azimuth, elevation) = lamp::angles(self.ui.lighting.direction);
+                    eprintln!(
+                        "lamp_smoke azimuth={azimuth:.1} elevation={elevation:.1} color={:?} icon={} enabled={}",
+                        self.ui.lighting.color, self.ui.lamp_icon, self.ui.lighting.enabled
+                    );
+                    eprintln!(
+                        "environment_smoke environment={} sky_frames={sky_frames} panorama_frames={panorama_frames} light={} light_frames={environment_light_frames}",
+                        self.ui.environment.label(),
+                        self.ui.environment_light
                     );
                     eprintln!(
                         "SMOKE_PASS frames={frames} resize=true minimize=true restore=true close_requested=true validation_enabled={} validation_errors=0",
@@ -287,6 +340,11 @@ impl App {
         self.edits.cancel();
         self.editing = false;
         self.pending_preview = None;
+        self.pending_path = Some(path.clone());
+        if self.queue.as_ref().is_some_and(queue::Queue::running) {
+            eprintln!("queue_stopped reason=model_replaced");
+        }
+        self.queue = None;
         let ticket = self.imports.request(path);
         self.importing = true;
         self.ui.error = None;
@@ -362,11 +420,39 @@ impl App {
                 }
                 self.camera.fit(asset.snapshot().bounds);
                 self.ui.tree.replace(asset.document());
-                self.ui.status = format!("Открыт {}", asset.document().name());
+                self.ui
+                    .set_status(format!("Открыт {}", asset.document().name()), false);
                 self.ui.error = None;
                 self.confirmed = Some(Confirmed::imported(&asset));
                 self.current = Some(asset);
+                self.working_path = self.pending_path.take();
                 eprintln!("import_published ticket={}", completion.ticket);
+                if self.overwrite_smoke == Some(4) {
+                    let asset = self.current.as_ref().expect("Published above");
+                    let report = asset.diagnostics().as_ref().ok();
+                    let mesh = self.edit_mesh.unwrap_or(MeshId(0));
+                    eprintln!(
+                        "reopened_overwrite revision={} dirty={} mesh_vertices={} analysis={} target_in_mesh={}",
+                        asset.document().revision(),
+                        self.is_dirty(),
+                        asset
+                            .document()
+                            .primitives()
+                            .get(mesh.0)
+                            .map_or(0, |m| m.positions.len()),
+                        if report.is_some_and(|r| r.is_complete()) {
+                            "complete"
+                        } else {
+                            "incomplete"
+                        },
+                        report.map_or(usize::MAX, |r| edits::findings_in_mesh(
+                            r,
+                            mesh,
+                            self.smoke_repair
+                        ))
+                    );
+                    self.overwrite_smoke = Some(5);
+                }
                 if let Some((dir, 5)) = self.save_smoke.as_ref() {
                     let dir = dir.clone();
                     let asset = self.current.as_ref().expect("Published above");
@@ -385,11 +471,13 @@ impl App {
                         } else {
                             "incomplete"
                         },
-                        report.map_or(usize::MAX, |r| r
-                            .findings
-                            .iter()
-                            .filter(|f| f.code == edits::target_code(self.smoke_repair))
-                            .count()),
+                        // Findings of the repaired rule on the repaired primitive
+                        // only; siblings may legitimately keep their own.
+                        report.map_or(usize::MAX, |r| edits::findings_in_mesh(
+                            r,
+                            self.edit_mesh.unwrap_or(MeshId(0)),
+                            self.smoke_repair
+                        )),
                         self.is_dirty()
                     );
                     self.save_smoke = Some((dir, 6));
@@ -416,7 +504,8 @@ impl App {
                     return Err(error.into());
                 } else if error.code != ErrorCode::Cancelled {
                     self.ui.error = Some(error.to_string().chars().take(512).collect());
-                    self.ui.status = "Загрузка не выполнена; предыдущая модель сохранена".into();
+                    self.ui
+                        .set_status("Загрузка не выполнена; предыдущая модель сохранена", true);
                     self.title();
                     native::show_error(&error.to_string());
                 }
@@ -442,6 +531,11 @@ impl App {
         self.edit_busy = match kind {
             EditKind::RemoveDuplicates(_) => "Расчёт и проверка ремонта G002…",
             EditKind::RemoveDegenerate(_) => "Расчёт и проверка ремонта G001…",
+            EditKind::RemoveUnused(_) => "Расчёт и проверка ремонта G003…",
+            EditKind::MergeVertices(_) => "Расчёт и проверка ремонта G012…",
+            EditKind::CreateNormals(_) => "Расчёт и проверка нормалей G004…",
+            EditKind::FixNormals(_) => "Расчёт и проверка нормалей G005…",
+            EditKind::Place(_) => "Перемещение модели…",
             EditKind::Undo => "Подготовка отмены правки…",
             EditKind::Redo => "Подготовка повтора правки…",
         }
@@ -457,14 +551,51 @@ impl App {
             return Ok(());
         }
         self.editing = false;
+        // ADR-0041: the drag preview ends with its edit, applied or refused.
+        if std::mem::take(&mut self.model_pending) {
+            self.model_preview = None;
+        }
         let prepare_ms = self.edit_started.elapsed().as_millis();
+        let queued = self
+            .queue
+            .as_ref()
+            .is_some_and(|q| q.running() && q.current.is_some());
+        if queued {
+            match &completion.result {
+                Ok(EditOutcome::NoChange(_)) => {
+                    self.queue_skip("нечего исправлять");
+                    return Ok(());
+                }
+                Err(error)
+                    if matches!(
+                        error.code,
+                        ad_document::ErrorCode::Unsupported
+                            | ad_document::ErrorCode::InvalidGeometry
+                    ) =>
+                {
+                    let reason = error.message.clone();
+                    self.queue_skip(&reason);
+                    return Ok(());
+                }
+                Err(error) => {
+                    eprintln!("edit_failed code={:?}", error.code);
+                    let reason = format!("шаг не подготовлен: {error}");
+                    self.stop_queue(&reason);
+                    return Ok(());
+                }
+                Ok(EditOutcome::Candidate(_)) => {}
+            }
+        }
         let candidate = match completion.result {
             Ok(EditOutcome::NoChange(preview)) => {
                 eprintln!(
-                    "edit_no_change mesh={} triangles={}",
-                    preview.mesh.0, preview.before_triangles
+                    "edit_no_change mesh={} triangles={} vertices={}",
+                    preview.mesh.0, preview.before_triangles, preview.before_vertices
                 );
-                self.ui.status = "Повторных треугольников нет; модель не изменена".into();
+                self.ui.set_status(
+                    "Исправлять нечего: дефект в примитиве не найден; модель не изменена",
+                    false,
+                );
                 return Ok(());
             }
             Ok(EditOutcome::Candidate(candidate)) => *candidate,
@@ -473,24 +604,32 @@ impl App {
                 if self.smoke_edit {
                     return Err(error.into());
                 }
-                self.ui.status = format!("Правка не подготовлена, модель прежняя: {error}");
+                self.ui.set_status(
+                    format!("Правка не подготовлена, модель прежняя: {error}"),
+                    true,
+                );
                 return Ok(());
             }
         };
         if let Some(info) = candidate.info() {
             eprintln!(
-                "edit_preview mesh={} before={} after={} references={} complete={} target_left={}",
+                "edit_preview mesh={} before={} after={} references={} complete={} target_left={} vertices_before={} vertices_after={} appended_bytes={} changed_normals={}",
                 info.mesh.0,
                 info.before,
                 info.after,
                 info.references,
                 info.complete,
-                info.target_left.map_or(-1, |n| n as i64)
+                info.target_left.map_or(-1, |n| n as i64),
+                info.vertices_before,
+                info.vertices_after,
+                info.appended_bytes,
+                info.changed_normals
             );
             eprintln!("edit_timing stage=prepare kind=remove prepare_ms={prepare_ms}");
-            self.ui.status = "Предпросмотр готов; модель не изменена".into();
+            self.ui
+                .set_status("Предпросмотр готов; модель не изменена", false);
             self.pending_preview = Some(candidate);
-            if self.smoke_edit {
+            if self.smoke_edit || queued {
                 return self.apply_preview();
             }
             return Ok(());
@@ -512,13 +651,23 @@ impl App {
         self.pending_preview = None;
         let kind = candidate.kind();
         let mesh = candidate.mesh();
-        let removed = candidate
-            .preview()
-            .map_or(0, |p| p.before_triangles - p.after_triangles);
+        let removed = candidate.preview().map_or(0, |p| {
+            p.before_triangles - p.after_triangles + p.before_vertices - p.after_vertices
+        });
         let (Some(asset), Some(renderer)) = (self.current.as_mut(), self.renderer.as_mut()) else {
             return Ok(());
         };
         let started = Instant::now();
+        let queued = self.queue.as_ref().is_some_and(|q| q.current.is_some());
+        let mut queue_failure = None;
+        let step = candidate.preview().map(|p| {
+            (
+                (p.before_triangles, p.after_triangles),
+                (p.before_vertices, p.after_vertices),
+                p.changed_normals,
+            )
+        });
+        let rule = kind.repair().map(|(_, k)| k);
         let published = publish_edit(asset, renderer, candidate, &Cancellation::default());
         eprintln!(
             "edit_timing stage=publish kind={} publish_ms={}",
@@ -531,7 +680,7 @@ impl App {
                 let count =
                     |kind| report.map_or(usize::MAX, |r| edits::findings_in_mesh(r, mesh, kind));
                 eprintln!(
-                    "edit_published kind={} removed={removed} mesh={} revision={} scene_revision={} mesh_triangles={} analysis={} g001_in_mesh={} g002_in_mesh={} undo={} redo={} consistent={}",
+                    "edit_published kind={} removed={removed} mesh={} revision={} scene_revision={} mesh_triangles={} analysis={} g001_in_mesh={} g002_in_mesh={} undo={} redo={} consistent={} mesh_vertices={} g003_in_mesh={} g012_in_mesh={} g004_in_mesh={} g005_in_mesh={}",
                     edit_name(kind),
                     mesh.0,
                     tag.revision,
@@ -550,16 +699,57 @@ impl App {
                     count(ad_heal::RepairKind::DuplicateTriangles),
                     asset.session.history_usage().undo,
                     asset.session.history_usage().redo,
-                    asset.is_consistent()
+                    asset.is_consistent(),
+                    asset
+                        .document()
+                        .primitives()
+                        .get(mesh.0)
+                        .map_or(0, |m| m.positions.len()),
+                    count(ad_heal::RepairKind::UnusedVertices),
+                    count(ad_heal::RepairKind::DuplicateVertices),
+                    count(ad_heal::RepairKind::MissingNormals),
+                    count(ad_heal::RepairKind::ZeroNormals)
                 );
-                self.ui.status = format!("Правка применена; ревизия {}", tag.revision);
+                self.ui
+                    .set_status(format!("Правка применена; ревизия {}", tag.revision), false);
+                let primitive = asset.document().primitives().get(mesh.0);
+                let (t, v) = (
+                    primitive.map_or(0, |m| m.indices.len() / 3),
+                    primitive.map_or(0, |m| m.positions.len()),
+                );
+                let (triangles, vertices, normals) = step.unwrap_or(((t, t), (v, v), 0));
+                let record = history::Record {
+                    time: history::now(),
+                    session: 0,
+                    model: asset.document().name().to_owned(),
+                    source_bytes: asset.document().source().len() as u64,
+                    action: if queued { "queue" } else { edit_name(kind) }.into(),
+                    rule: rule.map_or("-", edits::repair_label).into(),
+                    mesh: Some(mesh.0),
+                    triangles,
+                    vertices,
+                    normals,
+                    left: rule.and_then(|k| report.map(|r| edits::findings_in_mesh(r, mesh, k))),
+                    complete: report.is_some_and(|r| r.is_complete()),
+                    revision: tag.revision,
+                };
+                if let Some(q) = self.queue.as_mut().filter(|q| q.current.is_some()) {
+                    q.completed();
+                }
+                self.record_history(record);
             }
             Err(error)
                 if !self.smoke_edit
                     && matches!(error, PublishError::Stale | PublishError::Busy) =>
             {
                 eprintln!("edit_refused kind={} reason={error:?}", edit_name(kind));
-                self.ui.status = format!("Правка не применена: {error}. Повторите предпросмотр.");
+                self.ui.set_status(
+                    format!("Правка не применена: {error}. Повторите предпросмотр."),
+                    true,
+                );
+                if queued {
+                    queue_failure = Some(format!("шаг не применён: {error}"));
+                }
             }
             Err(error) => {
                 let revision = asset.document().revision();
@@ -567,6 +757,9 @@ impl App {
                     "edit_refused kind={} reason={error:?} revision={revision}",
                     edit_name(kind)
                 );
+                if queued {
+                    queue_failure = Some(format!("шаг не применён: {error}"));
+                }
                 if std::mem::take(&mut self.edit_fault_expected)
                     && matches!(error, PublishError::Gpu(_))
                 {
@@ -588,8 +781,14 @@ impl App {
                 if self.smoke_edit {
                     return Err(format!("Smoke edit refused: {error}").into());
                 }
-                self.ui.status = format!("Правка не применена, модель прежняя: {error}");
+                self.ui.set_status(
+                    format!("Правка не применена, модель прежняя: {error}"),
+                    true,
+                );
             }
+        }
+        if let Some(reason) = queue_failure {
+            self.stop_queue(&reason);
         }
         self.title();
         Ok(())
@@ -600,6 +799,21 @@ impl App {
         if !self.smoke_edit || self.importing || self.editing || !self.failed_replacement_preserved
         {
             return Ok(());
+        }
+        if self.edit_mesh.is_none() && self.smoke_place {
+            let asset = self.current.as_ref().ok_or("Place smoke has no model")?;
+            let bounds = asset.snapshot().bounds;
+            let mut delta = model_gizmo::Delta::new(model_gizmo::pivot(bounds));
+            delta.factor = 1.5;
+            delta.offset = [model_gizmo::handle_length(bounds), 0., 0.];
+            let placement = delta.placement(asset.document().placement());
+            eprintln!(
+                "place_smoke_target scale={} translation={:?}",
+                placement.scale, placement.translation
+            );
+            self.edit_mesh = Some(MeshId(0));
+            self.edit_queue =
+                VecDeque::from([EditKind::Place(placement), EditKind::Undo, EditKind::Redo]);
         }
         if self.edit_mesh.is_none() {
             let mesh = self
@@ -622,8 +836,12 @@ impl App {
             ]);
         }
         let Some(kind) = self.edit_queue.pop_front() else {
-            if self.saving || !self.advance_save_smoke() {
+            if self.saving || !self.advance_overwrite_smoke() || !self.advance_save_smoke() {
                 return Ok(());
+            }
+            if self.smoke_place && !self.place_smoke_done {
+                self.place_smoke_done = true;
+                self.verify_place_export()?;
             }
             if !self.edit_smoke_done {
                 self.edit_smoke_done = true;
@@ -638,11 +856,217 @@ impl App {
         self.request_edit(kind);
         Ok(())
     }
+    /// Place smoke: the current placement must export, reimport and compare
+    /// exactly (the same proof Save Copy uses), without writing a file.
+    fn verify_place_export(&mut self) -> GpuResult<()> {
+        let asset = self.current.as_ref().ok_or("Place smoke has no model")?;
+        let document = asset.document();
+        let cancel = Cancellation::default();
+        let verified = ad_formats::prepare_glb(
+            document,
+            document.tag(),
+            ad_formats::ExportLimits::default(),
+            ad_document::ImportLimits::default(),
+            &cancel,
+        )?;
+        let reimported = ad_formats::import_glb(
+            verified.bytes().clone(),
+            "place-smoke".into(),
+            ad_document::DocumentId(u64::MAX),
+            ad_document::ImportLimits::default(),
+            &cancel,
+        )?;
+        ad_formats::compare_reimported(document, &reimported, &cancel)?;
+        let placement = document.placement();
+        eprintln!(
+            "place_export_verified revision={} scale={} translation={:?} bytes={} source_bytes={}",
+            document.revision(),
+            placement.scale,
+            placement.translation,
+            verified.bytes().len(),
+            document.source().len()
+        );
+        Ok(())
+    }
+    /// HEAL-03: appends one record; a failure is a warning, never an edit error.
+    fn record_history(&mut self, mut record: history::Record) {
+        let Some(history) = self.history.as_ref() else {
+            return;
+        };
+        record.session = history.session;
+        match history.append(&record) {
+            Ok(()) => eprintln!(
+                "history_append action={} rule={} ok=true",
+                record.action, record.rule
+            ),
+            Err(error) => {
+                eprintln!("history_append action={} ok=false", record.action);
+                self.ui.set_status(error, true);
+            }
+        }
+        if self.ui.history.open {
+            self.load_history();
+        }
+    }
+    fn load_history(&mut self) {
+        let view = &mut self.ui.history;
+        view.lines.clear();
+        view.corrupt = 0;
+        view.error = None;
+        let Some(history) = self.history.as_ref() else {
+            view.error = Some("История ремонта отключена в этом запуске".into());
+            return;
+        };
+        view.path = history.path().display().to_string();
+        match history.load() {
+            Ok((records, corrupt)) => {
+                view.corrupt = corrupt;
+                view.lines = records
+                    .iter()
+                    .rev()
+                    .map(|r| (r.session == history.session, viewer_ui::history_line(r)))
+                    .collect();
+            }
+            Err(error) => view.error = Some(error),
+        }
+    }
+    /// HEAL-02: starts a queue on the current model (ADR-0038).
+    fn start_queue(&mut self) {
+        if self.current.is_none() || self.importing || self.saving {
+            return;
+        }
+        if self.queue.as_ref().is_some_and(queue::Queue::running) {
+            return;
+        }
+        // A pending manual preview would be stale once the queue edits.
+        self.pending_preview = None;
+        self.queue = Some(queue::Queue::default());
+        eprintln!("queue_started");
+        self.ui.set_status("Очередь ремонтов запущена", false);
+    }
+    fn stop_queue(&mut self, reason: &str) {
+        let Some(q) = self.queue.as_mut().filter(|q| q.running()) else {
+            return;
+        };
+        q.fail(reason);
+        if self.editing {
+            self.edits.cancel();
+            self.editing = false;
+        }
+        self.pending_preview = None;
+        self.finish_queue();
+    }
+    fn queue_skip(&mut self, reason: &str) {
+        if let Some(q) = self.queue.as_mut() {
+            if let Some((mesh, kind)) = q.current {
+                eprintln!(
+                    "queue_skip step={} mesh={} reason={reason}",
+                    edits::repair_label(kind),
+                    mesh.0
+                );
+            }
+            q.skip(reason);
+        }
+    }
+    /// Chooses and requests the next step when nothing else is running.
+    fn advance_queue(&mut self) {
+        if self.editing || self.importing || self.saving {
+            return;
+        }
+        let Some(mut q) = self.queue.take() else {
+            return;
+        };
+        if !q.running() || q.current.is_some() {
+            self.queue = Some(q);
+            return;
+        }
+        let next = match self.current.as_ref().map(|a| a.diagnostics().as_ref()) {
+            Some(Ok(report)) => q.next(report),
+            _ => {
+                q.fail("анализ модели недоступен");
+                queue::Next::Finished
+            }
+        };
+        self.queue = Some(q);
+        match next {
+            queue::Next::Step(mesh, kind) => {
+                eprintln!(
+                    "queue_step step={} mesh={}",
+                    edits::repair_label(kind),
+                    mesh.0
+                );
+                if !self.request_edit(EditKind::from_repair(mesh, kind)) {
+                    self.stop_queue("шаг не запущен");
+                }
+            }
+            queue::Next::Finished => self.finish_queue(),
+        }
+    }
+    fn finish_queue(&mut self) {
+        let Some(q) = self.queue.as_ref() else {
+            return;
+        };
+        let remaining = self
+            .current
+            .as_ref()
+            .and_then(|a| a.diagnostics().as_ref().ok())
+            .map_or(usize::MAX, queue::Queue::remaining);
+        eprintln!(
+            "queue_done done={} skipped={} remaining={remaining} stopped={} reason={}",
+            q.done.len(),
+            q.skipped.len(),
+            q.stop.is_some(),
+            q.stop.as_deref().unwrap_or("-")
+        );
+        let summary = format!(
+            "Очередь ремонтов: выполнено {}, пропущено {}",
+            q.done.len(),
+            q.skipped.len()
+        );
+        match &q.stop {
+            Some(reason) => self
+                .ui
+                .set_status(format!("{summary}; остановлена: {reason}"), true),
+            None => self.ui.set_status(summary, false),
+        }
+        if self.smoke_queue {
+            self.queue_smoke_done = true;
+        }
+    }
     fn is_dirty(&self) -> bool {
         match (self.current.as_ref(), self.confirmed.as_ref()) {
             (Some(asset), Some(confirmed)) => confirmed.is_dirty(asset),
             _ => false,
         }
+    }
+    /// Smoke-only «Сохранить» sequence (ADR-0035); true when finished or absent.
+    fn advance_overwrite_smoke(&mut self) -> bool {
+        let Some(stage) = self.overwrite_smoke else {
+            return true;
+        };
+        let Some(path) = self.working_path.clone() else {
+            return false;
+        };
+        match stage {
+            0 => {
+                // Another program edits the working file: Save must refuse.
+                use std::io::Write;
+                let appended = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&path)
+                    .and_then(|mut f| f.write_all(b"outside edit"));
+                eprintln!("overwrite_smoke outside_edit={}", appended.is_ok());
+                self.overwrite_smoke = Some(1);
+                self.start_overwrite();
+            }
+            2 => {
+                self.overwrite_smoke = Some(3);
+                self.start_overwrite();
+            }
+            5 => return true,
+            _ => (),
+        }
+        false
     }
     /// Smoke-only Save Copy sequence; returns true when finished or absent.
     /// Stages: 0 start refused save, 1 waiting, 2 start new copy, 3 waiting,
@@ -696,7 +1120,8 @@ impl App {
             Ok(Some(path)) => self.start_save_to(path, after),
             Ok(None) => {
                 eprintln!("save_cancelled dialog=true");
-                self.ui.status = "Сохранение отменено; правки не сохранены".into();
+                self.ui
+                    .set_status("Сохранение отменено; правки не сохранены", false);
             }
             Err(error) => native::show_error(&error.to_string()),
         }
@@ -711,12 +1136,57 @@ impl App {
         let ticket = self.saves.request(SaveInput {
             session: asset.session.clone(),
             base: asset.generation.stamp.clone(),
-            path,
+            target: SaveTarget::Copy(path),
         });
         self.saving = true;
         self.after_save = after;
         eprintln!(
             "save_started ticket={ticket} revision={}",
+            asset.document().revision()
+        );
+    }
+    /// «Сохранить» (ADR-0035): replaces the working file after verification.
+    /// The first overwrite of each working file is confirmed in a native dialog.
+    fn start_overwrite(&mut self) {
+        if self.saving || self.editing || self.importing {
+            return;
+        }
+        let (Some(asset), Some(path)) = (self.current.as_ref(), self.working_path.clone()) else {
+            return;
+        };
+        if !self.is_dirty() {
+            self.ui
+                .set_status("Изменений нет; рабочий файл уже совпадает с моделью", false);
+            return;
+        }
+        if self.overwrite_confirmed.as_ref() != Some(&path) {
+            let Some(window) = self.window.as_ref() else {
+                return;
+            };
+            if self.overwrite_smoke.is_some() {
+                native::answer_next_dialog(saving::UnsavedChoice::SaveCopy);
+            }
+            eprintln!("save_overwrite_confirm asked=true");
+            if !native::ask_overwrite(window, &path.display().to_string()) {
+                eprintln!("save_overwrite_declined");
+                self.ui
+                    .set_status("Сохранение отменено; правки не сохранены", false);
+                return;
+            }
+            self.overwrite_confirmed = Some(path.clone());
+        }
+        let ticket = self.saves.request(SaveInput {
+            session: asset.session.clone(),
+            base: asset.generation.stamp.clone(),
+            target: SaveTarget::Replace {
+                path,
+                on_disk: asset.document().source().clone(),
+            },
+        });
+        self.saving = true;
+        self.after_save = None;
+        eprintln!(
+            "save_started ticket={ticket} revision={} replace=true",
             asset.document().revision()
         );
     }
@@ -739,14 +1209,60 @@ impl App {
                     _ => false,
                 };
                 eprintln!(
-                    "save_published revision={} bytes={} exact_copy={} reimported_triangles={} cleanup_warning={} accepted={accepted} dirty={}",
+                    "save_published revision={} bytes={} exact_copy={} reimported_triangles={} cleanup_warning={} accepted={accepted} dirty={} replaced={} backup_kept={}",
                     tag.revision,
                     outcome.bytes,
                     outcome.exact_copy,
                     outcome.reimported_triangles,
                     outcome.cleanup_warning,
-                    self.is_dirty()
+                    self.is_dirty(),
+                    outcome.replaced,
+                    outcome.backup_kept
                 );
+                let saved = history::Record {
+                    time: history::now(),
+                    session: 0,
+                    model: self
+                        .current
+                        .as_ref()
+                        .map_or(String::new(), |a| a.document().name().to_owned()),
+                    source_bytes: outcome.bytes as u64,
+                    action: if outcome.replaced {
+                        "save"
+                    } else {
+                        "save-copy"
+                    }
+                    .into(),
+                    rule: "-".into(),
+                    mesh: None,
+                    triangles: (outcome.reimported_triangles, outcome.reimported_triangles),
+                    vertices: (0, 0),
+                    normals: 0,
+                    left: None,
+                    complete: true,
+                    revision: tag.revision,
+                };
+                self.record_history(saved);
+                if outcome.replaced && self.overwrite_smoke == Some(3) {
+                    self.overwrite_smoke = Some(4);
+                }
+                if outcome.replaced {
+                    // The working file now holds the saved bytes: reopen it as
+                    // a fresh revision-0 document (ADR-0035 safe default).
+                    self.ui.set_status(
+                        if outcome.backup_kept {
+                            format!(
+                                "Сохранено и проверено: {path}. Резервная копия рядом не удалена"
+                            )
+                        } else {
+                            format!("Сохранено и проверено: {path}")
+                        },
+                        outcome.backup_kept,
+                    );
+                    self.start_import(PathBuf::from(&path));
+                    self.title();
+                    return Ok(());
+                }
                 if stage == Some(1) {
                     return Err("Smoke Save Copy replaced an existing destination".into());
                 }
@@ -754,14 +1270,24 @@ impl App {
                     self.save_smoke = Some((dir, 4));
                 }
                 if accepted {
-                    self.ui.status = format!("Копия сохранена и проверена: {path}");
+                    self.ui
+                        .set_status(format!("Копия сохранена и проверена: {path}"), false);
                     if let Some(after) = after {
                         self.perform(after, event_loop);
+                    } else if self.smoke.is_none()
+                        && self
+                            .window
+                            .as_ref()
+                            .is_some_and(|w| native::ask_rebind(w, &path))
+                    {
+                        // ADR-0035: the verified copy becomes the working file.
+                        eprintln!("save_rebind path_changed=true");
+                        self.start_import(PathBuf::from(&path));
                     }
                 } else {
-                    self.ui.status = format!(
+                    self.ui.set_status(format!(
                         "Копия {path} сохранена для более ранней ревизии; текущие правки не сохранены"
-                    );
+                    ), true);
                 }
             }
             Err(error) => {
@@ -771,13 +1297,41 @@ impl App {
                     self.is_dirty(),
                     error.message
                 );
-                if let (Some(1), Some((dir, _))) = (stage, self.save_smoke.clone()) {
+                if self.overwrite_smoke == Some(1) && error.code == ad_document::ErrorCode::Conflict
+                {
+                    // The outside edit must survive untouched; then restore the
+                    // bytes the program opened and try «Сохранить» again.
+                    let path = self.working_path.clone().ok_or("No working path")?;
+                    let source = self
+                        .current
+                        .as_ref()
+                        .ok_or("No model")?
+                        .document()
+                        .source()
+                        .clone();
+                    let on_disk = std::fs::read(&path)?;
+                    let untouched = on_disk.len() == source.len() + 12
+                        && on_disk.starts_with(&source)
+                        && on_disk.ends_with(b"outside edit");
+                    eprintln!("overwrite_conflict refused=true outside_edit_kept={untouched}");
+                    if !untouched {
+                        return Err("Refused Save changed the working file".into());
+                    }
+                    std::fs::write(&path, &source)?;
+                    self.overwrite_smoke = Some(2);
+                } else if let (Some(1), Some((dir, _))) = (stage, self.save_smoke.clone()) {
                     self.save_smoke = Some((dir, 2));
                 } else if self.smoke.is_some() {
                     return Err(error.into());
                 } else {
-                    self.ui.status = "Копия не сохранена; правки остаются несохранёнными".into();
-                    native::show_error(&format!("Копия не сохранена: {error}"));
+                    let what = if error.code == ad_document::ErrorCode::Conflict {
+                        "Рабочий файл изменён на диске другой программой и не перезаписан. Сохраните копию"
+                    } else {
+                        "Файл не сохранён"
+                    };
+                    self.ui
+                        .set_status(format!("{what}; правки остаются несохранёнными"), true);
+                    native::show_error(&format!("{what}: {error}"));
                 }
             }
         }
@@ -787,7 +1341,8 @@ impl App {
     /// Close/replace guard (decision 2): ask only when the model is dirty.
     fn guarded(&mut self, after: AfterSave, event_loop: &ActiveEventLoop) {
         if self.saving {
-            self.ui.status = "Дождитесь окончания сохранения копии".into();
+            self.ui
+                .set_status("Дождитесь окончания сохранения копии", false);
             return;
         }
         let dirty = self.is_dirty();
@@ -812,7 +1367,8 @@ impl App {
             Guard::Proceed => self.perform(after, event_loop),
             Guard::SaveThenProceed => self.start_save(Some(after)),
             Guard::Stay | Guard::Ask => {
-                self.ui.status = "Действие отменено; модель и правки сохранены в окне".into();
+                self.ui
+                    .set_status("Действие отменено; модель и правки сохранены в окне", false);
                 if self.smoke_guard == 1 && after == AfterSave::Close {
                     eprintln!(
                         "unsaved_guard_stayed window_open={} dirty={}",
@@ -847,10 +1403,136 @@ impl App {
         }
     }
 
+    /// ADR-0040 skybox: dialog, background decode and upload. Failures leave
+    /// the preset sky and say why in the status line.
+    fn poll_skybox(&mut self) {
+        if std::mem::take(&mut self.pending_skybox_choose)
+            && let Some(window) = self.window.as_ref()
+        {
+            match native::choose_image(window) {
+                Ok(Some(path)) => {
+                    self.skybox_job = Some(skybox::spawn(path));
+                    self.ui.set_status("Загрузка скайбокса...", false);
+                }
+                Ok(None) => (),
+                Err(error) => self.ui.set_status(error.to_string(), true),
+            }
+        }
+        if let Some(job) = self.skybox_job.as_ref() {
+            match job.try_recv() {
+                Ok(Ok(loaded)) => {
+                    self.skybox_job = None;
+                    self.pending_skybox = Some(loaded);
+                }
+                Ok(Err(error)) => {
+                    self.skybox_job = None;
+                    self.ui.set_status(error, true);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => (),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.skybox_job = None;
+                    self.ui.set_status("Скайбокс не загружен", true);
+                }
+            }
+        }
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+        if let Some(loaded) = self.pending_skybox.take() {
+            match renderer.set_skybox_image(Some(&loaded.image)) {
+                Ok(()) => {
+                    eprintln!(
+                        "skybox_loaded name={} size={}x{}",
+                        loaded.name, loaded.image.width, loaded.image.height
+                    );
+                    if loaded.not_panorama {
+                        self.ui.set_status(
+                            format!(
+                                "Скайбокс {}: не 2:1 ({}x{}), картинка будет растянута",
+                                loaded.name, loaded.image.width, loaded.image.height
+                            ),
+                            true,
+                        );
+                    } else {
+                        self.ui
+                            .set_status(format!("Скайбокс: {}", loaded.name), false);
+                    }
+                    self.ui.skybox_name = Some(loaded.name);
+                    self.ui.skybox_light = Some(loaded.light);
+                    self.ui.skybox_on = true;
+                }
+                Err(error) => {
+                    self.ui.skybox_name = None;
+                    self.ui.skybox_light = None;
+                    self.ui
+                        .set_status(format!("Скайбокс не загружен: {error}"), true);
+                }
+            }
+        }
+    }
+
+    /// ADR-0041: gizmo drags update the preview; release or reset requests
+    /// one placement edit.
+    fn model_gizmo_actions(&mut self, actions: &viewer_ui::Actions, width: u32, height: u32) {
+        let Some(asset) = self.current.as_ref() else {
+            return;
+        };
+        let bounds = asset.snapshot().bounds;
+        let current = asset.document().placement();
+        if let Some((handle, [nx, ny])) = actions.model_drag
+            && !self.model_pending
+        {
+            let delta = self
+                .model_preview
+                .get_or_insert_with(|| model_gizmo::Delta::new(model_gizmo::pivot(bounds)));
+            let drag = [nx * width as f32, ny * height as f32];
+            match handle {
+                model_gizmo::Handle::Axis(axis) => {
+                    if let Some(g) = model_gizmo::screen(&self.camera, bounds, None, width, height)
+                        && let Some(end) = g.ends[axis]
+                    {
+                        let axis_px = [
+                            (end[0] - g.pivot[0]) * width as f32,
+                            (end[1] - g.pivot[1]) * height as f32,
+                        ];
+                        let len = model_gizmo::handle_length(bounds);
+                        model_gizmo::drag_axis(delta, axis, len, drag, axis_px);
+                    }
+                }
+                model_gizmo::Handle::Scale => model_gizmo::drag_scale(delta, current, drag[1]),
+            }
+        }
+        if actions.model_drag_end && !self.model_pending {
+            match self.model_preview {
+                Some(delta) if !delta.is_noop() => {
+                    let placement = delta.placement(current);
+                    if placement.valid() && self.request_edit(EditKind::Place(placement)) {
+                        self.model_pending = true;
+                    } else {
+                        self.model_preview = None;
+                        self.ui.set_status(
+                            "Модель сейчас нельзя переместить: идёт другая работа",
+                            true,
+                        );
+                    }
+                }
+                _ => self.model_preview = None,
+            }
+        }
+        if actions.model_reset
+            && !current.is_identity()
+            && !self.model_pending
+            && !self.request_edit(EditKind::Place(ad_document::Placement::IDENTITY))
+        {
+            self.ui
+                .set_status("Положение не сброшено: идёт другая работа", true);
+        }
+    }
+
     fn cancel_import(&mut self) {
         self.imports.cancel();
         self.importing = false;
-        self.ui.status = "Загрузка отменена".into();
+        self.ui.set_status("Загрузка отменена", false);
         self.title();
     }
 
@@ -862,6 +1544,37 @@ impl App {
             return Ok(());
         }
         self.refresh_edit_ui();
+        // ADR-0040 lamp gizmo: lamp 1.25 model radii from the centre.
+        let (view_w, view_h) = self.last_view;
+        // ADR-0041 model gizmo at the (previewed) bottom centre.
+        self.ui.model_gizmo = self.current.as_ref().and_then(|asset| {
+            model_gizmo::screen(
+                &self.camera,
+                asset.snapshot().bounds,
+                self.model_preview.as_ref(),
+                view_w,
+                view_h,
+            )
+        });
+        self.ui.placement = self
+            .current
+            .as_ref()
+            .map_or(ad_document::Placement::IDENTITY, |a| {
+                a.document().placement()
+            });
+        self.ui.lamp_gizmo = self.current.as_ref().and_then(|_| {
+            Some(viewer_ui::LampGizmo {
+                lamp: self.camera.project_direction(
+                    self.ui.lighting.direction,
+                    LAMP_DISTANCE,
+                    view_w,
+                    view_h,
+                )?,
+                center: self
+                    .camera
+                    .project_direction([0., 1., 0.], 0., view_w, view_h)?,
+            })
+        });
         let (mut frame, actions) = self
             .ui
             .frame(&window, self.current.as_ref(), self.importing);
@@ -873,12 +1586,61 @@ impl App {
         {
             self.camera.fit(asset.snapshot().bounds);
         }
+        {
+            let (width, height) = frame.scene.map_or((1, 1), |r| (r.width, r.height));
+            self.model_gizmo_actions(&actions, width, height);
+        }
         let renderer = self.renderer.as_mut().expect("Drawable renderer checked");
         let (width, height) = frame.scene.map_or((1, 1), |r| (r.width, r.height));
-        renderer.set_camera(
-            self.camera.matrix(width, height),
-            self.camera.eye(width, height),
-        )?;
+        self.last_view = (width, height);
+        if let Some([dx, dy]) = actions.lamp_drag {
+            let camera = &self.camera;
+            self.ui.lighting.direction = lamp::drag(self.ui.lighting.direction, dx, dy, |d| {
+                camera.project_direction(d, LAMP_DISTANCE, width, height)
+            });
+        }
+        if actions.lamp_from_camera {
+            self.ui.lighting.direction = self.camera.view_direction();
+        }
+        renderer.set_grid(self.ui.floor.and_then(|theme| {
+            self.current.as_ref().and_then(|asset| {
+                // ADR-0041: the floor stays at the imported model's bottom,
+                // so a moved model is seen moving against it.
+                let placement = asset.document().placement();
+                let bounds = asset.snapshot().bounds;
+                ad_render_vulkan::grid::grid_for_bounds(
+                    placement.unapply(bounds.min),
+                    placement.unapply(bounds.max),
+                )
+                .map(|grid| ad_render_vulkan::grid::GridSettings { theme, ..grid })
+            })
+        }));
+        let view_projection = self.camera.matrix(width, height);
+        // ADR-0040 environment: sky only, lamps/exposure stay as they are.
+        renderer.set_sky(Some(ad_render_vulkan::sky::SkySettings {
+            inverse_view_projection: glam::Mat4::from_cols_array_2d(&view_projection)
+                .inverse()
+                .to_cols_array_2d(),
+            environment: self.ui.environment,
+            panorama: self.ui.skybox_on.then(|| self.ui.skybox_yaw.to_radians()),
+        }));
+        let panorama_light = self.ui.skybox_light.filter(|_| self.ui.skybox_on);
+        renderer.set_environment_light(self.ui.environment_light.then(|| {
+            ad_render_vulkan::sky::EnvironmentLight {
+                colors: panorama_light.unwrap_or_else(|| self.ui.environment.light_colors()),
+                strength: self.ui.environment_strength,
+            }
+        }));
+        renderer.set_camera(view_projection, self.camera.eye(width, height))?;
+        renderer.set_model_preview(self.model_preview.map(|delta| {
+            let m = delta.matrix();
+            (
+                (glam::Mat4::from_cols_array_2d(&view_projection) * m).to_cols_array_2d(),
+                m.inverse()
+                    .transform_point3(glam::Vec3::from_array(self.camera.eye(width, height)))
+                    .to_array(),
+            )
+        }));
         renderer.set_textures_enabled(self.ui.textures);
         renderer.set_mr_maps_enabled(self.ui.mr_maps);
         renderer.set_normal_maps_enabled(self.ui.normal_maps);
@@ -893,9 +1655,41 @@ impl App {
                 height: size.height,
             })?;
         }
+        if actions.skybox_load {
+            self.pending_skybox_choose = true;
+        }
+        if actions.skybox_remove {
+            self.ui.skybox_name = None;
+            self.ui.skybox_light = None;
+            self.ui.skybox_on = false;
+            if let Some(renderer) = self.renderer.as_mut() {
+                renderer.set_skybox_image(None)?;
+            }
+        }
         // Open native dialogs only after the acquired image has been submitted.
         if actions.open {
             self.pending_guard = Some(AfterSave::Choose);
+        }
+        if actions.save {
+            self.pending_overwrite = true;
+        }
+        if actions.history_open {
+            self.ui.history.open = true;
+            self.load_history();
+        }
+        if actions.history_clear {
+            if let Some(history) = self.history.as_ref()
+                && let Err(error) = history.clear()
+            {
+                self.ui.set_status(error, true);
+            }
+            self.load_history();
+        }
+        if actions.queue_start {
+            self.pending_queue_start = true;
+        }
+        if actions.queue_stop {
+            self.pending_queue_stop = true;
         }
         if actions.save_copy {
             self.pending_save = true;
@@ -904,7 +1698,8 @@ impl App {
             self.request_edit(EditKind::from_repair(mesh, kind));
         }
         if actions.discard_preview && self.pending_preview.take().is_some() {
-            self.ui.status = "Предпросмотр закрыт; модель не изменена".into();
+            self.ui
+                .set_status("Предпросмотр закрыт; модель не изменена", false);
         }
         if actions.apply {
             self.apply_preview()?;
@@ -932,12 +1727,13 @@ impl App {
     fn cancel_edit(&mut self) {
         if self.saving {
             self.saves.interrupt();
-            self.ui.status = "Отмена сохранения…".into();
+            self.ui.set_status("Отмена сохранения…", false);
         }
         if self.editing {
             self.edits.cancel();
             self.editing = false;
-            self.ui.status = "Подготовка правки отменена; модель не изменена".into();
+            self.ui
+                .set_status("Подготовка правки отменена; модель не изменена", false);
         }
     }
     fn refresh_edit_ui(&mut self) {
@@ -951,6 +1747,22 @@ impl App {
             can_undo: history.is_some_and(|h| h.0),
             can_redo: history.is_some_and(|h| h.1),
             can_save: self.current.is_some(),
+            can_overwrite: self.current.is_some() && self.working_path.is_some(),
+            queue: self.queue.as_ref().map(|q| viewer_ui::QueueUi {
+                running: q.running(),
+                done: q
+                    .done
+                    .iter()
+                    .map(|&(m, k)| queue::step_name(m, k))
+                    .collect(),
+                skipped: q
+                    .skipped
+                    .iter()
+                    .map(|(m, k, r)| format!("{} — {r}", queue::step_name(*m, *k)))
+                    .collect(),
+                current: q.current.map(|(m, k)| queue::step_name(m, k)),
+                stop: q.stop.clone(),
+            }),
             dirty: self.is_dirty(),
         };
         if self.saving {
@@ -965,6 +1777,10 @@ impl App {
         self.poll_import()?;
         self.poll_edit()?;
         self.poll_save(event_loop)?;
+        if std::mem::take(&mut self.pending_overwrite) {
+            self.start_overwrite();
+        }
+        self.poll_skybox();
         if std::mem::take(&mut self.pending_save) {
             self.start_save(None);
         }
@@ -975,6 +1791,21 @@ impl App {
             }
         }
         self.advance_edit_smoke()?;
+        if self.smoke_queue
+            && self.queue.is_none()
+            && self.failed_replacement_preserved
+            && self.current.is_some()
+            && !self.importing
+        {
+            self.pending_queue_start = true;
+        }
+        if std::mem::take(&mut self.pending_queue_stop) {
+            self.stop_queue("остановлено пользователем");
+        }
+        if std::mem::take(&mut self.pending_queue_start) {
+            self.start_queue();
+        }
+        self.advance_queue();
         if self.smoke_import
             && matches!(self.smoke, Some(SmokeStage::Initial))
             && self.current.is_some()
@@ -1030,7 +1861,8 @@ impl App {
                 || self.importing
                 || !self.failed_replacement_preserved
                 || (self.smoke_gpu_fault.is_some() && !self.gpu_fault_preserved)
-                || (self.smoke_edit && !self.edit_smoke_done))
+                || (self.smoke_edit && !self.edit_smoke_done)
+                || (self.smoke_queue && !self.queue_smoke_done))
         {
             if self.started.elapsed() > Duration::from_secs(20) {
                 return Err("Import smoke timed out".into());
@@ -1139,6 +1971,13 @@ impl ApplicationHandler for App {
                         if self.modifiers.control_key() && self.modifiers.shift_key() =>
                     {
                         self.pending_save = true
+                    }
+                    PhysicalKey::Code(KeyCode::KeyS) if self.modifiers.control_key() => {
+                        self.pending_overwrite = true
+                    }
+                    PhysicalKey::Code(KeyCode::KeyG) if !self.modifiers.control_key() => {
+                        let on = self.ui.toggle_floor();
+                        eprintln!("floor_toggle on={on}");
                     }
                     PhysicalKey::Code(KeyCode::KeyF) => {
                         if let Some(asset) = self.current.as_ref() {
@@ -1256,9 +2095,18 @@ impl ApplicationHandler for App {
     }
 }
 
+/// ADR-0040: the lamp gizmo sits this many model radii from the centre.
+const LAMP_DISTANCE: f32 = 1.25;
+
 fn edit_name(kind: EditKind) -> &'static str {
     match kind {
-        EditKind::RemoveDuplicates(_) | EditKind::RemoveDegenerate(_) => "remove",
+        EditKind::RemoveDuplicates(_)
+        | EditKind::RemoveDegenerate(_)
+        | EditKind::RemoveUnused(_)
+        | EditKind::MergeVertices(_)
+        | EditKind::CreateNormals(_)
+        | EditKind::FixNormals(_) => "remove",
+        EditKind::Place(_) => "place",
         EditKind::Undo => "undo",
         EditKind::Redo => "redo",
     }
@@ -1274,6 +2122,11 @@ fn run() -> GpuResult<()> {
     let mut smoke_edit = false;
     let mut smoke_save = None;
     let mut smoke_guard = 0u8;
+    let mut smoke_overwrite = false;
+    let mut smoke_queue = false;
+    let mut smoke_place = false;
+    let mut pending_skybox = None;
+    let mut history_path = None;
     let mut smoke_repair = ad_heal::RepairKind::DuplicateTriangles;
     let mut ui = viewer_ui::ViewerUi::default();
     let mut args = std::env::args().skip(1);
@@ -1306,12 +2159,90 @@ fn run() -> GpuResult<()> {
                 ))
             }
             "--smoke-edit" => smoke_edit = true,
+            "--smoke-place" => {
+                smoke_edit = true;
+                smoke_place = true;
+            }
             "--smoke-guard" => smoke_guard = 1,
+            "--smoke-overwrite" => smoke_overwrite = true,
+            "--smoke-queue" => smoke_queue = true,
+            "--environment-light" => {
+                ui.environment_light = true;
+                ui.environment_strength = args
+                    .next()
+                    .and_then(|n| n.parse::<f32>().ok())
+                    .filter(|s| {
+                        ad_render_vulkan::sky::EnvironmentLight::preset(ui.environment, *s).valid()
+                    })
+                    .ok_or("--environment-light needs a strength from 0 to 2")?;
+            }
+            "--lamp-off" => ui.lighting.enabled = false,
+            "--lamp" => {
+                // AZIMUTH,ELEVATION[,R,G,B] in degrees and 0..1 colour.
+                let value = args
+                    .next()
+                    .ok_or("--lamp needs AZIMUTH,ELEVATION[,R,G,B]")?;
+                let parts: Vec<f32> = value
+                    .split(',')
+                    .map(|p| p.trim().parse::<f32>())
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| "--lamp needs numbers")?;
+                let (Some(&azimuth), Some(&elevation)) = (parts.first(), parts.get(1)) else {
+                    return Err("--lamp needs AZIMUTH,ELEVATION[,R,G,B]".into());
+                };
+                ui.lighting.direction = lamp::from_angles(azimuth, elevation);
+                if let [_, _, r, g, b] = parts[..] {
+                    ui.lighting.color = [r, g, b];
+                }
+                if !ui.lighting.valid() {
+                    return Err("--lamp values out of range".into());
+                }
+            }
+            "--skybox" => {
+                let path = args
+                    .next()
+                    .ok_or("--skybox needs a PNG/JPEG panorama path")?;
+                pending_skybox = Some(skybox::load(std::path::Path::new(&path))?);
+            }
+            "--environment" => {
+                ui.environment = args
+                    .next()
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .and_then(|i| ad_render_vulkan::sky::Environment::ALL.get(i).copied())
+                    .ok_or("--environment needs a preset number from 0")?;
+            }
+            "--floor-theme" => {
+                let value = args
+                    .next()
+                    .ok_or("--floor-theme needs a theme number or none")?;
+                ui.floor = match value.as_str() {
+                    "none" => None,
+                    n => Some(
+                        n.parse::<usize>()
+                            .ok()
+                            .and_then(|i| ad_render_vulkan::grid::FloorTheme::ALL.get(i).copied())
+                            .ok_or("--floor-theme needs a theme number from 0 or none")?,
+                    ),
+                };
+            }
+            "--history" => {
+                history_path = Some(PathBuf::from(
+                    args.next().ok_or("--history needs a file path")?,
+                ))
+            }
             "--smoke-repair" => {
                 smoke_repair = match args.next().as_deref() {
                     Some("g001") => ad_heal::RepairKind::DegenerateTriangles,
                     Some("g002") => ad_heal::RepairKind::DuplicateTriangles,
-                    _ => return Err("--smoke-repair needs g001 or g002".into()),
+                    Some("g003") => ad_heal::RepairKind::UnusedVertices,
+                    Some("g012") => ad_heal::RepairKind::DuplicateVertices,
+                    Some("g004") => ad_heal::RepairKind::MissingNormals,
+                    Some("g005") => ad_heal::RepairKind::ZeroNormals,
+                    _ => {
+                        return Err(
+                            "--smoke-repair needs g001, g002, g003, g004, g005 or g012".into()
+                        );
+                    }
                 }
             }
             "--smoke-save" => {
@@ -1390,6 +2321,37 @@ fn run() -> GpuResult<()> {
         edit_started: Instant::now(),
         pending_guard: None,
         pending_save: false,
+        pending_overwrite: false,
+        pending_skybox_choose: false,
+        last_view: (1, 1),
+        model_preview: None,
+        model_pending: false,
+        smoke_place,
+        place_smoke_done: false,
+        skybox_job: None,
+        pending_skybox,
+        working_path: None,
+        pending_path: None,
+        overwrite_confirmed: None,
+        queue: None,
+        pending_queue_start: false,
+        pending_queue_stop: false,
+        smoke_queue,
+        queue_smoke_done: false,
+        history: history_path
+            .or_else(|| {
+                if smoke {
+                    None
+                } else {
+                    history::History::default_path()
+                }
+            })
+            .map(|path| {
+                let session = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos() as u64);
+                history::History::at(path, session)
+            }),
         pending_preview: None,
         smoke_edit,
         edit_fault,
@@ -1402,6 +2364,7 @@ fn run() -> GpuResult<()> {
         confirmed: None,
         after_save: None,
         save_smoke: smoke_save.map(|dir| (dir, 0)),
+        overwrite_smoke: smoke_overwrite.then_some(0),
         smoke_guard,
         smoke_repair,
         ui,

@@ -413,3 +413,162 @@ fn degenerate_repair_uses_the_same_preview_publication_and_history() {
     .unwrap();
     assert!(matches!(outcome, EditOutcome::NoChange(_)));
 }
+
+#[test]
+fn normals_repairs_create_and_fix_normals_and_refuse_unusable_vertices() {
+    let (mut asset, mut scene) = open("Normals_Repair.glb");
+    let c = Cancellation::default();
+    for (kind, mesh, changed, code) in [
+        (
+            EditKind::CreateNormals(MeshId(0)),
+            0,
+            4,
+            ad_heal::RepairKind::MissingNormals,
+        ),
+        (
+            EditKind::FixNormals(MeshId(1)),
+            1,
+            2,
+            ad_heal::RepairKind::ZeroNormals,
+        ),
+    ] {
+        assert_eq!(kind.repair(), Some((MeshId(mesh), code)));
+        let candidate = candidate(&asset, kind);
+        let info = candidate.info().unwrap();
+        assert_eq!(info.changed_normals, changed);
+        assert!(info.complete);
+        assert_eq!(info.target_left, Some(0));
+        publish_edit(&mut asset, &mut scene, candidate, &c).unwrap();
+        let report = asset.diagnostics().as_ref().unwrap();
+        assert_eq!(findings_in_mesh(report, MeshId(mesh), code), 0);
+    }
+    assert_eq!(repair_label(ad_heal::RepairKind::MissingNormals), "G004");
+    assert_eq!(repair_label(ad_heal::RepairKind::ZeroNormals), "G005");
+    let result = prepare_edit(
+        &asset.session,
+        &asset.generation.stamp,
+        EditKind::FixNormals(MeshId(2)),
+        &c,
+    );
+    assert!(
+        matches!(result, Err(e) if e.code == ErrorCode::Unsupported && e.message.contains("G003"))
+    );
+    apply(&mut asset, &mut scene, EditKind::Undo);
+    assert!(asset.document().primitives()[1].normals.as_ref().unwrap()[1] == [0.; 3]);
+}
+
+#[test]
+fn vertex_merge_welds_a_seam_and_refuses_topology_regression() {
+    let (mut asset, mut scene) = open("Vertex_Weld.glb");
+    let c = Cancellation::default();
+    let kind = EditKind::MergeVertices(MeshId(0));
+    assert_eq!(
+        kind.repair(),
+        Some((MeshId(0), ad_heal::RepairKind::DuplicateVertices))
+    );
+    assert_eq!(repair_label(ad_heal::RepairKind::DuplicateVertices), "G012");
+    let candidate = candidate(&asset, kind);
+    let info = candidate.info().unwrap();
+    assert_eq!((info.vertices_before, info.vertices_after), (9, 7));
+    assert_eq!((info.before, info.after), (3, 3));
+    assert_eq!(info.boundary_edges, Some((9, 7)), "the split seam welds");
+    assert!(info.complete);
+    assert_eq!(info.target_left, Some(0));
+    publish_edit(&mut asset, &mut scene, candidate, &c).unwrap();
+    assert_eq!(asset.document().primitives()[0].positions.len(), 7);
+    let report = asset.diagnostics().as_ref().unwrap();
+    assert_eq!(
+        findings_in_mesh(report, MeshId(0), ad_heal::RepairKind::DuplicateVertices),
+        0
+    );
+    apply(&mut asset, &mut scene, EditKind::Undo);
+    assert_eq!(asset.document().primitives()[0].positions.len(), 9);
+
+    // Merging two coincident triangles' vertices would create a duplicate
+    // triangle: the edit is refused before anything becomes visible.
+    let (asset, _) = open("Edge_Topology.glb");
+    let mesh = asset
+        .diagnostics()
+        .as_ref()
+        .unwrap()
+        .findings
+        .iter()
+        .find(|f| f.code == ad_analysis::Code::DuplicateVertex)
+        .unwrap()
+        .mesh;
+    let result = prepare_edit(
+        &asset.session,
+        &asset.generation.stamp,
+        EditKind::MergeVertices(mesh),
+        &c,
+    );
+    assert!(matches!(result, Err(e) if e.code == ErrorCode::Unsupported));
+    assert_eq!(asset.document().revision(), 0);
+}
+
+#[test]
+fn unused_vertex_repair_compacts_publishes_undoes_and_saves() {
+    let (mut asset, mut scene) = open("Geometry_Findings.glb");
+    let c = Cancellation::default();
+    let kind = EditKind::RemoveUnused(MeshId(1));
+    assert_eq!(
+        kind.repair(),
+        Some((MeshId(1), ad_heal::RepairKind::UnusedVertices))
+    );
+    assert_eq!(
+        EditKind::from_repair(MeshId(1), ad_heal::RepairKind::UnusedVertices),
+        kind
+    );
+    assert_eq!(repair_label(ad_heal::RepairKind::UnusedVertices), "G003");
+    let candidate = candidate(&asset, kind);
+    let info = candidate.info().unwrap();
+    assert_eq!(info.kind, ad_heal::RepairKind::UnusedVertices);
+    assert_eq!((info.before, info.after), (1, 1), "triangles are kept");
+    assert_eq!((info.vertices_before, info.vertices_after), (5, 3));
+    assert_eq!(info.references, 1);
+    assert!(info.complete);
+    assert_eq!(info.target_left, Some(0));
+    // POSITION and NORMAL (12 + 12 bytes) for 3 vertices plus 3 U32 indices.
+    assert_eq!(info.appended_bytes, 3 * 24 + 3 * 4);
+    assert_eq!(asset.document().revision(), 0);
+    publish_edit(&mut asset, &mut scene, candidate, &c).unwrap();
+    assert!(asset.is_consistent());
+    assert_eq!(asset.document().primitives()[1].positions.len(), 3);
+    assert_eq!(asset.document().primitives()[0].positions.len(), 5);
+    let report = asset.diagnostics().as_ref().unwrap();
+    assert!(report.is_complete());
+    assert_eq!(
+        findings_in_mesh(report, MeshId(1), ad_heal::RepairKind::UnusedVertices),
+        0
+    );
+    assert_eq!(
+        findings_in_mesh(report, MeshId(0), ad_heal::RepairKind::UnusedVertices),
+        1,
+        "the sibling sharing the accessor is untouched"
+    );
+    let saved = ad_formats::prepare_glb(
+        asset.document(),
+        asset.document().tag(),
+        Default::default(),
+        ImportLimits::default(),
+        &c,
+    )
+    .unwrap();
+    let reopened = ad_formats::import_glb(
+        saved.bytes().clone(),
+        "copy".into(),
+        DocumentId(9),
+        ImportLimits::default(),
+        &c,
+    )
+    .unwrap();
+    assert_eq!(reopened.primitives()[1].positions.len(), 3);
+    let undo = self::candidate(&asset, EditKind::Undo);
+    assert_eq!(undo.mesh(), MeshId(1));
+    publish_edit(&mut asset, &mut scene, undo, &c).unwrap();
+    assert_eq!(asset.document().primitives()[1].positions.len(), 5);
+    apply(&mut asset, &mut scene, EditKind::Redo);
+    assert_eq!(asset.document().primitives()[1].positions.len(), 3);
+    let outcome = prepare_edit(&asset.session, &asset.generation.stamp, kind, &c).unwrap();
+    assert!(matches!(outcome, EditOutcome::NoChange(_)));
+}

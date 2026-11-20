@@ -164,8 +164,137 @@ fn save_copy_with(
     document: &AssetDocument,
     destination: &Path,
     cancel: &Cancellation,
-    mut hook: impl FnMut(Stage, &mut File) -> AssetResult<()>,
+    hook: impl FnMut(Stage, &mut File) -> AssetResult<()>,
 ) -> AssetResult<SavedCopy> {
+    save_with(
+        verified,
+        document,
+        destination,
+        cancel,
+        hook,
+        |staging, destination| fs::hard_link(staging, destination).map_err(io_error),
+    )
+    .map(|(receipt, ())| receipt)
+}
+
+/// Result of «Сохранить» over the working file (ADR-0035).
+pub struct Replaced {
+    pub receipt: SavedCopy,
+    /// The previous working file, renamed beside it. The caller removes it with
+    /// [`discard_backup`] after its own readback and reimport succeed.
+    pub backup: PathBuf,
+}
+/// Removes a backup left by [`save_replace`].
+pub fn discard_backup(backup: &Path) -> AssetResult<()> {
+    fs::remove_file(backup).map_err(io_error)
+}
+fn conflict() -> AssetError {
+    AssetError::new(
+        ErrorCode::Conflict,
+        "The working file changed on disk since it was opened or saved; it was not overwritten",
+    )
+}
+/// True when the file holds exactly `expected` (bounded read).
+fn holds(path: &Path, expected: &[u8]) -> AssetResult<bool> {
+    let file = File::open(path).map_err(io_error)?;
+    let mut bytes = Vec::new();
+    Read::take(file, expected.len() as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(io_error)?;
+    Ok(bytes == expected)
+}
+
+/// «Сохранить» (ADR-0035): replaces an existing absolute .glb working file
+/// with verified bytes. `on_disk` is what the program believes the file holds
+/// (the bytes it opened or last saved); any difference refuses the overwrite.
+/// The same staging, write-through and readback as Save Copy run first. Then
+/// the original is renamed to a sibling backup and the staged file is linked
+/// in its place; if linking fails the backup is renamed back. Any failure
+/// before that point leaves the working file untouched.
+pub fn save_replace(
+    verified: &VerifiedGlb,
+    document: &AssetDocument,
+    destination: &Path,
+    on_disk: &[u8],
+    cancel: &Cancellation,
+) -> AssetResult<Replaced> {
+    save_replace_with(verified, document, destination, on_disk, cancel, |_, _| {
+        Ok(())
+    })
+}
+fn save_replace_with(
+    verified: &VerifiedGlb,
+    document: &AssetDocument,
+    destination: &Path,
+    on_disk: &[u8],
+    cancel: &Cancellation,
+    hook: impl FnMut(Stage, &mut File) -> AssetResult<()>,
+) -> AssetResult<Replaced> {
+    if !destination.is_file() {
+        return Err(AssetError::new(
+            ErrorCode::Io,
+            "«Сохранить» requires an existing working .glb file",
+        ));
+    }
+    if !holds(destination, on_disk)? {
+        return Err(conflict());
+    }
+    let (receipt, backup) = save_with(
+        verified,
+        document,
+        destination,
+        cancel,
+        hook,
+        |staging, destination| {
+            // Re-check just before the swap: no silent overwrite of outside edits.
+            if !holds(destination, on_disk)? {
+                return Err(conflict());
+            }
+            let backup = backup_path(destination)?;
+            fs::rename(destination, &backup).map_err(io_error)?;
+            if let Err(error) = fs::hard_link(staging, destination) {
+                return Err(match fs::rename(&backup, destination) {
+                    Ok(()) => io_error(error),
+                    Err(restore) => AssetError::new(
+                        ErrorCode::Io,
+                        format!(
+                            "«Сохранить» failed ({error}) and the original could not be put back ({restore}); it is kept at {}",
+                            backup.display()
+                        ),
+                    ),
+                });
+            }
+            Ok(backup)
+        },
+    )?;
+    Ok(Replaced { receipt, backup })
+}
+fn backup_path(destination: &Path) -> AssetResult<PathBuf> {
+    let name = destination
+        .file_name()
+        .ok_or_else(|| AssetError::new(ErrorCode::Io, "Missing destination filename"))?
+        .to_string_lossy()
+        .into_owned();
+    for n in 0..64 {
+        let path = destination.with_file_name(format!(".{name}.asset-doctor-backup-{n}"));
+        if !path.exists() {
+            return Ok(path);
+        }
+    }
+    Err(AssetError::new(
+        ErrorCode::Io,
+        "Too many old «Сохранить» backups beside the working file",
+    ))
+}
+
+fn save_with<T>(
+    verified: &VerifiedGlb,
+    document: &AssetDocument,
+    destination: &Path,
+    cancel: &Cancellation,
+    mut hook: impl FnMut(Stage, &mut File) -> AssetResult<()>,
+    publish: impl FnOnce(&Path, &Path) -> AssetResult<T>,
+) -> AssetResult<(SavedCopy, T)> {
     verified.verify_current(document, cancel)?;
     if !destination.is_absolute()
         || !destination
@@ -217,17 +346,19 @@ fn save_copy_with(
         }
         hook(Stage::Ready, file)?;
         verified.verify_current(document, cancel)?;
-        fs::hard_link(&staging.path, &destination).map_err(io_error)?;
         // Publication commit point. There are no fallible/cancellation checks below.
-        Ok(())
+        publish(&staging.path, &destination)
     })();
     let cleanup = staging.cleanup();
     match result {
-        Ok(()) => Ok(SavedCopy {
-            stamp: document.stamp(),
-            path: destination,
-            cleanup_warning: cleanup.is_err(),
-        }),
+        Ok(published) => Ok((
+            SavedCopy {
+                stamp: document.stamp(),
+                path: destination,
+                cleanup_warning: cleanup.is_err(),
+            },
+            published,
+        )),
         Err(mut error) => {
             if let Err(e) = cleanup {
                 error.message.push_str(&format!(

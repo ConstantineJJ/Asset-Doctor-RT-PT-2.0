@@ -3,11 +3,13 @@ mod components;
 mod coverage;
 mod edges;
 mod uv;
+mod vertices;
 use ad_document::{
     AssetDocument, AssetError, AssetResult, Cancellation, DocumentId, DocumentView, ErrorCode,
     MeshId,
 };
 pub use coverage::{Coverage, LimitReason};
+pub use vertices::{same_vertex, vertex_order};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(usize)]
@@ -23,9 +25,11 @@ pub enum Code {
     MissingUv0 = 8,
     ZeroUvArea = 9,
     OutsideUnitUv = 10,
+    /// G012 (ADR-0034): a vertex bitwise equal to an earlier one on every stream.
+    DuplicateVertex = 11,
 }
 impl Code {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::ZeroArea,
         Self::DuplicateTriangle,
         Self::UnusedVertex,
@@ -37,9 +41,10 @@ impl Code {
         Self::MissingUv0,
         Self::ZeroUvArea,
         Self::OutsideUnitUv,
+        Self::DuplicateVertex,
     ];
 }
-pub const ALGORITHM_VERSION: u32 = 5;
+pub const ALGORITHM_VERSION: u32 = 6;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Severity {
     Information,
@@ -89,7 +94,7 @@ pub struct Report {
     pub primitives: usize,
     pub triangles: usize,
     pub findings: Vec<Finding>,
-    pub coverage: [Coverage; 11],
+    pub coverage: [Coverage; 12],
 }
 impl Report {
     pub fn matches(&self, document: &AssetDocument) -> bool {
@@ -292,6 +297,7 @@ pub fn analyze_view(
     edges::analyze(view, &mut report, limits, cancel)?;
     components::analyze(view, &mut report, limits, cancel)?;
     uv::analyze(view, &mut report, limits, cancel)?;
+    vertices::analyze(view, &mut report, limits, cancel)?;
     cancel.check()?;
     Ok(report)
 }
@@ -300,3 +306,5 @@ pub fn analyze_view(
 mod tests;
 #[cfg(test)]
 mod uv_tests;
+#[cfg(test)]
+mod vertex_tests;

@@ -75,6 +75,21 @@ pub struct Renderer {
     overlay: Option<Overlay>,
     frame: Option<FrameBinding>,
     view_projection: [[f32; 4]; 4],
+    /// ADR-0040 floor grid; None hides it.
+    grid: Option<crate::grid::GridSettings>,
+    grid_frames: u64,
+    /// ADR-0040 environment sky; None or a preset without colours draws none.
+    sky: Option<crate::sky::SkySettings>,
+    sky_frames: u64,
+    /// ADR-0040 environment light (PBR only); None = off.
+    environment_light: Option<crate::sky::EnvironmentLight>,
+    environment_light_frames: u64,
+    /// ADR-0041 drag preview: view-projection and eye used for the model only
+    /// (floor and sky keep the camera's).
+    model_preview: Option<([[f32; 4]; 4], [f32; 3])>,
+    /// ADR-0040 owner panorama; replaced only after waiting for idle.
+    skybox: Option<crate::sky::Skybox>,
+    panorama_frames: u64,
     sample_textures: bool,
     sample_mr_maps: bool,
     sample_normal_maps: bool,
@@ -125,6 +140,15 @@ impl Renderer {
                 [0., 0., 1., 0.],
                 [0., 0., 0., 1.],
             ],
+            grid: None,
+            grid_frames: 0,
+            sky: None,
+            sky_frames: 0,
+            environment_light: None,
+            environment_light_frames: 0,
+            skybox: None,
+            panorama_frames: 0,
+            model_preview: None,
             frames: 0,
             mesh_frames: 0,
             pbr_frames: 0,
@@ -203,6 +227,65 @@ impl Renderer {
         self.scene
             .as_ref()
             .map(|scene| (scene.document_id, scene.revision))
+    }
+    /// ADR-0040: show the floor grid at `grid`, or hide it with None.
+    pub fn set_grid(&mut self, grid: Option<crate::grid::GridSettings>) {
+        self.grid = grid.filter(|g| {
+            [g.floor_y, g.center[0], g.center[1], g.extent, g.spacing]
+                .iter()
+                .all(|v| v.is_finite())
+                && g.extent > 0.
+                && g.spacing > 0.
+        });
+    }
+    /// ADR-0040: environment sky for the next frames (view only).
+    pub fn set_sky(&mut self, sky: Option<crate::sky::SkySettings>) {
+        self.sky = sky.filter(|s| {
+            s.inverse_view_projection
+                .iter()
+                .flatten()
+                .all(|v| v.is_finite())
+        });
+    }
+    /// ADR-0040: environment light for PBR shading; lamps stay unchanged.
+    pub fn set_environment_light(&mut self, light: Option<crate::sky::EnvironmentLight>) {
+        self.environment_light = light.filter(|l| l.valid() && l.strength > 0.);
+    }
+    /// Presented PBR frames lit by the environment (smoke evidence).
+    pub fn environment_light_frames(&self) -> u64 {
+        self.environment_light_frames
+    }
+    /// ADR-0040: uploads the owner's panorama (or removes it with None). Waits
+    /// for idle first; on failure the previous panorama is already gone and
+    /// the preset sky is drawn.
+    pub fn set_skybox_image(&mut self, image: Option<&ad_document::TextureImage>) -> GpuResult<()> {
+        self.wait_idle()?;
+        self.skybox = None;
+        if let Some(image) = image {
+            self.skybox = Some(crate::sky::Skybox::new(self.gpu.clone(), image)?);
+        }
+        Ok(())
+    }
+    /// ADR-0041: while the model gizmo is dragged, draw the model with this
+    /// view-projection and eye (already including the preview move/scale).
+    pub fn set_model_preview(&mut self, preview: Option<([[f32; 4]; 4], [f32; 3])>) {
+        self.model_preview =
+            preview.filter(|(m, e)| m.iter().flatten().chain(e.iter()).all(|v| v.is_finite()));
+    }
+    pub fn has_skybox(&self) -> bool {
+        self.skybox.is_some()
+    }
+    /// Frames in which the panorama was recorded (smoke evidence).
+    pub fn panorama_frames(&self) -> u64 {
+        self.panorama_frames
+    }
+    /// Frames in which the sky was recorded (smoke evidence).
+    pub fn sky_frames(&self) -> u64 {
+        self.sky_frames
+    }
+    /// Frames in which the floor grid was recorded (smoke evidence).
+    pub fn grid_frames(&self) -> u64 {
+        self.grid_frames
     }
     pub fn set_camera(&mut self, matrix: [[f32; 4]; 4], eye: [f32; 3]) -> GpuResult<()> {
         if matrix
@@ -314,18 +397,34 @@ impl Renderer {
                     .expect("UI painter initialized")
                     .update(frame, self.pool)?;
             }
+            let sky_light = crate::sky::EnvironmentLight::frame_colors(self.environment_light);
             self.frame
                 .as_ref()
                 .expect("Frame binding initialized")
                 .update(&FrameData {
-                    view_projection: self.view_projection,
+                    view_projection: self.model_preview.map_or(self.view_projection, |p| p.0),
                     eye_exposure: [
-                        self.eye[0],
-                        self.eye[1],
-                        self.eye[2],
+                        self.model_preview.map_or(self.eye, |p| p.1)[0],
+                        self.model_preview.map_or(self.eye, |p| p.1)[1],
+                        self.model_preview.map_or(self.eye, |p| p.1)[2],
                         self.lighting.exposure_ev,
                     ],
                     lighting: [self.lighting.key, self.lighting.fill, 0., 0.],
+                    sky_zenith: sky_light[0],
+                    sky_horizon: sky_light[1],
+                    sky_ground: sky_light[2],
+                    light_direction: [
+                        self.lighting.direction[0],
+                        self.lighting.direction[1],
+                        self.lighting.direction[2],
+                        0.,
+                    ],
+                    light_color: if self.lighting.enabled {
+                        let [r, g, b] = self.lighting.color.map(crate::sky::srgb_to_linear);
+                        [r, g, b, 1.]
+                    } else {
+                        [0., 0., 0., 0.]
+                    },
                 })?;
             let (image, suboptimal) = match chain.loader.acquire_next_image(
                 chain.handle,
@@ -354,8 +453,9 @@ impl Renderer {
                     },
                 },
                 vk::ClearValue {
+                    // Reversed-Z: 0 is the far end (see crate::REVERSED_Z).
                     depth_stencil: vk::ClearDepthStencilValue {
-                        depth: 1.0,
+                        depth: 0.0,
                         stencil: 0,
                     },
                 },
@@ -420,6 +520,72 @@ impl Renderer {
                         },
                     }],
                 );
+                // ADR-0040: sky behind everything, then the mesh pipeline again.
+                let panorama = self.sky.and_then(|sky| sky.panorama.map(|yaw| (sky, yaw)));
+                if let (Some((settings, yaw)), Some(skybox), Some(sky)) =
+                    (panorama, self.skybox.as_ref(), chain.sky_panorama.as_ref())
+                {
+                    let push = crate::sky::SkyPush::panorama(settings, yaw, !chain.encode_srgb);
+                    device.cmd_bind_pipeline(
+                        self.command,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        sky.handle,
+                    );
+                    device.cmd_bind_descriptor_sets(
+                        self.command,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        sky.layout,
+                        0,
+                        &[skybox.set],
+                        &[],
+                    );
+                    let bytes = std::slice::from_raw_parts(
+                        (&push as *const crate::sky::SkyPush).cast::<u8>(),
+                        std::mem::size_of::<crate::sky::SkyPush>(),
+                    );
+                    device.cmd_push_constants(
+                        self.command,
+                        sky.layout,
+                        vk::ShaderStageFlags::FRAGMENT,
+                        0,
+                        bytes,
+                    );
+                    device.cmd_draw(self.command, 3, 1, 0, 0);
+                    self.panorama_frames += 1;
+                    device.cmd_bind_pipeline(
+                        self.command,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        pipeline.handle,
+                    );
+                } else if let (Some(push), Some(sky)) = (
+                    self.sky
+                        .and_then(|sky| crate::sky::SkyPush::new(sky, !chain.encode_srgb)),
+                    chain.sky.as_ref(),
+                ) {
+                    device.cmd_bind_pipeline(
+                        self.command,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        sky.handle,
+                    );
+                    let bytes = std::slice::from_raw_parts(
+                        (&push as *const crate::sky::SkyPush).cast::<u8>(),
+                        std::mem::size_of::<crate::sky::SkyPush>(),
+                    );
+                    device.cmd_push_constants(
+                        self.command,
+                        sky.layout,
+                        vk::ShaderStageFlags::FRAGMENT,
+                        0,
+                        bytes,
+                    );
+                    device.cmd_draw(self.command, 3, 1, 0, 0);
+                    self.sky_frames += 1;
+                    device.cmd_bind_pipeline(
+                        self.command,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        pipeline.handle,
+                    );
+                }
                 device.cmd_bind_vertex_buffers(
                     self.command,
                     0,
@@ -501,6 +667,28 @@ impl Renderer {
                         0,
                         0,
                     );
+                }
+                // ADR-0040: floor grid after the model, depth-tested only.
+                if let (Some(grid), Some(pipeline)) = (self.grid, chain.grid.as_ref()) {
+                    let push = crate::grid::GridPush::new(self.view_projection, grid);
+                    device.cmd_bind_pipeline(
+                        self.command,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        pipeline.handle,
+                    );
+                    let bytes = std::slice::from_raw_parts(
+                        (&push as *const crate::grid::GridPush).cast::<u8>(),
+                        std::mem::size_of::<crate::grid::GridPush>(),
+                    );
+                    device.cmd_push_constants(
+                        self.command,
+                        pipeline.layout,
+                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                        0,
+                        bytes,
+                    );
+                    device.cmd_draw(self.command, 6, 1, 0, 0);
+                    self.grid_frames += 1;
                 }
             } else if ui.is_none() {
                 // Visible clear marker only until a real scene has been imported.
@@ -587,6 +775,9 @@ impl Renderer {
                         self.mesh_frames += 1;
                         if self.lighting.mode == ShadingMode::DirectPbr {
                             self.pbr_frames += 1;
+                            if self.environment_light.is_some() {
+                                self.environment_light_frames += 1;
+                            }
                             if self.sample_emission
                                 && self.scene.as_ref().is_some_and(|scene| scene.has_emission)
                             {

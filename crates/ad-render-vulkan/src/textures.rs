@@ -118,10 +118,10 @@ impl Drop for Upload {
     }
 }
 
-struct GpuImage {
+pub(crate) struct GpuImage {
     image: vk::Image,
     memory: vk::DeviceMemory,
-    view: vk::ImageView,
+    pub(crate) view: vk::ImageView,
     mips: u32,
     gpu: Arc<Gpu>,
 }
@@ -158,7 +158,11 @@ fn barrier(
     }
 }
 impl GpuImage {
-    fn upload(gpu: Arc<Gpu>, data: &TextureImage, encoding: TextureEncoding) -> GpuResult<Self> {
+    pub(crate) fn upload(
+        gpu: Arc<Gpu>,
+        data: &TextureImage,
+        encoding: TextureEncoding,
+    ) -> GpuResult<Self> {
         data.validate(ImportLimits::default())?;
         let staging = Buffer::upload(gpu.clone(), &data.rgba, vk::BufferUsageFlags::TRANSFER_SRC)?;
         let mut result = Self {
@@ -393,12 +397,12 @@ impl Drop for GpuImage {
         }
     }
 }
-struct Sampler {
-    handle: vk::Sampler,
+pub(crate) struct Sampler {
+    pub(crate) handle: vk::Sampler,
     gpu: Arc<Gpu>,
 }
 impl Sampler {
-    fn new(gpu: Arc<Gpu>, source: TextureSampler, mips: u32) -> GpuResult<Self> {
+    pub(crate) fn new(gpu: Arc<Gpu>, source: TextureSampler, mips: u32) -> GpuResult<Self> {
         let filter = |value| match value {
             Filter::Nearest => vk::Filter::NEAREST,
             Filter::Linear => vk::Filter::LINEAR,

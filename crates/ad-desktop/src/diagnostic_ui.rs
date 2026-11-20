@@ -1,20 +1,21 @@
 use crate::imports::PreparedAsset;
 use egui::Color32;
 
-/// Returns a requested G002 repair preview (source primitive) and, for tests,
-/// the rectangle of the first preview button.
+/// A requested repair preview: source primitive and repair kind.
+pub type PreviewRequest = (ad_document::MeshId, ad_heal::RepairKind);
+/// Every visible preview button with its repair kind (used by UI tests).
+pub type PreviewButtons = Vec<(ad_heal::RepairKind, egui::Rect)>;
+
+/// Returns a requested repair preview and the visible preview buttons.
 pub fn show(
     context: &egui::Context,
     open: &mut bool,
     asset: Option<&PreparedAsset>,
     viewport_height: f32,
     can_preview: bool,
-) -> (
-    Option<(ad_document::MeshId, ad_heal::RepairKind)>,
-    egui::Rect,
-) {
+) -> (Option<PreviewRequest>, PreviewButtons) {
     let mut preview = None;
-    let mut preview_rect = egui::Rect::NOTHING;
+    let mut preview_rects = Vec::new();
     egui::Window::new("Диагностика геометрии и UV").open(open).default_size([620.,420.]).show(context,|ui| {
                 ui.label("Исходные примитивы, включая неактивные; каждый проверен один раз. Экземпляры и преобразования просмотра не учитываются.");
                 ui.weak("Геометрия и все исходные UV-каналы. Границы, группы и UV вне 0…1 могут быть намеренными. Ремонт не выполняется.");
@@ -52,6 +53,7 @@ pub fn show(
                                         ad_analysis::Code::MissingUv0=>("G009","Исходный UV0 отсутствует"),
                                         ad_analysis::Code::ZeroUvArea=>("G010","Нулевая UV-площадь"),
                                         ad_analysis::Code::OutsideUnitUv=>("G011","UV вне 0…1 · могут быть намеренными"),
+                                        ad_analysis::Code::DuplicateVertex=>("G012","Точные дубли вершин · все атрибуты совпадают"),
                                     };
                                     let severity=if finding.severity==ad_analysis::Severity::Information {"Сведения"} else {"Замечание"};
                                     let title=format!("{code} · {severity} · {label}");
@@ -60,13 +62,17 @@ pub fn show(
                                     let repair=match finding.code {
                                         ad_analysis::Code::DuplicateTriangle=>Some((ad_heal::RepairKind::DuplicateTriangles,"Полный расчёт удаления всех повторов этого исходного примитива. Модель не изменяется до «Применить».")),
                                         ad_analysis::Code::ZeroArea=>Some((ad_heal::RepairKind::DegenerateTriangles,"Полный расчёт удаления всех треугольников нулевой площади этого исходного примитива. Модель не изменяется до «Применить».")),
+                                        ad_analysis::Code::MissingNormals=>Some((ad_heal::RepairKind::MissingNormals,"Полный расчёт нормалей для всех вершин этого исходного примитива по его граням. Модель не изменяется до «Применить».")),
+                                        ad_analysis::Code::ZeroNormal=>Some((ad_heal::RepairKind::ZeroNormals,"Полный расчёт нулевых нормалей этого исходного примитива; авторские нормали сохраняются. Модель не изменяется до «Применить».")),
+                                        ad_analysis::Code::DuplicateVertex=>Some((ad_heal::RepairKind::DuplicateVertices,"Полный расчёт объединения всех точных дублей вершин этого исходного примитива с проверкой топологии. Модель не изменяется до «Применить».")),
+                                        ad_analysis::Code::UnusedVertex=>Some((ad_heal::RepairKind::UnusedVertices,"Полный расчёт удаления всех вершин, которые не использует ни один треугольник этого исходного примитива. Модель не изменяется до «Применить».")),
                                         _=>None,
                                     };
                                     if let Some((kind,hint))=repair {
                                         ui.horizontal(|ui| {
                                             ui.label(&metadata);
                                             let button=ui.add_enabled(can_preview,egui::Button::new("Предпросмотр ремонта…").small()).on_hover_text(hint);
-                                            if preview_rect==egui::Rect::NOTHING {preview_rect=button.rect;}
+                                            preview_rects.push((kind,button.rect));
                                             if button.clicked() {preview=Some((finding.mesh,kind));}
                                         });
                                     } else {
@@ -89,7 +95,7 @@ pub fn show(
                 }
                 ui.separator();ui.weak("Связность — по индексам, без склеивания позиций и подсчёта физических деталей. UV: наличие UV0, точная площадь, диапазон всех каналов. Перекрытия UV, ориентация, материалы и скелет не проверяются.");
             });
-    (preview, preview_rect)
+    (preview, preview_rects)
 }
 
 fn coverage_text(c: &ad_analysis::Coverage, total: usize) -> String {

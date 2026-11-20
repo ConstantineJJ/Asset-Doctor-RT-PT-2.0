@@ -324,7 +324,7 @@ mod tests {
         assert!(report.is_complete());
         assert_eq!(
             (report.primitives, report.triangles, report.findings.len()),
-            (7, 13, 24)
+            (7, 13, 25)
         );
         assert_eq!(asset.snapshot().indices.len() / 3, 16);
         let count = |code| {
@@ -335,6 +335,8 @@ mod tests {
                 .map(|f| f.count)
                 .sum::<usize>()
         };
+        // "Coincident split indices" duplicates three vertices exactly (G012).
+        assert_eq!(count(ad_analysis::Code::DuplicateVertex), 3);
         assert_eq!(
             (
                 count(ad_analysis::Code::BoundaryEdge),

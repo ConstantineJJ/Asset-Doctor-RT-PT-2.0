@@ -40,7 +40,7 @@ fn no_channels_are_not_applicable_and_do_not_invent_zero_finding_scans() {
     let doc = from_primitives(vec![mesh(&[])]);
     let report = analyze(&doc, Limits::default(), &Cancellation::default()).unwrap();
     assert!(report.is_complete());
-    assert_eq!(report.coverage.len(), 11);
+    assert_eq!(report.coverage.len(), 12);
     for code in [Code::ZeroUvArea, Code::OutsideUnitUv] {
         let c = report.coverage[code as usize];
         assert_eq!(
