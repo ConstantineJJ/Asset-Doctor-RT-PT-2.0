@@ -46,6 +46,49 @@ impl Environment {
     }
 }
 
+/// sRGB display value to linear.
+fn linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+impl Environment {
+    /// Colours that light the model: the sky, or a dim neutral studio for the
+    /// dark studio (its clear colour would be almost black).
+    pub fn light_colors(self) -> [[f32; 3]; 3] {
+        self.colors()
+            .unwrap_or([[0.30, 0.32, 0.36], [0.20, 0.21, 0.23], [0.08, 0.08, 0.09]])
+    }
+}
+
+/// ADR-0040 environment light, separate from lamps, exposure and fill.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EnvironmentLight {
+    pub environment: Environment,
+    /// Multiplier, 0..=2.
+    pub strength: f32,
+}
+impl EnvironmentLight {
+    pub const MAX_STRENGTH: f32 = 2.;
+    pub fn valid(self) -> bool {
+        self.strength.is_finite() && (0.0..=Self::MAX_STRENGTH).contains(&self.strength)
+    }
+    /// Linear zenith (w = strength), horizon and ground for the frame buffer;
+    /// zeros (off) when None or invalid.
+    pub(crate) fn frame_colors(light: Option<Self>) -> [[f32; 4]; 3] {
+        match light.filter(|l| l.valid() && l.strength > 0.) {
+            None => [[0.; 4]; 3],
+            Some(l) => {
+                let [z, h, g] = l.environment.light_colors();
+                let v = |c: [f32; 3], w| [linear(c[0]), linear(c[1]), linear(c[2]), w];
+                [v(z, l.strength), v(h, 0.), v(g, 0.)]
+            }
+        }
+    }
+}
+
 /// What the sky pass needs for one frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SkySettings {
@@ -62,15 +105,16 @@ pub(crate) struct SkyPush {
     pub ground: [f32; 4],
 }
 impl SkyPush {
-    /// None when the environment draws no sky.
-    pub fn new(sky: SkySettings) -> Option<Self> {
+    /// None when the environment draws no sky. `decode` asks the shader to
+    /// write linear colours because the swapchain encodes sRGB itself.
+    pub fn new(sky: SkySettings, decode: bool) -> Option<Self> {
         let [z, h, g] = sky.environment.colors()?;
-        let v = |c: [f32; 3]| [c[0], c[1], c[2], 1.];
+        let v = |c: [f32; 3], w| [c[0], c[1], c[2], w];
         Some(Self {
             inverse_view_projection: sky.inverse_view_projection,
-            zenith: v(z),
-            horizon: v(h),
-            ground: v(g),
+            zenith: v(z, if decode { 1. } else { 0. }),
+            horizon: v(h, 1.),
+            ground: v(g, 1.),
         })
     }
 }
@@ -204,8 +248,39 @@ mod tests {
             inverse_view_projection: identity,
             environment,
         };
-        assert!(SkyPush::new(sky(Environment::DarkStudio)).is_none());
-        let day = SkyPush::new(sky(Environment::Day)).unwrap();
+        assert!(SkyPush::new(sky(Environment::DarkStudio), false).is_none());
+        let day = SkyPush::new(sky(Environment::Day), false).unwrap();
         assert_eq!(day.zenith[..3], Environment::Day.colors().unwrap()[0]);
+        assert_eq!(day.zenith[3], 0.);
+        assert_eq!(
+            SkyPush::new(sky(Environment::Day), true).unwrap().zenith[3],
+            1.
+        );
+    }
+    #[test]
+    fn environment_light_is_off_by_default_bounded_and_linear() {
+        let off = [[0.; 4]; 3];
+        assert_eq!(EnvironmentLight::frame_colors(None), off);
+        for strength in [0., -0.1, 2.1, f32::NAN, f32::INFINITY] {
+            let light = EnvironmentLight {
+                environment: Environment::Day,
+                strength,
+            };
+            assert_eq!(EnvironmentLight::frame_colors(Some(light)), off);
+        }
+        for environment in Environment::ALL {
+            let light = EnvironmentLight {
+                environment,
+                strength: 1.,
+            };
+            let [z, h, g] = EnvironmentLight::frame_colors(Some(light));
+            assert_eq!(z[3], 1.);
+            let display = environment.light_colors();
+            for (linear, shown) in [z, h, g].iter().zip(display) {
+                for i in 0..3 {
+                    assert!(linear[i] > 0. && linear[i] <= shown[i], "{environment:?}");
+                }
+            }
+        }
     }
 }

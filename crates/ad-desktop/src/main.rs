@@ -171,6 +171,7 @@ impl App {
             let pbr_frames = renderer.pbr_frames;
             let grid_frames = renderer.grid_frames();
             let sky_frames = renderer.sky_frames();
+            let environment_light_frames = renderer.environment_light_frames();
             let mr_frames = renderer.mr_frames;
             let normal_frames = renderer.normal_frames;
             let ao_frames = renderer.occlusion_frames;
@@ -263,8 +264,9 @@ impl App {
                     );
                     eprintln!("grid_smoke grid_frames={}", grid_frames);
                     eprintln!(
-                        "environment_smoke environment={} sky_frames={sky_frames}",
-                        self.ui.environment.label()
+                        "environment_smoke environment={} sky_frames={sky_frames} light={} light_frames={environment_light_frames}",
+                        self.ui.environment.label(),
+                        self.ui.environment_light
                     );
                     eprintln!(
                         "SMOKE_PASS frames={frames} resize=true minimize=true restore=true close_requested=true validation_enabled={} validation_errors=0",
@@ -1366,6 +1368,12 @@ impl App {
                 .to_cols_array_2d(),
             environment: self.ui.environment,
         }));
+        renderer.set_environment_light(self.ui.environment_light.then_some(
+            ad_render_vulkan::sky::EnvironmentLight {
+                environment: self.ui.environment,
+                strength: self.ui.environment_strength,
+            },
+        ));
         renderer.set_camera(view_projection, self.camera.eye(width, height))?;
         renderer.set_textures_enabled(self.ui.textures);
         renderer.set_mr_maps_enabled(self.ui.mr_maps);
@@ -1870,6 +1878,20 @@ fn run() -> GpuResult<()> {
             "--smoke-guard" => smoke_guard = 1,
             "--smoke-overwrite" => smoke_overwrite = true,
             "--smoke-queue" => smoke_queue = true,
+            "--environment-light" => {
+                ui.environment_light = true;
+                ui.environment_strength = args
+                    .next()
+                    .and_then(|n| n.parse::<f32>().ok())
+                    .filter(|s| {
+                        ad_render_vulkan::sky::EnvironmentLight {
+                            environment: ui.environment,
+                            strength: *s,
+                        }
+                        .valid()
+                    })
+                    .ok_or("--environment-light needs a strength from 0 to 2")?;
+            }
             "--environment" => {
                 ui.environment = args
                     .next()

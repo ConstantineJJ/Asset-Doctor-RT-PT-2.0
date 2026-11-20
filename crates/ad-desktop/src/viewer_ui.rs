@@ -137,6 +137,9 @@ pub struct ViewerUi {
     pub floor: Option<ad_render_vulkan::grid::FloorTheme>,
     /// ADR-0040 environment (sky) preset; view only, never touches lighting.
     pub environment: ad_render_vulkan::sky::Environment,
+    /// ADR-0040 environment light switch and strength (PBR only, view only).
+    pub environment_light: bool,
+    pub environment_strength: f32,
     /// Theme G brings back after hiding the floor.
     last_floor: ad_render_vulkan::grid::FloorTheme,
     pub normal_maps: bool,
@@ -209,6 +212,8 @@ impl Default for ViewerUi {
             floor: Some(ad_render_vulkan::grid::FloorTheme::StudioGrid),
             last_floor: ad_render_vulkan::grid::FloorTheme::StudioGrid,
             environment: ad_render_vulkan::sky::Environment::DarkStudio,
+            environment_light: false,
+            environment_strength: 1.,
             normal_maps: true,
             ao_maps: true,
             emission: true,
@@ -463,6 +468,10 @@ impl ViewerUi {
                             ui.selectable_value(&mut self.environment,preset,preset.label());
                         }
                     }).response.on_hover_text("Фон-небо за моделью. Только вид: лампы, экспозиция и подсветка не меняются, в модель и файл не попадает.");
+                    ui.horizontal(|ui|{
+                        ui.checkbox(&mut self.environment_light,"Свет окружения").on_hover_text("Режим PBR: модель дополнительно освещается цветами выбранного окружения (небо сверху, земля снизу). Лампы, экспозиция и подсветка остаются как есть. Это приближение, не HDR/IBL.");
+                        ui.add_enabled(self.environment_light,egui::Slider::new(&mut self.environment_strength,0.0..=ad_render_vulkan::sky::EnvironmentLight::MAX_STRENGTH).text("Сила"));
+                    });
                         egui::ComboBox::from_id_salt("shading_mode").selected_text(match self.lighting.mode {ShadingMode::BaseColor=>"Базовый вид", ShadingMode::DirectPbr=>"PBR · направленный свет"}).show_ui(ui,|ui| {
                             ui.selectable_value(&mut self.lighting.mode,ShadingMode::BaseColor,"Базовый вид");
                             ui.selectable_value(&mut self.lighting.mode,ShadingMode::DirectPbr,"PBR · направленный свет");
@@ -1152,10 +1161,15 @@ mod tests {
         use ad_render_vulkan::sky::Environment;
         let mut ui = ViewerUi::default();
         assert_eq!(ui.environment, Environment::DarkStudio);
+        assert!(!ui.environment_light, "environment light is off by default");
         let before = format!("{:?}", ui.lighting);
         for preset in Environment::ALL {
             ui.environment = preset;
-            assert_eq!(format!("{:?}", ui.lighting), before);
+            for on in [true, false] {
+                ui.environment_light = on;
+                ui.environment_strength = if on { 2. } else { 0.5 };
+                assert_eq!(format!("{:?}", ui.lighting), before);
+            }
         }
     }
     #[test]

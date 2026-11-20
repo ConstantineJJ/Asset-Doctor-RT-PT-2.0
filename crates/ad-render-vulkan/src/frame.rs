@@ -9,6 +9,11 @@ pub(crate) struct FrameData {
     pub view_projection: [[f32; 4]; 4],
     pub eye_exposure: [f32; 4],
     pub lighting: [f32; 4],
+    /// ADR-0040 environment light: linear zenith (w = strength, 0 = off),
+    /// horizon and ground colours.
+    pub sky_zenith: [f32; 4],
+    pub sky_horizon: [f32; 4],
+    pub sky_ground: [f32; 4],
 }
 impl FrameData {
     fn bytes(&self) -> &[u8] {
@@ -127,7 +132,9 @@ mod tests {
     use super::*;
     #[test]
     fn std140_frame_offsets_and_data_bytes_match_glsl() {
-        assert_eq!(std::mem::size_of::<FrameData>(), 96);
+        assert_eq!(std::mem::size_of::<FrameData>(), 144);
+        assert_eq!(std::mem::offset_of!(FrameData, sky_zenith), 96);
+        assert_eq!(std::mem::offset_of!(FrameData, sky_ground), 128);
         assert_eq!(std::mem::offset_of!(FrameData, eye_exposure), 64);
         assert_eq!(std::mem::offset_of!(FrameData, lighting), 80);
         let mut frame = FrameData::default();

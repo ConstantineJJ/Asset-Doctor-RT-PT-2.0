@@ -81,6 +81,9 @@ pub struct Renderer {
     /// ADR-0040 environment sky; None or a preset without colours draws none.
     sky: Option<crate::sky::SkySettings>,
     sky_frames: u64,
+    /// ADR-0040 environment light (PBR only); None = off.
+    environment_light: Option<crate::sky::EnvironmentLight>,
+    environment_light_frames: u64,
     sample_textures: bool,
     sample_mr_maps: bool,
     sample_normal_maps: bool,
@@ -135,6 +138,8 @@ impl Renderer {
             grid_frames: 0,
             sky: None,
             sky_frames: 0,
+            environment_light: None,
+            environment_light_frames: 0,
             frames: 0,
             mesh_frames: 0,
             pbr_frames: 0,
@@ -232,6 +237,14 @@ impl Renderer {
                 .flatten()
                 .all(|v| v.is_finite())
         });
+    }
+    /// ADR-0040: environment light for PBR shading; lamps stay unchanged.
+    pub fn set_environment_light(&mut self, light: Option<crate::sky::EnvironmentLight>) {
+        self.environment_light = light.filter(|l| l.valid() && l.strength > 0.);
+    }
+    /// Presented PBR frames lit by the environment (smoke evidence).
+    pub fn environment_light_frames(&self) -> u64 {
+        self.environment_light_frames
     }
     /// Frames in which the sky was recorded (smoke evidence).
     pub fn sky_frames(&self) -> u64 {
@@ -351,6 +364,7 @@ impl Renderer {
                     .expect("UI painter initialized")
                     .update(frame, self.pool)?;
             }
+            let sky_light = crate::sky::EnvironmentLight::frame_colors(self.environment_light);
             self.frame
                 .as_ref()
                 .expect("Frame binding initialized")
@@ -363,6 +377,9 @@ impl Renderer {
                         self.lighting.exposure_ev,
                     ],
                     lighting: [self.lighting.key, self.lighting.fill, 0., 0.],
+                    sky_zenith: sky_light[0],
+                    sky_horizon: sky_light[1],
+                    sky_ground: sky_light[2],
                 })?;
             let (image, suboptimal) = match chain.loader.acquire_next_image(
                 chain.handle,
@@ -460,7 +477,8 @@ impl Renderer {
                 );
                 // ADR-0040: sky behind everything, then the mesh pipeline again.
                 if let (Some(push), Some(sky)) = (
-                    self.sky.and_then(crate::sky::SkyPush::new),
+                    self.sky
+                        .and_then(|sky| crate::sky::SkyPush::new(sky, !chain.encode_srgb)),
                     chain.sky.as_ref(),
                 ) {
                     device.cmd_bind_pipeline(
@@ -676,6 +694,9 @@ impl Renderer {
                         self.mesh_frames += 1;
                         if self.lighting.mode == ShadingMode::DirectPbr {
                             self.pbr_frames += 1;
+                            if self.environment_light.is_some() {
+                                self.environment_light_frames += 1;
+                            }
                             if self.sample_emission
                                 && self.scene.as_ref().is_some_and(|scene| scene.has_emission)
                             {

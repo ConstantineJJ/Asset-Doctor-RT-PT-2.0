@@ -19,7 +19,7 @@ layout(set=1,binding=7) uniform sampler occlusion_sampler;
 layout(set=1,binding=8) uniform texture2D emissive_image;
 layout(set=1,binding=9) uniform sampler emissive_sampler;
 layout(location=0) out vec4 color;
-layout(set=0,binding=0,std140) uniform Frame { mat4 view_projection; vec4 eye_exposure; vec4 lighting; } frame;
+layout(set=0,binding=0,std140) uniform Frame { mat4 view_projection; vec4 eye_exposure; vec4 lighting; vec4 sky_zenith; vec4 sky_horizon; vec4 sky_ground; } frame;
 layout(push_constant) uniform Push { vec4 base_color; vec4 material; vec4 view; vec4 emissive; } pc;
 const float PI=3.14159265359;
 // Scale first so tiny/large derivative normals do not underflow/overflow in dot.
@@ -64,6 +64,21 @@ vec3 perturbed_normal(vec3 n,vec3 texel,vec3 px,vec3 py,vec2 ux,vec2 uy) {
     ts=unit_or(ts,vec3(0.0,0.0,1.0));
     return unit_or(t*ts.x+b*ts.y+n*ts.z,n);
 }
+// ADR-0040 environment light: the sky gradient as a hemisphere light (an
+// approximation, not IBL). Colours are already linear; w of zenith = strength.
+vec3 sky_color(float y) {
+    if (y>=0.0) {return mix(frame.sky_horizon.rgb,frame.sky_zenith.rgb,pow(clamp(y,0.0,1.0),0.55));}
+    return mix(frame.sky_horizon.rgb,frame.sky_ground.rgb,pow(clamp(-y,0.0,1.0),0.35));
+}
+vec3 environment_light(vec3 base,vec3 n,vec3 v,float metal,float rough,vec3 f0) {
+    vec3 above=(frame.sky_zenith.rgb+frame.sky_horizon.rgb)*0.5;
+    vec3 below=(frame.sky_ground.rgb+frame.sky_horizon.rgb)*0.5;
+    vec3 irradiance=mix(below,above,clamp(n.y*0.5+0.5,0.0,1.0));
+    float nv=clamp(dot(n,v),0.0,1.0);
+    vec3 fresnel=f0+(max(vec3(1.0-rough),f0)-f0)*pow(1.0-nv,5.0);
+    vec3 reflected=mix(sky_color(reflect(-v,n).y),irradiance,rough);
+    return ((vec3(1.0)-fresnel)*(1.0-metal)*base*irradiance+fresnel*reflected)*frame.sky_zenith.w;
+}
 vec3 direct_pbr(vec3 base,vec3 n,vec2 mr,vec3 v,float occlusion,vec3 emission) {
     vec3 l=normalize(vec3(0.4,0.8,0.3));
     vec3 h=unit_or(v+l,n);
@@ -84,6 +99,7 @@ vec3 direct_pbr(vec3 base,vec3 n,vec2 mr,vec3 v,float occlusion,vec3 emission) {
     vec3 specular=fresnel*distribution*visibility;
     // Inspection fill is an explicit approximation; no environment is sampled.
     vec3 radiance=(diffuse+specular)*nl*frame.lighting.x+((1.0-metal)*base+f0)*frame.lighting.y*occlusion;
+    if (frame.sky_zenith.w>0.0) {radiance+=environment_light(base,n,v,metal,rough,f0)*occlusion;}
     vec3 exposed=max((radiance+emission)*exp2(frame.eye_exposure.w),vec3(0.0));
     return exposed/(vec3(1.0)+exposed);
 }

@@ -16,5 +16,7 @@ void main() {
     } else {
         rgb=mix(pc.horizon.rgb,pc.ground.rgb,pow(clamp(-t,0.0,1.0),0.35));
     }
+    // Presets are display colours; decode when the swapchain encodes sRGB.
+    if (pc.zenith.w>0.5) {rgb=mix(rgb/12.92,pow((rgb+0.055)/1.055,vec3(2.4)),greaterThan(rgb,vec3(0.04045)));}
     color=vec4(rgb,1.0);
 }
