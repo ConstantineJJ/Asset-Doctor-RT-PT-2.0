@@ -135,6 +135,8 @@ pub struct ViewerUi {
     pub mr_maps: bool,
     /// ADR-0040 floor theme under the model (view only); None = no surface.
     pub floor: Option<ad_render_vulkan::grid::FloorTheme>,
+    /// ADR-0040 environment (sky) preset; view only, never touches lighting.
+    pub environment: ad_render_vulkan::sky::Environment,
     /// Theme G brings back after hiding the floor.
     last_floor: ad_render_vulkan::grid::FloorTheme,
     pub normal_maps: bool,
@@ -206,6 +208,7 @@ impl Default for ViewerUi {
             mr_maps: true,
             floor: Some(ad_render_vulkan::grid::FloorTheme::StudioGrid),
             last_floor: ad_render_vulkan::grid::FloorTheme::StudioGrid,
+            environment: ad_render_vulkan::sky::Environment::DarkStudio,
             normal_maps: true,
             ao_maps: true,
             emission: true,
@@ -455,6 +458,11 @@ impl ViewerUi {
                         }
                         if ui.selectable_label(self.floor.is_none(),"Без поверхности").clicked() {self.floor=None;}
                     }).response.on_hover_text("Пол на уровне нижней точки модели, шаг по её размеру; красная ось X, синяя Z. Только вид — в модель и файл не попадает. G — скрыть или вернуть пол.");
+                    egui::ComboBox::from_label("Окружение").selected_text(self.environment.label()).show_ui(ui,|ui|{
+                        for preset in ad_render_vulkan::sky::Environment::ALL {
+                            ui.selectable_value(&mut self.environment,preset,preset.label());
+                        }
+                    }).response.on_hover_text("Фон-небо за моделью. Только вид: лампы, экспозиция и подсветка не меняются, в модель и файл не попадает.");
                         egui::ComboBox::from_id_salt("shading_mode").selected_text(match self.lighting.mode {ShadingMode::BaseColor=>"Базовый вид", ShadingMode::DirectPbr=>"PBR · направленный свет"}).show_ui(ui,|ui| {
                             ui.selectable_value(&mut self.lighting.mode,ShadingMode::BaseColor,"Базовый вид");
                             ui.selectable_value(&mut self.lighting.mode,ShadingMode::DirectPbr,"PBR · направленный свет");
@@ -1138,6 +1146,17 @@ mod tests {
             click(&mut ui, None, rect, (1200., 760.))
         };
         assert!(!actions.save_copy);
+    }
+    #[test]
+    fn environment_never_changes_lighting() {
+        use ad_render_vulkan::sky::Environment;
+        let mut ui = ViewerUi::default();
+        assert_eq!(ui.environment, Environment::DarkStudio);
+        let before = format!("{:?}", ui.lighting);
+        for preset in Environment::ALL {
+            ui.environment = preset;
+            assert_eq!(format!("{:?}", ui.lighting), before);
+        }
     }
     #[test]
     fn g_key_hides_the_floor_and_restores_the_last_theme() {

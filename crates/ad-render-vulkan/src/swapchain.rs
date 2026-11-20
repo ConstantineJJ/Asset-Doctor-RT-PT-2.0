@@ -1,5 +1,5 @@
 use crate::{SurfaceSize, context::GpuResult, gpu::Gpu, presentation};
-use crate::{grid::GridPipeline, pipeline::MeshPipeline, resources::DepthTarget};
+use crate::{grid::GridPipeline, pipeline::MeshPipeline, resources::DepthTarget, sky::SkyPipeline};
 use ash::vk;
 use std::sync::Arc;
 
@@ -12,6 +12,7 @@ pub(crate) struct Swapchain {
     pub finished: Vec<vk::Semaphore>,
     pub pipeline: Option<MeshPipeline>,
     pub grid: Option<GridPipeline>,
+    pub sky: Option<SkyPipeline>,
     pub encode_srgb: bool,
     pub format: vk::Format,
     depth: Option<DepthTarget>,
@@ -64,6 +65,7 @@ impl Swapchain {
                 finished: vec![],
                 pipeline: None,
                 grid: None,
+                sky: None,
                 format: format.format,
                 encode_srgb: !matches!(
                     format.format,
@@ -147,6 +149,7 @@ impl Swapchain {
             )?;
             result.pipeline = Some(MeshPipeline::new(result.gpu.clone(), result.pass)?);
             result.grid = Some(GridPipeline::new(result.gpu.clone(), result.pass)?);
+            result.sky = Some(SkyPipeline::new(result.gpu.clone(), result.pass)?);
             for image in result.loader.get_swapchain_images(result.handle)? {
                 let range = vk::ImageSubresourceRange::default()
                     .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -208,6 +211,7 @@ impl Drop for Swapchain {
                 self.gpu.device.destroy_framebuffer(framebuffer, None);
             }
             self.grid = None;
+            self.sky = None;
             self.pipeline = None;
             self.gpu.device.destroy_render_pass(self.pass, None);
             for view in self.views.drain(..) {

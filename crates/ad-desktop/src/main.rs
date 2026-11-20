@@ -170,6 +170,7 @@ impl App {
             let mesh_frames = renderer.mesh_frames;
             let pbr_frames = renderer.pbr_frames;
             let grid_frames = renderer.grid_frames();
+            let sky_frames = renderer.sky_frames();
             let mr_frames = renderer.mr_frames;
             let normal_frames = renderer.normal_frames;
             let ao_frames = renderer.occlusion_frames;
@@ -261,6 +262,10 @@ impl App {
                         self.ui.lighting.mode
                     );
                     eprintln!("grid_smoke grid_frames={}", grid_frames);
+                    eprintln!(
+                        "environment_smoke environment={} sky_frames={sky_frames}",
+                        self.ui.environment.label()
+                    );
                     eprintln!(
                         "SMOKE_PASS frames={frames} resize=true minimize=true restore=true close_requested=true validation_enabled={} validation_errors=0",
                         context.validation
@@ -1353,10 +1358,15 @@ impl App {
                     .map(|grid| ad_render_vulkan::grid::GridSettings { theme, ..grid })
             })
         }));
-        renderer.set_camera(
-            self.camera.matrix(width, height),
-            self.camera.eye(width, height),
-        )?;
+        let view_projection = self.camera.matrix(width, height);
+        // ADR-0040 environment: sky only, lamps/exposure stay as they are.
+        renderer.set_sky(Some(ad_render_vulkan::sky::SkySettings {
+            inverse_view_projection: glam::Mat4::from_cols_array_2d(&view_projection)
+                .inverse()
+                .to_cols_array_2d(),
+            environment: self.ui.environment,
+        }));
+        renderer.set_camera(view_projection, self.camera.eye(width, height))?;
         renderer.set_textures_enabled(self.ui.textures);
         renderer.set_mr_maps_enabled(self.ui.mr_maps);
         renderer.set_normal_maps_enabled(self.ui.normal_maps);
@@ -1860,6 +1870,13 @@ fn run() -> GpuResult<()> {
             "--smoke-guard" => smoke_guard = 1,
             "--smoke-overwrite" => smoke_overwrite = true,
             "--smoke-queue" => smoke_queue = true,
+            "--environment" => {
+                ui.environment = args
+                    .next()
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .and_then(|i| ad_render_vulkan::sky::Environment::ALL.get(i).copied())
+                    .ok_or("--environment needs a preset number from 0")?;
+            }
             "--floor-theme" => {
                 let value = args
                     .next()

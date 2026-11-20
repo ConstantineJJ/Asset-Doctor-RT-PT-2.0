@@ -5,6 +5,8 @@ fn main() {
         ("mesh.frag", naga::ShaderStage::Fragment),
         ("grid.vert", naga::ShaderStage::Vertex),
         ("grid.frag", naga::ShaderStage::Fragment),
+        ("sky.vert", naga::ShaderStage::Vertex),
+        ("sky.frag", naga::ShaderStage::Fragment),
     ] {
         let path = format!("shaders/{name}");
         println!("cargo:rerun-if-changed={path}");

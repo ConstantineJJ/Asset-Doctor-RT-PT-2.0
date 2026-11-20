@@ -109,6 +109,30 @@ mod tests {
         let near = (eye - camera.center).length() / 500.;
         assert!(depth(eye - toward_eye * (near * 1.0001)) > 0.99);
     }
+    /// ADR-0040 sky: the shader unprojects the pixel at depth 1 (near) and 0
+    /// (far); the resulting ray must point up where the sky above the model
+    /// is on screen and down where the ground is.
+    #[test]
+    fn sky_rays_from_the_inverse_point_up_above_and_down_below() {
+        let mut camera = Camera::default();
+        camera.fit(Bounds {
+            min: [-1.; 3],
+            max: [1.; 3],
+        });
+        let m = glam::Mat4::from_cols_array_2d(&camera.matrix(1200, 760));
+        let inverse = m.inverse();
+        assert!(inverse.is_finite());
+        let up = camera.center + Vec3::Y * camera.radius * 0.5;
+        let c = m * up.extend(1.);
+        let screen_up = (c.y / c.w).signum();
+        let ray = |y: f32| {
+            let near = inverse.project_point3(Vec3::new(0., y, 1.));
+            let far = inverse.project_point3(Vec3::new(0., y, 0.));
+            (far - near).normalize()
+        };
+        assert!(ray(screen_up * 0.99).y > 0.);
+        assert!(ray(-screen_up * 0.99).y < 0.);
+    }
     #[test]
     fn camera_fit_orbit_pan_zoom_stay_finite_for_small_and_large_bounds() {
         for size in [0., 0.0001, 1., 1e9] {

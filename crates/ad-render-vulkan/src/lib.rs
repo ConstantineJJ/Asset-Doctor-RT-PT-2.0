@@ -10,6 +10,7 @@ pub mod presentation;
 pub mod renderer;
 mod resources;
 mod scene;
+pub mod sky;
 mod swapchain;
 mod textures;
 pub mod ui;

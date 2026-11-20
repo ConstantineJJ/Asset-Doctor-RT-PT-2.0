@@ -78,6 +78,9 @@ pub struct Renderer {
     /// ADR-0040 floor grid; None hides it.
     grid: Option<crate::grid::GridSettings>,
     grid_frames: u64,
+    /// ADR-0040 environment sky; None or a preset without colours draws none.
+    sky: Option<crate::sky::SkySettings>,
+    sky_frames: u64,
     sample_textures: bool,
     sample_mr_maps: bool,
     sample_normal_maps: bool,
@@ -130,6 +133,8 @@ impl Renderer {
             ],
             grid: None,
             grid_frames: 0,
+            sky: None,
+            sky_frames: 0,
             frames: 0,
             mesh_frames: 0,
             pbr_frames: 0,
@@ -218,6 +223,19 @@ impl Renderer {
                 && g.extent > 0.
                 && g.spacing > 0.
         });
+    }
+    /// ADR-0040: environment sky for the next frames (view only).
+    pub fn set_sky(&mut self, sky: Option<crate::sky::SkySettings>) {
+        self.sky = sky.filter(|s| {
+            s.inverse_view_projection
+                .iter()
+                .flatten()
+                .all(|v| v.is_finite())
+        });
+    }
+    /// Frames in which the sky was recorded (smoke evidence).
+    pub fn sky_frames(&self) -> u64 {
+        self.sky_frames
     }
     /// Frames in which the floor grid was recorded (smoke evidence).
     pub fn grid_frames(&self) -> u64 {
@@ -440,6 +458,35 @@ impl Renderer {
                         },
                     }],
                 );
+                // ADR-0040: sky behind everything, then the mesh pipeline again.
+                if let (Some(push), Some(sky)) = (
+                    self.sky.and_then(crate::sky::SkyPush::new),
+                    chain.sky.as_ref(),
+                ) {
+                    device.cmd_bind_pipeline(
+                        self.command,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        sky.handle,
+                    );
+                    let bytes = std::slice::from_raw_parts(
+                        (&push as *const crate::sky::SkyPush).cast::<u8>(),
+                        std::mem::size_of::<crate::sky::SkyPush>(),
+                    );
+                    device.cmd_push_constants(
+                        self.command,
+                        sky.layout,
+                        vk::ShaderStageFlags::FRAGMENT,
+                        0,
+                        bytes,
+                    );
+                    device.cmd_draw(self.command, 3, 1, 0, 0);
+                    self.sky_frames += 1;
+                    device.cmd_bind_pipeline(
+                        self.command,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        pipeline.handle,
+                    );
+                }
                 device.cmd_bind_vertex_buffers(
                     self.command,
                     0,

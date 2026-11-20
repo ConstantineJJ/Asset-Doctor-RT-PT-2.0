@@ -13,7 +13,9 @@ written from scratch in Rust with a Vulkan renderer. Engineering prototype.
 - **Пол** (Сводка): 20 procedural floors for contrast — studio grid, matte,
   light, checker, tiles, grass, dry grass, countryside, sand, asphalt,
   cobblestone, red brick, moon, Mars, lake, snow, clay, moss, blue and purple
-  studio — or no surface, at the model's lowest point with the step scaled to the model and
+  studio — or no surface,
+- **Окружение** (Сводка): sky background — dark studio, day, sunset, night,
+  overcast, light studio; view only, lamps and exposure stay as they are, at the model's lowest point with the step scaled to the model and
   red X / blue Z axes; **G** hides it or brings back the last theme. View only.
 - **Диагностика**: geometry and UV checks G001–G012 (zero-area and duplicate
   triangles, unused vertices, missing/zero normals, boundary and non-manifold
