@@ -1,7 +1,7 @@
 #version 450
 // ADR-0040: one procedural floor quad; no vertex buffers.
 layout(location=0) out vec2 world_xz;
-layout(push_constant) uniform Push { mat4 view_projection; vec4 plane; vec4 style; } pc;
+layout(push_constant) uniform Push { mat4 view_projection; vec4 plane; vec4 style; vec4 color_a; vec4 color_b; } pc;
 void main() {
     int i=int(gl_VertexIndex);
     float x=(i==1||i==2||i==4)?1.0:-1.0;

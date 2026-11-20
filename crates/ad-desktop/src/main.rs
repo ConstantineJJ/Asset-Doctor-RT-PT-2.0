@@ -1870,7 +1870,7 @@ fn run() -> GpuResult<()> {
                         n.parse::<usize>()
                             .ok()
                             .and_then(|i| ad_render_vulkan::grid::FloorTheme::ALL.get(i).copied())
-                            .ok_or("--floor-theme needs 0-4 or none")?,
+                            .ok_or("--floor-theme needs a theme number from 0 or none")?,
                     ),
                 };
             }

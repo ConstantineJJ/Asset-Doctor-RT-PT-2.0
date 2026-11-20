@@ -3,7 +3,8 @@ use crate::{context::GpuResult, gpu::Gpu, pipeline::Shader};
 use ash::vk;
 use std::sync::Arc;
 
-/// Procedural floor themes (ADR-0040 increment 2). One is active at a time.
+/// Procedural floor themes (ADR-0040). One is active at a time; every theme
+/// is a shader pattern plus two colours, so no textures are involved.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FloorTheme {
     StudioGrid,
@@ -11,14 +12,58 @@ pub enum FloorTheme {
     LightStudio,
     Checker,
     Tiles,
+    Grass,
+    DryGrass,
+    Countryside,
+    Sand,
+    Asphalt,
+    Cobblestone,
+    RedBrick,
+    Moon,
+    Mars,
+    Lake,
+    Snow,
+    Clay,
+    Moss,
+    BlueStudio,
+    PurpleStudio,
+}
+/// Shader pattern of a theme (grid.frag `style.z`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pattern {
+    Grid = 0,
+    Matte = 1,
+    Light = 2,
+    Checker = 3,
+    Tiles = 4,
+    Noise = 5,
+    Water = 6,
+    Bricks = 7,
+    Stones = 8,
+    Fields = 9,
 }
 impl FloorTheme {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 20] = [
         Self::StudioGrid,
         Self::DarkMatte,
         Self::LightStudio,
         Self::Checker,
         Self::Tiles,
+        Self::Grass,
+        Self::DryGrass,
+        Self::Countryside,
+        Self::Sand,
+        Self::Asphalt,
+        Self::Cobblestone,
+        Self::RedBrick,
+        Self::Moon,
+        Self::Mars,
+        Self::Lake,
+        Self::Snow,
+        Self::Clay,
+        Self::Moss,
+        Self::BlueStudio,
+        Self::PurpleStudio,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -27,16 +72,47 @@ impl FloorTheme {
             Self::LightStudio => "Светлая студия",
             Self::Checker => "Шахматка",
             Self::Tiles => "Плитка",
+            Self::Grass => "Трава",
+            Self::DryGrass => "Увядшая трава",
+            Self::Countryside => "Сельская местность",
+            Self::Sand => "Песок",
+            Self::Asphalt => "Асфальт",
+            Self::Cobblestone => "Брусчатка",
+            Self::RedBrick => "Красный кирпич",
+            Self::Moon => "Лунная поверхность",
+            Self::Mars => "Марс",
+            Self::Lake => "Озеро",
+            Self::Snow => "Снег",
+            Self::Clay => "Глина",
+            Self::Moss => "Мох",
+            Self::BlueStudio => "Синяя студия",
+            Self::PurpleStudio => "Пурпурная студия",
         }
     }
-    /// Theme index read by grid.frag.
-    fn shader_id(self) -> f32 {
+    /// Pattern and two colours (sRGB-ish display values).
+    pub fn look(self) -> (Pattern, [f32; 3], [f32; 3]) {
+        use Pattern::*;
         match self {
-            Self::StudioGrid => 0.,
-            Self::DarkMatte => 1.,
-            Self::LightStudio => 2.,
-            Self::Checker => 3.,
-            Self::Tiles => 4.,
+            Self::StudioGrid => (Grid, [0.55, 0.58, 0.62], [0.55, 0.58, 0.62]),
+            Self::DarkMatte => (Matte, [0.10, 0.11, 0.12], [0.20, 0.21, 0.23]),
+            Self::LightStudio => (Light, [0.64, 0.65, 0.67], [0.52, 0.53, 0.55]),
+            Self::Checker => (Checker, [0.20, 0.21, 0.23], [0.42, 0.43, 0.46]),
+            Self::Tiles => (Tiles, [0.52, 0.49, 0.45], [0.26, 0.24, 0.22]),
+            Self::Grass => (Noise, [0.20, 0.42, 0.12], [0.34, 0.58, 0.18]),
+            Self::DryGrass => (Noise, [0.50, 0.44, 0.22], [0.66, 0.58, 0.32]),
+            Self::Countryside => (Fields, [0.36, 0.52, 0.20], [0.62, 0.52, 0.26]),
+            Self::Sand => (Noise, [0.76, 0.66, 0.46], [0.86, 0.78, 0.58]),
+            Self::Asphalt => (Noise, [0.15, 0.15, 0.16], [0.27, 0.27, 0.28]),
+            Self::Cobblestone => (Stones, [0.45, 0.43, 0.40], [0.20, 0.19, 0.18]),
+            Self::RedBrick => (Bricks, [0.58, 0.22, 0.16], [0.72, 0.68, 0.62]),
+            Self::Moon => (Noise, [0.42, 0.42, 0.44], [0.62, 0.62, 0.64]),
+            Self::Mars => (Noise, [0.55, 0.24, 0.12], [0.74, 0.40, 0.22]),
+            Self::Lake => (Water, [0.06, 0.24, 0.40], [0.18, 0.46, 0.62]),
+            Self::Snow => (Noise, [0.84, 0.87, 0.92], [0.96, 0.97, 1.00]),
+            Self::Clay => (Noise, [0.62, 0.34, 0.22], [0.72, 0.46, 0.30]),
+            Self::Moss => (Noise, [0.14, 0.24, 0.10], [0.24, 0.34, 0.14]),
+            Self::BlueStudio => (Light, [0.16, 0.30, 0.58], [0.12, 0.22, 0.44]),
+            Self::PurpleStudio => (Light, [0.42, 0.20, 0.52], [0.32, 0.14, 0.40]),
         }
     }
 }
@@ -83,15 +159,21 @@ pub(crate) struct GridPush {
     pub view_projection: [[f32; 4]; 4],
     /// center x, floor y, center z, extent
     pub plane: [f32; 4],
-    /// spacing, major every N, unused, opacity
+    /// spacing, major every N, pattern, opacity
     pub style: [f32; 4],
+    /// theme colours a and b (rgb, w unused)
+    pub color_a: [f32; 4],
+    pub color_b: [f32; 4],
 }
 impl GridPush {
     pub fn new(view_projection: [[f32; 4]; 4], grid: GridSettings) -> Self {
+        let (pattern, a, b) = grid.theme.look();
         Self {
             view_projection,
             plane: [grid.center[0], grid.floor_y, grid.center[1], grid.extent],
-            style: [grid.spacing, 5., grid.theme.shader_id(), 1.],
+            style: [grid.spacing, 5., pattern as u32 as f32, 1.],
+            color_a: [a[0], a[1], a[2], 0.],
+            color_b: [b[0], b[1], b[2], 0.],
         }
     }
 }
@@ -215,24 +297,41 @@ mod tests {
     use super::*;
     #[test]
     fn grid_push_fits_the_guaranteed_push_budget_and_matches_glsl() {
-        assert_eq!(std::mem::size_of::<GridPush>(), 96);
+        // 128 bytes is the push-constant size every Vulkan device guarantees.
+        assert_eq!(std::mem::size_of::<GridPush>(), 128);
         assert_eq!(std::mem::offset_of!(GridPush, plane), 64);
         assert_eq!(std::mem::offset_of!(GridPush, style), 80);
+        assert_eq!(std::mem::offset_of!(GridPush, color_a), 96);
+        assert_eq!(std::mem::offset_of!(GridPush, color_b), 112);
     }
     #[test]
     fn floor_themes_are_distinct_and_reach_the_shader() {
         let labels: std::collections::BTreeSet<_> =
             FloorTheme::ALL.iter().map(|t| t.label()).collect();
         assert_eq!(labels.len(), FloorTheme::ALL.len(), "unique labels");
-        let ids: std::collections::BTreeSet<_> = FloorTheme::ALL
+        // Distinct looks: no two themes share pattern and both colours.
+        let looks: std::collections::BTreeSet<_> = FloorTheme::ALL
             .iter()
-            .map(|t| t.shader_id() as u32)
+            .map(|t| {
+                let (p, a, b) = t.look();
+                (p as u32, a.map(f32::to_bits), b.map(f32::to_bits))
+            })
             .collect();
-        assert_eq!(ids.len(), FloorTheme::ALL.len(), "distinct shader ids");
+        assert_eq!(looks.len(), FloorTheme::ALL.len(), "distinct looks");
+        // Every colour is a finite display value.
+        for theme in FloorTheme::ALL {
+            let (_, a, b) = theme.look();
+            assert!(
+                a.iter().chain(&b).all(|v| (0.0..=1.0).contains(v)),
+                "{theme:?}"
+            );
+        }
         let mut g = grid_for_bounds([0.; 3], [1.; 3]).unwrap();
         assert_eq!(g.theme, FloorTheme::StudioGrid);
-        g.theme = FloorTheme::Tiles;
-        assert_eq!(GridPush::new([[0.; 4]; 4], g).style[2], 4.);
+        g.theme = FloorTheme::Lake;
+        let push = GridPush::new([[0.; 4]; 4], g);
+        assert_eq!(push.style[2], Pattern::Water as u32 as f32);
+        assert_eq!(push.color_a[..3], FloorTheme::Lake.look().1);
     }
     #[test]
     fn nice_steps_and_grid_follow_model_size_and_lowest_point() {
