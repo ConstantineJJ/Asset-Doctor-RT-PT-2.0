@@ -2,6 +2,7 @@
 mod color;
 mod indices;
 mod normals;
+mod placement;
 mod uv;
 mod vertices;
 mod view;
@@ -9,6 +10,7 @@ pub use indices::{
     AppliedRemoval, DocumentStamp, DocumentTag, IndexExchange, PreparedRemoval, RemovalPreview,
     StagedExchange, StagedRemoval,
 };
+pub use placement::Placement;
 pub use view::{CandidateIndices, DocumentView, Primitives};
 #[cfg(test)]
 mod index_tests;
@@ -159,6 +161,8 @@ pub struct AssetDocument {
     vertex_maps: Vec<Option<Vec<u32>>>,
     /// Per primitive: NORMAL values were rewritten (ADR-0036/0037).
     normals_changed: Vec<bool>,
+    /// ADR-0041 placement above the scene roots.
+    placement: Placement,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -373,6 +377,7 @@ impl AssetDocument {
         let normals_changed = vec![false; parts.meshes.len()];
         Ok(Self {
             normals_changed,
+            placement: Placement::IDENTITY,
             vertex_maps,
             parts,
             texture_stats: textures.stats,
@@ -435,7 +440,7 @@ impl DocumentView<'_> {
             .roots
             .iter()
             .rev()
-            .map(|id| (*id, Mat4::IDENTITY))
+            .map(|id| (*id, self.placement().matrix()))
             .collect();
         let mut instances = Vec::new();
         let (mut vertices, mut indices) = (0usize, 0usize);

@@ -84,6 +84,9 @@ pub struct Renderer {
     /// ADR-0040 environment light (PBR only); None = off.
     environment_light: Option<crate::sky::EnvironmentLight>,
     environment_light_frames: u64,
+    /// ADR-0041 drag preview: view-projection and eye used for the model only
+    /// (floor and sky keep the camera's).
+    model_preview: Option<([[f32; 4]; 4], [f32; 3])>,
     /// ADR-0040 owner panorama; replaced only after waiting for idle.
     skybox: Option<crate::sky::Skybox>,
     panorama_frames: u64,
@@ -145,6 +148,7 @@ impl Renderer {
             environment_light_frames: 0,
             skybox: None,
             panorama_frames: 0,
+            model_preview: None,
             frames: 0,
             mesh_frames: 0,
             pbr_frames: 0,
@@ -261,6 +265,12 @@ impl Renderer {
             self.skybox = Some(crate::sky::Skybox::new(self.gpu.clone(), image)?);
         }
         Ok(())
+    }
+    /// ADR-0041: while the model gizmo is dragged, draw the model with this
+    /// view-projection and eye (already including the preview move/scale).
+    pub fn set_model_preview(&mut self, preview: Option<([[f32; 4]; 4], [f32; 3])>) {
+        self.model_preview =
+            preview.filter(|(m, e)| m.iter().flatten().chain(e.iter()).all(|v| v.is_finite()));
     }
     pub fn has_skybox(&self) -> bool {
         self.skybox.is_some()
@@ -392,11 +402,11 @@ impl Renderer {
                 .as_ref()
                 .expect("Frame binding initialized")
                 .update(&FrameData {
-                    view_projection: self.view_projection,
+                    view_projection: self.model_preview.map_or(self.view_projection, |p| p.0),
                     eye_exposure: [
-                        self.eye[0],
-                        self.eye[1],
-                        self.eye[2],
+                        self.model_preview.map_or(self.eye, |p| p.1)[0],
+                        self.model_preview.map_or(self.eye, |p| p.1)[1],
+                        self.model_preview.map_or(self.eye, |p| p.1)[2],
                         self.lighting.exposure_ev,
                     ],
                     lighting: [self.lighting.key, self.lighting.fill, 0., 0.],

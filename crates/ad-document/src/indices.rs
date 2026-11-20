@@ -37,6 +37,8 @@ pub struct RemovalPreview {
 pub(crate) enum Alternate {
     Indices(Vec<u32>),
     Primitive(Box<MeshPrimitive>, Option<Vec<u32>>, bool),
+    /// ADR-0041: the other model placement.
+    Placement(crate::Placement),
 }
 impl Alternate {
     fn data(&self) -> CandidateData<'_> {
@@ -45,6 +47,7 @@ impl Alternate {
             Self::Primitive(p, map, normals) => {
                 CandidateData::Primitive(p, map.as_deref(), *normals)
             }
+            Self::Placement(p) => CandidateData::Placement(*p),
         }
     }
     /// Shape used for decoded-budget admission: (vertices, UV channels, indices).
@@ -52,12 +55,18 @@ impl Alternate {
         match self {
             Self::Indices(v) => (current.positions.len(), current.uv_channels.len(), v.len()),
             Self::Primitive(p, ..) => (p.positions.len(), p.uv_channels.len(), p.indices.len()),
+            Self::Placement(_) => (
+                current.positions.len(),
+                current.uv_channels.len(),
+                current.indices.len(),
+            ),
         }
     }
     fn retained(&self) -> AssetResult<usize> {
         match self {
             Self::Indices(v) => v.capacity().checked_mul(4).ok_or_else(budget),
             Self::Primitive(p, map, _) => crate::vertices::primitive_bytes(p, map.as_ref()),
+            Self::Placement(_) => Ok(std::mem::size_of::<crate::Placement>()),
         }
     }
 }
@@ -83,7 +92,9 @@ impl PreparedRemoval {
         Ok(match &self.replacement {
             Some(Alternate::Indices(v)) => v,
             Some(Alternate::Primitive(p, ..)) => &p.indices,
-            None => &document.parts.meshes[self.preview.mesh.0].indices,
+            Some(Alternate::Placement(_)) | None => {
+                &document.parts.meshes[self.preview.mesh.0].indices
+            }
         })
     }
     /// Immutable primitive this command would publish, for independent checks
@@ -426,6 +437,7 @@ impl AssetDocument {
         let current = match &change.alternate {
             Alternate::Indices(_) => mesh.indices.capacity().checked_mul(4).ok_or_else(budget)?,
             Alternate::Primitive(..) => self.primitive_capacity_bytes(change.mesh)?,
+            Alternate::Placement(_) => std::mem::size_of::<crate::Placement>(),
         };
         if current.max(change.alternate.retained()?) > change.retained_bytes {
             return Err(budget());
@@ -492,6 +504,7 @@ fn swap_in(document: &mut AssetDocument, mesh: MeshId, alternate: &mut Alternate
             std::mem::swap(&mut document.vertex_maps[mesh.0], map);
             std::mem::swap(&mut document.normals_changed[mesh.0], normals);
         }
+        Alternate::Placement(p) => std::mem::swap(&mut document.placement, p),
     }
 }
 

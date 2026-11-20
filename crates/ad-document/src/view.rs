@@ -13,12 +13,16 @@ use std::sync::Arc;
 pub(crate) enum CandidateData<'a> {
     Indices(&'a [u32]),
     Primitive(&'a MeshPrimitive, Option<&'a [u32]>, bool),
+    /// ADR-0041: a new model placement; primitives stay current.
+    Placement(crate::Placement),
 }
 impl<'a> CandidateData<'a> {
-    fn indices(self) -> &'a [u32] {
+    /// Proposed indices, or None when the primitive data stays current.
+    fn indices(self) -> Option<&'a [u32]> {
         match self {
-            Self::Indices(v) => v,
-            Self::Primitive(p, ..) => &p.indices,
+            Self::Indices(v) => Some(v),
+            Self::Primitive(p, ..) => Some(&p.indices),
+            Self::Placement(_) => None,
         }
     }
 }
@@ -68,6 +72,10 @@ impl<'a> CandidateIndices<'a> {
     pub fn changes_vertices(&self) -> bool {
         matches!(self.data, CandidateData::Primitive(..))
     }
+    /// True when publication only changes the model placement (ADR-0041).
+    pub fn changes_placement(&self) -> bool {
+        matches!(self.data, CandidateData::Placement(_))
+    }
 }
 
 /// Immutable view used by snapshots and analysis. A candidate view never
@@ -103,9 +111,19 @@ impl<'a> DocumentView<'a> {
     }
     /// Indices of a source primitive as seen through this view.
     pub fn indices(&self, mesh: MeshId) -> &'a [u32] {
-        match self.candidate {
-            Some((id, data)) if id == mesh => data.indices(),
+        match self
+            .candidate
+            .and_then(|(id, data)| (id == mesh).then(|| data.indices()))
+        {
+            Some(Some(indices)) => indices,
             _ => &self.document.parts.meshes[mesh.0].indices,
+        }
+    }
+    /// Model placement as seen through this view (ADR-0041).
+    pub fn placement(&self) -> crate::Placement {
+        match self.candidate {
+            Some((_, CandidateData::Placement(p))) => p,
+            _ => self.document.placement(),
         }
     }
     /// Map from this view's vertices to original source vertices; `None` is
@@ -183,6 +201,17 @@ impl AssetDocument {
             .get(candidate.mesh.0)
             .ok_or_else(invalid)?;
         let vertices = match candidate.data {
+            CandidateData::Placement(p) => {
+                if !p.valid() {
+                    return Err(invalid());
+                }
+                cancel.check()?;
+                return Ok(DocumentView {
+                    document: self,
+                    tag: candidate.next,
+                    candidate: Some((candidate.mesh, candidate.data)),
+                });
+            }
             CandidateData::Indices(_) => current.positions.len(),
             CandidateData::Primitive(p, map, _) => {
                 let n = p.positions.len();
@@ -203,7 +232,7 @@ impl AssetDocument {
                 n
             }
         };
-        let indices = candidate.data.indices();
+        let indices = candidate.data.indices().ok_or_else(invalid)?;
         if indices.is_empty() || !indices.len().is_multiple_of(3) {
             return Err(invalid());
         }

@@ -14,7 +14,7 @@ use ad_document::{
 use ad_heal::{DuplicatePreview, PlanLimits, RepairKind, VerificationLimits};
 use std::sync::Arc;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EditKind {
     /// G002 for one explicit source primitive and all its references.
     RemoveDuplicates(MeshId),
@@ -28,6 +28,8 @@ pub enum EditKind {
     CreateNormals(MeshId),
     /// G005 (ADR-0037): replace zero normals, keep authored ones.
     FixNormals(MeshId),
+    /// ADR-0041: replace the model placement (move / uniform scale).
+    Place(ad_document::Placement),
     Undo,
     Redo,
 }
@@ -41,7 +43,7 @@ impl EditKind {
             Self::MergeVertices(mesh) => Some((mesh, RepairKind::DuplicateVertices)),
             Self::CreateNormals(mesh) => Some((mesh, RepairKind::MissingNormals)),
             Self::FixNormals(mesh) => Some((mesh, RepairKind::ZeroNormals)),
-            Self::Undo | Self::Redo => None,
+            Self::Undo | Self::Redo | Self::Place(_) => None,
         }
     }
     pub fn from_repair(mesh: MeshId, kind: RepairKind) -> Self {
@@ -233,6 +235,17 @@ pub fn prepare_edit(
             preview = Some(plan.preview());
             change = Change::Remove(removal);
         }
+        EditKind::Place(placement) => {
+            let plan = session.prepare_placement(base.tag(), placement, cancel)?;
+            if !plan.changes() {
+                return Err(AssetError::new(
+                    ad_document::ErrorCode::Unsupported,
+                    "положение модели не изменилось",
+                ));
+            }
+            preview = None;
+            change = Change::Remove(plan);
+        }
         EditKind::Undo => {
             preview = None;
             change = Change::Undo;
@@ -250,7 +263,7 @@ pub fn prepare_edit(
     let mesh = candidate.mesh();
     let view = document.candidate_view(candidate, cancel)?;
     let mut appended = 0;
-    if kind.repair().is_some() {
+    if kind.repair().is_some() || matches!(kind, EditKind::Place(_)) {
         // G002-06: refuse before Apply if the result could not be saved by
         // the verified static exporter (ADR-0028), with its exact reason.
         appended = ad_formats::preflight_changed_export(

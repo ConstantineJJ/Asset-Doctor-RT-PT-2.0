@@ -436,7 +436,8 @@ pub fn preflight_changed_export(
         return Err(budget());
     }
     let changed = bindings(&parsed, view, limits, cancel)?;
-    if changed.is_empty() {
+    let roots = placed_roots(&parsed, document, view.placement(), cancel)?;
+    if changed.is_empty() && roots.is_empty() {
         if document.source().len() > limits.output_bytes {
             return Err(budget());
         }
@@ -446,6 +447,100 @@ pub fn preflight_changed_export(
     let original = parsed.glb.bin.as_deref().map_or(0, <[u8]>::len);
     cancel.check()?;
     Ok(bin_len - original)
+}
+
+/// ADR-0041: new transforms of the scene roots for a non-identity placement,
+/// in each node's own form (TRS or matrix), as f32 values the importer reads
+/// back exactly. Empty for the identity.
+fn placed_roots(
+    parsed: &source::Parsed<'_>,
+    document: &AssetDocument,
+    placement: ad_document::Placement,
+    cancel: &Cancellation,
+) -> AssetResult<Vec<(usize, gltf::scene::Transform)>> {
+    use gltf::scene::Transform;
+    if placement.is_identity() {
+        return Ok(Vec::new());
+    }
+    if !placement.valid() {
+        return Err(invalid());
+    }
+    let mut roots = Vec::new();
+    roots
+        .try_reserve_exact(document.roots().len())
+        .map_err(|_| budget())?;
+    for root in document.roots() {
+        cancel.check()?;
+        let node = parsed.document.nodes().nth(root.0).ok_or_else(invalid)?;
+        let placed = match node.transform() {
+            Transform::Matrix { matrix } => Transform::Matrix {
+                matrix: placement.apply_matrix(matrix),
+            },
+            Transform::Decomposed {
+                translation,
+                rotation,
+                scale,
+            } => Transform::Decomposed {
+                translation: placement.apply(translation),
+                rotation,
+                scale: scale.map(|v| v * placement.scale),
+            },
+        };
+        let finite = match &placed {
+            Transform::Matrix { matrix } => matrix.iter().flatten().all(|v| v.is_finite()),
+            Transform::Decomposed {
+                translation, scale, ..
+            } => translation.iter().chain(scale).all(|v| v.is_finite()),
+        };
+        if !finite {
+            return Err(AssetError::new(
+                ErrorCode::ResourceLimit,
+                "Placed root transform overflows f32",
+            ));
+        }
+        roots.push((root.0, placed));
+    }
+    Ok(roots)
+}
+/// Root locals a saved copy of `document` must read back with (ADR-0041).
+pub(crate) fn expected_roots(
+    document: &AssetDocument,
+    import: ImportLimits,
+    cancel: &Cancellation,
+) -> AssetResult<Vec<(usize, [[f32; 4]; 4])>> {
+    if document.placement().is_identity() {
+        return Ok(Vec::new());
+    }
+    let parsed = source::parse(document.source(), import, cancel)?;
+    Ok(
+        placed_roots(&parsed, document, document.placement(), cancel)?
+            .into_iter()
+            .map(|(i, t)| (i, t.matrix()))
+            .collect(),
+    )
+}
+/// Writes placed root transforms into node metadata (ADR-0041).
+fn write_roots(meta: &mut Value, roots: &[(usize, gltf::scene::Transform)]) -> AssetResult<()> {
+    use gltf::scene::Transform;
+    let numbers = |values: &[f32]| json!(values.iter().map(|v| f64::from(*v)).collect::<Vec<_>>());
+    for (index, transform) in roots {
+        let node = array(meta, "nodes")?
+            .get_mut(*index)
+            .and_then(Value::as_object_mut)
+            .ok_or_else(invalid)?;
+        match transform {
+            Transform::Matrix { matrix } => {
+                node.insert("matrix".into(), numbers(matrix.as_flattened()));
+            }
+            Transform::Decomposed {
+                translation, scale, ..
+            } => {
+                node.insert("translation".into(), numbers(translation));
+                node.insert("scale".into(), numbers(scale));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Bytes appended after the original BIN, in metadata order.
@@ -482,7 +577,8 @@ pub fn prepare_glb(
     }
     let view = document.view();
     let changed = bindings(&parsed, &view, limits, cancel)?;
-    let bytes = if changed.is_empty() {
+    let roots = placed_roots(&parsed, document, document.placement(), cancel)?;
+    let bytes = if changed.is_empty() && roots.is_empty() {
         if document.source().len() > limits.output_bytes {
             return Err(budget());
         }
@@ -585,6 +681,7 @@ pub fn prepare_glb(
             appends.push(Append::Indices(current_indices));
             offset += size;
         }
+        write_roots(&mut meta, &roots)?;
         let buffer = array(&mut meta, "buffers")?
             .first_mut()
             .and_then(Value::as_object_mut)
@@ -688,7 +785,11 @@ pub fn prepare_glb(
         import,
         cancel,
     )?;
-    roundtrip::compare(document, &decoded, cancel)?;
+    let expected: Vec<(usize, [[f32; 4]; 4])> = roots
+        .iter()
+        .map(|(i, t)| (*i, t.clone().matrix()))
+        .collect();
+    roundtrip::compare(document, &decoded, &expected, cancel)?;
     let verified = VerifiedGlb { stamp, bytes };
     verified.verify_current(document, cancel)?;
     Ok(verified)

@@ -156,7 +156,7 @@ fn all_core_material_roles_and_vertex_attributes_roundtrip_after_index_change() 
         remove(&mut d, 0);
         let result = export(&d).unwrap();
         let read = fixture(result.bytes());
-        roundtrip::compare(&d, &read, &Cancellation::default()).unwrap();
+        roundtrip::compare(&d, &read, &[], &Cancellation::default()).unwrap();
     }
 }
 
@@ -496,4 +496,127 @@ fn public_reimport_comparison_accepts_equal_and_refuses_index_differences() {
     crate::compare_reimported(&a, &b, &c).unwrap();
     remove(&mut b, 0);
     assert!(crate::compare_reimported(&a, &b, &c).is_err());
+}
+
+/// ADR-0041: a placement rewrites only the root transforms, in each root's
+/// own form; children, primitives and BIN stay exact and the proof is strict.
+#[test]
+fn placement_export_writes_root_transforms_in_their_own_form() {
+    use ad_document::Placement;
+    let (mut j, b) = tiny();
+    let r = std::f32::consts::FRAC_1_SQRT_2;
+    j["nodes"] = serde_json::json!([
+        {"mesh":0},
+        {"mesh":0,"translation":[1,2,3],"rotation":[0,r,0,r],"scale":[2,2,2]},
+        {"matrix":[1,0,0,0, 0,1,0,0, 0,0,1,0, 5,0,0,1],"children":[3]},
+        {"mesh":0,"translation":[0,0,1]}
+    ]);
+    j["scenes"] = serde_json::json!([{"nodes":[0,1,2]}]);
+    let source = bytes(j, b);
+    let mut doc = import_glb(
+        Arc::from(source.as_slice()),
+        "placed".into(),
+        ad_document::DocumentId(9),
+        ImportLimits::default(),
+        &Cancellation::default(),
+    )
+    .unwrap();
+    let c = Cancellation::default();
+    let before = doc.snapshot(ImportLimits::default(), &c).unwrap();
+    let placement = Placement::IDENTITY.then([0., 0., 0.], 1.5, [0.25, -1., 4.]);
+    let plan = doc.prepare_placement(doc.tag(), placement, &c).unwrap();
+    {
+        let candidate = plan.candidate(&doc, &c).unwrap();
+        let view = doc.candidate_view(candidate, &c).unwrap();
+        let appended =
+            preflight_changed_export(&view, ExportLimits::default(), ImportLimits::default(), &c)
+                .unwrap();
+        assert_eq!(appended, 0, "placement appends no BIN bytes");
+    }
+    doc.apply_triangle_removal(plan, ImportLimits::default(), &c)
+        .unwrap();
+    let verified = export(&doc).unwrap();
+    let out = verified.bytes();
+    assert_ne!(&out[..], &source[..]);
+    let n = u32::from_le_bytes(out[12..16].try_into().unwrap()) as usize;
+    let json: serde_json::Value = serde_json::from_slice(&out[20..20 + n]).unwrap();
+    let nodes = &json["nodes"];
+    assert_eq!(
+        nodes[0]["translation"],
+        serde_json::json!([0.25, -1.0, 4.0])
+    );
+    assert_eq!(nodes[0]["scale"], serde_json::json!([1.5, 1.5, 1.5]));
+    assert_eq!(nodes[1]["scale"], serde_json::json!([3.0, 3.0, 3.0]));
+    assert_eq!(
+        nodes[1]["rotation"].as_array().unwrap().len(),
+        4,
+        "rotation kept"
+    );
+    assert!(
+        nodes[2].get("translation").is_none(),
+        "matrix stays a matrix"
+    );
+    assert_eq!(nodes[2]["matrix"][12], serde_json::json!(7.75));
+    assert_eq!(
+        nodes[3]["translation"],
+        serde_json::json!([0, 0, 1]),
+        "child unchanged"
+    );
+    // The original BIN is reused byte for byte.
+    let tail = &source[source.len() - 48..];
+    assert_eq!(&out[out.len() - 48..], tail);
+    let read = import_glb(
+        out.clone(),
+        "read".into(),
+        ad_document::DocumentId(10),
+        ImportLimits::default(),
+        &c,
+    )
+    .unwrap();
+    crate::compare_reimported(&doc, &read, &c).unwrap();
+    let saved = read.snapshot(ImportLimits::default(), &c).unwrap();
+    for (a, b) in before.positions.iter().zip(&saved.positions) {
+        let want = placement.apply(*a);
+        assert!(
+            want.iter().zip(b).all(|(w, g)| (w - g).abs() < 1e-4),
+            "{want:?} vs {b:?}"
+        );
+    }
+    // A mismatching placement is not certified by the reimport check.
+    assert!(crate::compare_reimported(&read, &doc, &c).is_err());
+}
+
+#[test]
+fn placement_export_is_refused_for_opaque_metadata() {
+    use ad_document::Placement;
+    let (mut j, b) = tiny();
+    j["nodes"][0]["extras"] = serde_json::json!({"note":"keep"});
+    let source = bytes(j, b);
+    let mut doc = import_glb(
+        Arc::from(source.as_slice()),
+        "extras".into(),
+        ad_document::DocumentId(11),
+        ImportLimits::default(),
+        &Cancellation::default(),
+    )
+    .unwrap();
+    let c = Cancellation::default();
+    let plan = doc
+        .prepare_placement(
+            doc.tag(),
+            Placement::IDENTITY.then([0.; 3], 2., [0.; 3]),
+            &c,
+        )
+        .unwrap();
+    {
+        let candidate = plan.candidate(&doc, &c).unwrap();
+        let view = doc.candidate_view(candidate, &c).unwrap();
+        assert!(
+            preflight_changed_export(&view, ExportLimits::default(), ImportLimits::default(), &c)
+                .is_err()
+        );
+    }
+    doc.apply_triangle_removal(plan, ImportLimits::default(), &c)
+        .unwrap();
+    assert!(export(&doc).is_err());
 }

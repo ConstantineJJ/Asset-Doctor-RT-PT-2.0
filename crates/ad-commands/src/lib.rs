@@ -233,6 +233,22 @@ impl Session {
         }
         Ok(plan)
     }
+    /// ADR-0041: replace the model placement. History keeps the previous one.
+    pub fn prepare_placement(
+        &self,
+        expected: DocumentTag,
+        placement: ad_document::Placement,
+        cancel: &Cancellation,
+    ) -> AssetResult<PreparedRemoval> {
+        self.document.verify_tag(expected, cancel)?;
+        let plan = self
+            .document
+            .prepare_placement(expected, placement, cancel)?;
+        if plan.changes() {
+            self.admit(plan.retained_bytes())?;
+        }
+        Ok(plan)
+    }
     pub fn commit(
         &mut self,
         plan: PreparedRemoval,

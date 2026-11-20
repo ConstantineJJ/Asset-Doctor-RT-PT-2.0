@@ -35,6 +35,18 @@ pub struct Actions {
     pub lamp_drag: Option<[f32; 2]>,
     /// Lamp context menu: point the lamp from the camera.
     pub lamp_from_camera: bool,
+    /// ADR-0041 model gizmo: handle dragged by (dx, dy) in viewport units
+    /// (0..1 of its width/height), released this frame, or reset requested.
+    pub model_drag: Option<(crate::model_gizmo::Handle, [f32; 2])>,
+    pub model_drag_end: bool,
+    pub model_reset: bool,
+}
+/// ADR-0041 model gizmo for this frame: viewport positions (0..1, y down) of
+/// the bottom centre and of the X/Y/Z arrow tips (None behind the camera).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ModelGizmo {
+    pub pivot: [f32; 2],
+    pub ends: [Option<[f32; 2]>; 3],
 }
 /// ADR-0040 lamp gizmo for this frame: viewport positions (0..1, y down) of
 /// the lamp and the model centre, set by the application from the camera.
@@ -166,6 +178,11 @@ pub struct ViewerUi {
     pub lamp_icon: bool,
     /// Colour temperature last chosen for the lamp, kelvin.
     pub lamp_kelvin: f32,
+    /// ADR-0041 model gizmo: positions from the app, the owner's visibility
+    /// choice, and the current placement shown in Сводка.
+    pub model_gizmo: Option<ModelGizmo>,
+    pub model_gizmo_on: bool,
+    pub placement: ad_document::Placement,
     /// Theme G brings back after hiding the floor.
     last_floor: ad_render_vulkan::grid::FloorTheme,
     pub normal_maps: bool,
@@ -210,6 +227,8 @@ pub struct ViewerUi {
     #[cfg(test)]
     lamp_gizmo_rect: egui::Rect,
     #[cfg(test)]
+    model_gizmo_rects: Vec<(crate::model_gizmo::Handle, egui::Rect)>,
+    #[cfg(test)]
     mr_maps_rect: egui::Rect,
     #[cfg(test)]
     normal_maps_rect: egui::Rect,
@@ -249,6 +268,9 @@ impl Default for ViewerUi {
             lamp_gizmo: None,
             lamp_icon: true,
             lamp_kelvin: 6500.,
+            model_gizmo: None,
+            model_gizmo_on: true,
+            placement: ad_document::Placement::IDENTITY,
             normal_maps: true,
             ao_maps: true,
             emission: true,
@@ -289,6 +311,8 @@ impl Default for ViewerUi {
             reset_lighting_rect: egui::Rect::NOTHING,
             #[cfg(test)]
             lamp_gizmo_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            model_gizmo_rects: Vec::new(),
             #[cfg(test)]
             mr_maps_rect: egui::Rect::NOTHING,
             #[cfg(test)]
@@ -333,6 +357,110 @@ impl ViewerUi {
         self.input
             .as_mut()
             .is_some_and(|input| input.on_window_event(window, event).consumed)
+    }
+    /// ADR-0041 model gizmo: X (red), Y (green), Z (blue) arrows from the
+    /// bottom centre move the model; the square at the centre scales it.
+    fn model_gizmo_ui(
+        &mut self,
+        context: &egui::Context,
+        root: &egui::Ui,
+        gizmo: ModelGizmo,
+        actions: &mut Actions,
+    ) {
+        use crate::model_gizmo::Handle;
+        let scene = self.scene;
+        let at = |p: [f32; 2]| {
+            egui::pos2(
+                scene.min.x + p[0] * scene.width(),
+                scene.min.y + p[1] * scene.height(),
+            )
+        };
+        let pivot = at(gizmo.pivot);
+        if !scene.shrink(10.).contains(pivot) {
+            return;
+        }
+        let colors = [
+            Color32::from_rgb(232, 72, 72),
+            Color32::from_rgb(96, 204, 96),
+            Color32::from_rgb(80, 140, 240),
+        ];
+        let painter = root.painter().with_clip_rect(scene);
+        let mut handles = Vec::new();
+        for (axis, end) in gizmo.ends.iter().enumerate() {
+            if let Some(end) = end.map(at) {
+                painter.line_segment([pivot, end], egui::Stroke::new(2.5, colors[axis]));
+                if scene.shrink(10.).contains(end) {
+                    handles.push((Handle::Axis(axis), end, colors[axis]));
+                }
+            }
+        }
+        handles.push((Handle::Scale, pivot, Color32::from_rgb(235, 235, 235)));
+        for (handle, position, color) in handles {
+            let id = egui::Id::new(("model_gizmo", format!("{handle:?}")));
+            egui::Area::new(id)
+                .order(egui::Order::Middle)
+                .fixed_pos(position - egui::vec2(11., 11.))
+                .show(context, |ui| {
+                    let (rect, response) =
+                        ui.allocate_exact_size(egui::vec2(22., 22.), egui::Sense::click_and_drag());
+                    #[cfg(test)]
+                    {
+                        self.model_gizmo_rects.push((handle, rect));
+                    }
+                    let hot = response.hovered() || response.dragged();
+                    let painter = ui.painter();
+                    let dark = egui::Stroke::new(1.5, Color32::from_rgb(24, 26, 32));
+                    match handle {
+                        Handle::Axis(_) => {
+                            let r = if hot { 8. } else { 6. };
+                            painter.circle_filled(rect.center(), r, color);
+                            painter.circle_stroke(rect.center(), r, dark);
+                        }
+                        Handle::Scale => {
+                            let half = if hot { 7. } else { 5.5 };
+                            let square =
+                                egui::Rect::from_center_size(rect.center(), egui::vec2(half * 2., half * 2.));
+                            painter.rect_filled(square, 1., color);
+                            painter.rect_stroke(square, 1., dark, egui::StrokeKind::Outside);
+                        }
+                    }
+                    if response.dragged() {
+                        let d = response.drag_delta();
+                        if d != egui::Vec2::ZERO {
+                            actions.model_drag =
+                                Some((handle, [d.x / scene.width(), d.y / scene.height()]));
+                        }
+                    }
+                    if response.drag_stopped() {
+                        actions.model_drag_end = true;
+                    }
+                    let hint = match handle {
+                        Handle::Axis(0) => "Тяните — сдвинуть модель по X. Отпускание — одна правка (Ctrl+Z отменит).",
+                        Handle::Axis(1) => "Тяните — сдвинуть модель по Y. Отпускание — одна правка (Ctrl+Z отменит).",
+                        Handle::Axis(_) => "Тяните — сдвинуть модель по Z. Отпускание — одна правка (Ctrl+Z отменит).",
+                        Handle::Scale => "Тяните вверх — крупнее, вниз — мельче (от нижней точки центра). ПКМ — меню.",
+                    };
+                    let response = response.on_hover_text(hint);
+                    if handle == Handle::Scale {
+                        response.context_menu(|ui| {
+                            if ui
+                                .add_enabled(
+                                    !self.placement.is_identity(),
+                                    egui::Button::new("Сбросить положение модели"),
+                                )
+                                .clicked()
+                            {
+                                actions.model_reset = true;
+                                ui.close();
+                            }
+                            if ui.button("Скрыть гизмо модели").clicked() {
+                                self.model_gizmo_on = false;
+                                ui.close();
+                            }
+                        });
+                    }
+                });
+        }
     }
     /// ADR-0040 lamp gizmo over the viewport: a sun icon on a line from the
     /// model centre. Dragging it turns the lamp, right click opens its menu.
@@ -604,6 +732,14 @@ impl ViewerUi {
                         }
                         if ui.selectable_label(self.floor.is_none(),"Без поверхности").clicked() {self.floor=None;}
                     }).response.on_hover_text("Пол на уровне нижней точки модели, шаг по её размеру; красная ось X, синяя Z. Только вид — в модель и файл не попадает. G — скрыть или вернуть пол.");
+                    if asset.is_some() {
+                        ui.horizontal(|ui|{
+                            ui.checkbox(&mut self.model_gizmo_on,"Гизмо модели").on_hover_text("Стрелки X/Y/Z сдвигают модель, квадрат масштабирует её равномерно от нижней точки центра. Каждое отпускание — одна правка: Ctrl+Z отменит, «Сохранить» запишет в файл.");
+                            if ui.add_enabled(!self.placement.is_identity(),egui::Button::new("Сбросить положение")).clicked() {actions.model_reset=true;}
+                        });
+                        let [x,y,z]=self.placement.translation;
+                        ui.weak(format!("Положение: сдвиг {x:.3}, {y:.3}, {z:.3}; масштаб x{:.3}",self.placement.scale));
+                    }
                     egui::ComboBox::from_label("Окружение").selected_text(self.environment.label()).show_ui(ui,|ui|{
                         for preset in ad_render_vulkan::sky::Environment::ALL {
                             ui.selectable_value(&mut self.environment,preset,preset.label());
@@ -702,6 +838,9 @@ impl ViewerUi {
             // mark it as UI-owned and consume the viewport's mouse input.
             {
                 self.scene=root.available_rect_before_wrap();
+                if asset.is_some() && self.model_gizmo_on && let Some(gizmo)=self.model_gizmo {
+                    self.model_gizmo_ui(&context,root,gizmo,&mut actions);
+                }
                 if asset.is_some() && self.lamp_icon && let Some(gizmo)=self.lamp_gizmo {
                     self.lamp_gizmo_ui(&context,root,gizmo,&mut actions);
                 }
@@ -831,7 +970,7 @@ impl ViewerUi {
             egui::Window::new("Справка").open(&mut self.help).resizable(true).show(&context,|ui| {
                 ui.label("Открыть: Ctrl+O или перетащить GLB в окно.");
                 ui.label("ЛКМ — вращение; ПКМ / средняя — перемещение; колесо — масштаб.");
-                ui.label("F — вписать модель; G — скрыть или вернуть пол; значок лампы во вьюпорте — тянуть, чтобы повернуть свет, правая кнопка — меню лампы; Esc — отменить загрузку или подготовку правки; H — справка.");
+                ui.label("F — вписать модель; G — скрыть или вернуть пол; значок лампы во вьюпорте — тянуть, чтобы повернуть свет, правая кнопка — меню лампы; стрелки X/Y/Z — сдвинуть модель, квадрат — масштаб (каждое отпускание — одна правка, Ctrl+Z); Esc — отменить загрузку или подготовку правки; H — справка.");
                 ui.label("Ремонты G001–G005 и G012: «Диагностика», затем «Предпросмотр ремонта…» в строке замечания, затем «Применить»; все сразу — «Очередь ремонтов…». Ctrl+Z — отменить правку, Ctrl+Y — вернуть.");
                 ui.label("«Сохранить» (Ctrl+S) перезаписывает рабочий файл после подтверждения и проверки; «Сохранить копию…» (Ctrl+Shift+S) пишет проверенный GLB в новый файл. При закрытии или открытии другой модели с несохранёнными правками программа спросит, что делать.");
                 ui.separator();ui.label("Выбор узла показывает сведения. Подсветка узлов появится позднее.");
@@ -1325,6 +1464,70 @@ mod tests {
             click(&mut ui, None, rect, (1200., 760.))
         };
         assert!(!actions.save_copy);
+    }
+    #[test]
+    fn model_gizmo_arrow_drag_reports_handle_delta_and_release() {
+        use crate::model_gizmo::Handle;
+        let mut ui = ViewerUi::default();
+        let asset = crate::imports::prepare(&crate::worker::Request {
+            ticket: 1,
+            input: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/Pbr_Factors.glb"),
+            cancel: ad_document::Cancellation::default(),
+        })
+        .unwrap();
+        ui.lamp_icon = false;
+        ui.model_gizmo = Some(ModelGizmo {
+            pivot: [0.5, 0.6],
+            ends: [Some([0.65, 0.6]), Some([0.5, 0.4]), None],
+        });
+        for _ in 0..2 {
+            ui.model_gizmo_rects.clear();
+            let (out, _, _) = ui.layout(raw(1400., 1000.), Some(&asset), false);
+            out.drop_without_applying_deltas();
+        }
+        let handles: Vec<_> = ui.model_gizmo_rects.iter().map(|(h, _)| *h).collect();
+        assert_eq!(handles, [Handle::Axis(0), Handle::Axis(1), Handle::Scale]);
+        let at = ui.model_gizmo_rects[0].1.center();
+        let end = at + egui::vec2(40., 5.);
+        let steps = [
+            vec![egui::Event::PointerMoved(at)],
+            vec![egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }],
+            vec![egui::Event::PointerMoved(at + egui::vec2(20., 0.))],
+            vec![egui::Event::PointerMoved(end)],
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        ];
+        let (mut total, mut released) = ([0f32; 2], false);
+        for events in steps {
+            let mut input = raw(1400., 1000.);
+            input.events = events;
+            ui.model_gizmo_rects.clear();
+            let (out, _, actions) = ui.layout(input, Some(&asset), false);
+            if let Some((handle, d)) = actions.model_drag {
+                assert_eq!(handle, Handle::Axis(0));
+                total = [total[0] + d[0], total[1] + d[1]];
+            }
+            released |= actions.model_drag_end;
+            out.drop_without_applying_deltas();
+        }
+        assert!(released, "release ends the drag");
+        assert!((total[0] * ui.scene.width() - 40.).abs() < 1.5, "{total:?}");
+        // Hidden gizmo leaves the viewport to the camera.
+        ui.model_gizmo_on = false;
+        ui.model_gizmo_rects.clear();
+        let (out, _, _) = ui.layout(raw(1400., 1000.), Some(&asset), false);
+        out.drop_without_applying_deltas();
+        assert!(ui.model_gizmo_rects.is_empty());
     }
     #[test]
     fn lamp_gizmo_captures_the_pointer_and_reports_drags() {

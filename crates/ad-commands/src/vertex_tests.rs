@@ -99,3 +99,55 @@ fn history_budget_refuses_a_primitive_too_large_to_keep_for_undo() {
         Err(e) if e.code == ErrorCode::ResourceLimit
     ));
 }
+
+/// ADR-0041: a placement edit goes through the same history and moves the
+/// snapshot; Undo restores the imported placement exactly.
+#[test]
+fn placement_commits_undoes_and_redoes_and_moves_the_snapshot() {
+    use ad_document::Placement;
+    let mut s = session(HistoryLimits::default());
+    let c = Cancellation::default();
+    let before = s.document().snapshot(ImportLimits::default(), &c).unwrap();
+    let tag = s.document().tag();
+    let same = s.prepare_placement(tag, Placement::IDENTITY, &c).unwrap();
+    assert!(!same.changes(), "same placement is a no-op");
+    let target = Placement::IDENTITY.then([0.; 3], 2., [1., 0., 0.]);
+    let plan = s.prepare_placement(tag, target, &c).unwrap();
+    let candidate = plan.candidate(s.document(), &c).unwrap();
+    assert!(candidate.changes_placement() && !candidate.changes_vertices());
+    let view = s.document().candidate_view(candidate, &c).unwrap();
+    assert_eq!(view.placement(), target);
+    let preview = view.snapshot(ImportLimits::default(), &c).unwrap();
+    assert_eq!(preview.revision, 1);
+    assert_eq!(
+        s.document().placement(),
+        Placement::IDENTITY,
+        "preview only"
+    );
+    let outcome = s.commit(plan, &c).unwrap();
+    assert!(outcome.changed && s.is_modified());
+    let after = s.document().snapshot(ImportLimits::default(), &c).unwrap();
+    for (a, b) in before.positions.iter().zip(&after.positions) {
+        assert_eq!(*b, target.apply(*a));
+    }
+    assert_eq!(after.indices, before.indices);
+    assert_eq!(after.bounds.min, target.apply(before.bounds.min));
+    s.undo(s.document().tag(), &c).unwrap();
+    assert_eq!(s.document().placement(), Placement::IDENTITY);
+    assert!(!s.is_modified());
+    s.redo(s.document().tag(), &c).unwrap();
+    assert_eq!(s.document().placement(), target);
+    let bad = Placement {
+        scale: 0.,
+        ..Placement::IDENTITY
+    };
+    let error = s
+        .prepare_placement(s.document().tag(), bad, &c)
+        .err()
+        .unwrap();
+    assert_eq!(error.code, ErrorCode::Unsupported);
+    assert!(
+        s.prepare_placement(tag, target, &c).is_err(),
+        "stale tag is refused"
+    );
+}

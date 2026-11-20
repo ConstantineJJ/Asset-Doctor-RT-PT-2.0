@@ -6,6 +6,7 @@ mod edits;
 mod history;
 mod imports;
 mod lamp;
+mod model_gizmo;
 mod native;
 mod queue;
 mod saving;
@@ -123,6 +124,12 @@ struct App {
     pending_skybox_choose: bool,
     /// Viewport size of the last frame (lamp gizmo projection).
     last_view: (u32, u32),
+    /// ADR-0041 gizmo drag preview, kept until its placement edit finishes.
+    model_preview: Option<model_gizmo::Delta>,
+    model_pending: bool,
+    /// Smoke: place, Undo, Redo, then a verified export of the placement.
+    smoke_place: bool,
+    place_smoke_done: bool,
     skybox_job: Option<std::sync::mpsc::Receiver<Result<skybox::Loaded, String>>>,
     pending_skybox: Option<skybox::Loaded>,
     /// File the current model was opened from (or last saved and reopened).
@@ -528,6 +535,7 @@ impl App {
             EditKind::MergeVertices(_) => "Расчёт и проверка ремонта G012…",
             EditKind::CreateNormals(_) => "Расчёт и проверка нормалей G004…",
             EditKind::FixNormals(_) => "Расчёт и проверка нормалей G005…",
+            EditKind::Place(_) => "Перемещение модели…",
             EditKind::Undo => "Подготовка отмены правки…",
             EditKind::Redo => "Подготовка повтора правки…",
         }
@@ -543,6 +551,10 @@ impl App {
             return Ok(());
         }
         self.editing = false;
+        // ADR-0041: the drag preview ends with its edit, applied or refused.
+        if std::mem::take(&mut self.model_pending) {
+            self.model_preview = None;
+        }
         let prepare_ms = self.edit_started.elapsed().as_millis();
         let queued = self
             .queue
@@ -788,6 +800,21 @@ impl App {
         {
             return Ok(());
         }
+        if self.edit_mesh.is_none() && self.smoke_place {
+            let asset = self.current.as_ref().ok_or("Place smoke has no model")?;
+            let bounds = asset.snapshot().bounds;
+            let mut delta = model_gizmo::Delta::new(model_gizmo::pivot(bounds));
+            delta.factor = 1.5;
+            delta.offset = [model_gizmo::handle_length(bounds), 0., 0.];
+            let placement = delta.placement(asset.document().placement());
+            eprintln!(
+                "place_smoke_target scale={} translation={:?}",
+                placement.scale, placement.translation
+            );
+            self.edit_mesh = Some(MeshId(0));
+            self.edit_queue =
+                VecDeque::from([EditKind::Place(placement), EditKind::Undo, EditKind::Redo]);
+        }
         if self.edit_mesh.is_none() {
             let mesh = self
                 .current
@@ -812,6 +839,10 @@ impl App {
             if self.saving || !self.advance_overwrite_smoke() || !self.advance_save_smoke() {
                 return Ok(());
             }
+            if self.smoke_place && !self.place_smoke_done {
+                self.place_smoke_done = true;
+                self.verify_place_export()?;
+            }
             if !self.edit_smoke_done {
                 self.edit_smoke_done = true;
                 eprintln!("edit_smoke_done=true");
@@ -823,6 +854,38 @@ impl App {
             self.edit_fault_expected = true;
         }
         self.request_edit(kind);
+        Ok(())
+    }
+    /// Place smoke: the current placement must export, reimport and compare
+    /// exactly (the same proof Save Copy uses), without writing a file.
+    fn verify_place_export(&mut self) -> GpuResult<()> {
+        let asset = self.current.as_ref().ok_or("Place smoke has no model")?;
+        let document = asset.document();
+        let cancel = Cancellation::default();
+        let verified = ad_formats::prepare_glb(
+            document,
+            document.tag(),
+            ad_formats::ExportLimits::default(),
+            ad_document::ImportLimits::default(),
+            &cancel,
+        )?;
+        let reimported = ad_formats::import_glb(
+            verified.bytes().clone(),
+            "place-smoke".into(),
+            ad_document::DocumentId(u64::MAX),
+            ad_document::ImportLimits::default(),
+            &cancel,
+        )?;
+        ad_formats::compare_reimported(document, &reimported, &cancel)?;
+        let placement = document.placement();
+        eprintln!(
+            "place_export_verified revision={} scale={} translation={:?} bytes={} source_bytes={}",
+            document.revision(),
+            placement.scale,
+            placement.translation,
+            verified.bytes().len(),
+            document.source().len()
+        );
         Ok(())
     }
     /// HEAL-03: appends one record; a failure is a warning, never an edit error.
@@ -1408,6 +1471,64 @@ impl App {
         }
     }
 
+    /// ADR-0041: gizmo drags update the preview; release or reset requests
+    /// one placement edit.
+    fn model_gizmo_actions(&mut self, actions: &viewer_ui::Actions, width: u32, height: u32) {
+        let Some(asset) = self.current.as_ref() else {
+            return;
+        };
+        let bounds = asset.snapshot().bounds;
+        let current = asset.document().placement();
+        if let Some((handle, [nx, ny])) = actions.model_drag
+            && !self.model_pending
+        {
+            let delta = self
+                .model_preview
+                .get_or_insert_with(|| model_gizmo::Delta::new(model_gizmo::pivot(bounds)));
+            let drag = [nx * width as f32, ny * height as f32];
+            match handle {
+                model_gizmo::Handle::Axis(axis) => {
+                    if let Some(g) = model_gizmo::screen(&self.camera, bounds, None, width, height)
+                        && let Some(end) = g.ends[axis]
+                    {
+                        let axis_px = [
+                            (end[0] - g.pivot[0]) * width as f32,
+                            (end[1] - g.pivot[1]) * height as f32,
+                        ];
+                        let len = model_gizmo::handle_length(bounds);
+                        model_gizmo::drag_axis(delta, axis, len, drag, axis_px);
+                    }
+                }
+                model_gizmo::Handle::Scale => model_gizmo::drag_scale(delta, current, drag[1]),
+            }
+        }
+        if actions.model_drag_end && !self.model_pending {
+            match self.model_preview {
+                Some(delta) if !delta.is_noop() => {
+                    let placement = delta.placement(current);
+                    if placement.valid() && self.request_edit(EditKind::Place(placement)) {
+                        self.model_pending = true;
+                    } else {
+                        self.model_preview = None;
+                        self.ui.set_status(
+                            "Модель сейчас нельзя переместить: идёт другая работа",
+                            true,
+                        );
+                    }
+                }
+                _ => self.model_preview = None,
+            }
+        }
+        if actions.model_reset
+            && !current.is_identity()
+            && !self.model_pending
+            && !self.request_edit(EditKind::Place(ad_document::Placement::IDENTITY))
+        {
+            self.ui
+                .set_status("Положение не сброшено: идёт другая работа", true);
+        }
+    }
+
     fn cancel_import(&mut self) {
         self.imports.cancel();
         self.importing = false;
@@ -1425,6 +1546,22 @@ impl App {
         self.refresh_edit_ui();
         // ADR-0040 lamp gizmo: lamp 1.25 model radii from the centre.
         let (view_w, view_h) = self.last_view;
+        // ADR-0041 model gizmo at the (previewed) bottom centre.
+        self.ui.model_gizmo = self.current.as_ref().and_then(|asset| {
+            model_gizmo::screen(
+                &self.camera,
+                asset.snapshot().bounds,
+                self.model_preview.as_ref(),
+                view_w,
+                view_h,
+            )
+        });
+        self.ui.placement = self
+            .current
+            .as_ref()
+            .map_or(ad_document::Placement::IDENTITY, |a| {
+                a.document().placement()
+            });
         self.ui.lamp_gizmo = self.current.as_ref().and_then(|_| {
             Some(viewer_ui::LampGizmo {
                 lamp: self.camera.project_direction(
@@ -1449,6 +1586,10 @@ impl App {
         {
             self.camera.fit(asset.snapshot().bounds);
         }
+        {
+            let (width, height) = frame.scene.map_or((1, 1), |r| (r.width, r.height));
+            self.model_gizmo_actions(&actions, width, height);
+        }
         let renderer = self.renderer.as_mut().expect("Drawable renderer checked");
         let (width, height) = frame.scene.map_or((1, 1), |r| (r.width, r.height));
         self.last_view = (width, height);
@@ -1463,9 +1604,15 @@ impl App {
         }
         renderer.set_grid(self.ui.floor.and_then(|theme| {
             self.current.as_ref().and_then(|asset| {
+                // ADR-0041: the floor stays at the imported model's bottom,
+                // so a moved model is seen moving against it.
+                let placement = asset.document().placement();
                 let bounds = asset.snapshot().bounds;
-                ad_render_vulkan::grid::grid_for_bounds(bounds.min, bounds.max)
-                    .map(|grid| ad_render_vulkan::grid::GridSettings { theme, ..grid })
+                ad_render_vulkan::grid::grid_for_bounds(
+                    placement.unapply(bounds.min),
+                    placement.unapply(bounds.max),
+                )
+                .map(|grid| ad_render_vulkan::grid::GridSettings { theme, ..grid })
             })
         }));
         let view_projection = self.camera.matrix(width, height);
@@ -1485,6 +1632,15 @@ impl App {
             }
         }));
         renderer.set_camera(view_projection, self.camera.eye(width, height))?;
+        renderer.set_model_preview(self.model_preview.map(|delta| {
+            let m = delta.matrix();
+            (
+                (glam::Mat4::from_cols_array_2d(&view_projection) * m).to_cols_array_2d(),
+                m.inverse()
+                    .transform_point3(glam::Vec3::from_array(self.camera.eye(width, height)))
+                    .to_array(),
+            )
+        }));
         renderer.set_textures_enabled(self.ui.textures);
         renderer.set_mr_maps_enabled(self.ui.mr_maps);
         renderer.set_normal_maps_enabled(self.ui.normal_maps);
@@ -1950,6 +2106,7 @@ fn edit_name(kind: EditKind) -> &'static str {
         | EditKind::MergeVertices(_)
         | EditKind::CreateNormals(_)
         | EditKind::FixNormals(_) => "remove",
+        EditKind::Place(_) => "place",
         EditKind::Undo => "undo",
         EditKind::Redo => "redo",
     }
@@ -1967,6 +2124,7 @@ fn run() -> GpuResult<()> {
     let mut smoke_guard = 0u8;
     let mut smoke_overwrite = false;
     let mut smoke_queue = false;
+    let mut smoke_place = false;
     let mut pending_skybox = None;
     let mut history_path = None;
     let mut smoke_repair = ad_heal::RepairKind::DuplicateTriangles;
@@ -2001,6 +2159,10 @@ fn run() -> GpuResult<()> {
                 ))
             }
             "--smoke-edit" => smoke_edit = true,
+            "--smoke-place" => {
+                smoke_edit = true;
+                smoke_place = true;
+            }
             "--smoke-guard" => smoke_guard = 1,
             "--smoke-overwrite" => smoke_overwrite = true,
             "--smoke-queue" => smoke_queue = true,
@@ -2162,6 +2324,10 @@ fn run() -> GpuResult<()> {
         pending_overwrite: false,
         pending_skybox_choose: false,
         last_view: (1, 1),
+        model_preview: None,
+        model_pending: false,
+        smoke_place,
+        place_smoke_done: false,
         skybox_job: None,
         pending_skybox,
         working_path: None,
