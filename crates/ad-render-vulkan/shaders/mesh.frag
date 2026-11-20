@@ -116,6 +116,7 @@ void main() {
     uint flags=uint(pc.view.x);
     if ((flags&2u)!=0u) {base*=texture(sampler2D(base_color_image,base_color_sampler),uv);}
     vec3 linear=max(base.rgb*light,vec3(0.0));
+    bool raw=false;
     if ((flags&1u)!=0u) {
         vec2 mr=pc.material.xy;
         if ((flags&8u)!=0u) {
@@ -146,9 +147,23 @@ void main() {
             emission=pc.emissive.rgb*texture(sampler2D(emissive_image,emissive_sampler),emissive_uv).rgb;
         }
         linear=direct_pbr(base.rgb,surface*side,mr,v,occlusion,emission);
+        // ADR-0042 render channels: data values are shown as they are.
+        uint channel=uint(frame.lighting.z+0.5);
+        if (channel==1u) {linear=surface*side*0.5+0.5; raw=true;}
+        else if (channel==2u) {
+            float checker=mod(floor(uv.x*8.0)+floor(uv.y*8.0),2.0);
+            linear=vec3(fract(uv),0.0)*(0.7+0.3*checker); raw=true;
+        }
+        else if (channel==3u) {linear=base.rgb;}
+        else if (channel==4u) {linear=vec3(mr.x); raw=true;}
+        else if (channel==5u) {linear=vec3(mr.y); raw=true;}
+        else if (channel==6u) {linear=vec3(occlusion); raw=true;}
+        else if (channel==7u) {linear=emission;}
     }
     if (pc.material.z>=0.0 && base.a<pc.material.z) {discard;}
+    if ((flags&128u)!=0u) {color=vec4(1.0,0.72,0.2,1.0); return;}
     vec3 display=linear;
+    if (raw) {color=vec4(clamp(display,0.0,1.0),1.0); return;}
     if ((flags&4u)!=0u) {
         display=mix(12.92*linear,1.055*pow(linear,vec3(1.0/2.4))-0.055,greaterThan(linear,vec3(0.0031308)));
     }

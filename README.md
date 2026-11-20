@@ -14,6 +14,10 @@ written from scratch in Rust with a Vulkan renderer. Engineering prototype.
   light, checker, tiles, grass, dry grass, countryside, sand, asphalt,
   cobblestone, red brick, moon, Mars, lake, snow, clay, moss, blue and purple
   studio — or no surface,
+- **Канал / Каркас / Оси / Габариты** (Сводка): show normals, UV, base colour,
+  metal, roughness, AO or emission instead of lighting; triangle edges over the
+  model; world axes and the bounding box with its size; «Пресет света» sets the
+  lamp, key, fill and exposure in one choice,
 - **Гизмо модели**: X/Y/Z arrows move the model, the centre square scales it
   uniformly from the bottom centre; each release is one edit (Ctrl+Z undoes it,
   «Сохранить» writes the new root node transforms; primitives stay byte-exact),

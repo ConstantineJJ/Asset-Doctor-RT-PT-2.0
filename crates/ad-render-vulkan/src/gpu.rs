@@ -84,6 +84,8 @@ pub(crate) struct Gpu {
     pub device: Device,
     pub queue: vk::Queue,
     pub family: u32,
+    /// Line polygon mode for the wireframe overlay (fillModeNonSolid).
+    pub wireframe: bool,
 }
 
 impl Gpu {
@@ -153,9 +155,13 @@ impl Gpu {
             if present_fences {
                 names.push(ash::ext::swapchain_maintenance1::NAME.as_ptr());
             }
+            let supported = instance.get_physical_device_features(physical);
+            let wireframe = supported.fill_mode_non_solid == vk::TRUE;
+            let enabled = vk::PhysicalDeviceFeatures::default().fill_mode_non_solid(wireframe);
             let mut create = vk::DeviceCreateInfo::default()
                 .queue_create_infos(&queues)
-                .enabled_extension_names(&names);
+                .enabled_extension_names(&names)
+                .enabled_features(&enabled);
             if present_fences {
                 create = create.push_next(&mut maintenance);
             }
@@ -172,6 +178,7 @@ impl Gpu {
                 device,
                 queue,
                 family,
+                wireframe,
             }))
         }
     }

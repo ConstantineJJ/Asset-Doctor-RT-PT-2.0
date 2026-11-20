@@ -182,6 +182,13 @@ pub struct ViewerUi {
     /// choice, and the current placement shown in Сводка.
     pub model_gizmo: Option<ModelGizmo>,
     pub model_gizmo_on: bool,
+    /// ADR-0042 render channel, wireframe and helpers (view only).
+    pub channel: ad_render_vulkan::lighting::Channel,
+    pub wireframe: bool,
+    pub wireframe_supported: bool,
+    pub show_axes: bool,
+    pub show_bounds: bool,
+    pub helper_overlay: Option<crate::helpers::Overlay>,
     pub placement: ad_document::Placement,
     /// Theme G brings back after hiding the floor.
     last_floor: ad_render_vulkan::grid::FloorTheme,
@@ -270,6 +277,12 @@ impl Default for ViewerUi {
             lamp_kelvin: 6500.,
             model_gizmo: None,
             model_gizmo_on: true,
+            channel: ad_render_vulkan::lighting::Channel::Lit,
+            wireframe: false,
+            wireframe_supported: true,
+            show_axes: false,
+            show_bounds: false,
+            helper_overlay: None,
             placement: ad_document::Placement::IDENTITY,
             normal_maps: true,
             ao_maps: true,
@@ -357,6 +370,40 @@ impl ViewerUi {
         self.input
             .as_mut()
             .is_some_and(|input| input.on_window_event(window, event).consumed)
+    }
+    /// ADR-0042 helpers: world axes (negative halves dimmer) and the model's
+    /// bounding box with its size, clipped to the viewport.
+    fn helpers_ui(root: &egui::Ui, scene: egui::Rect, overlay: &crate::helpers::Overlay) {
+        use crate::helpers::Kind;
+        let at = |p: [f32; 2]| {
+            egui::pos2(
+                scene.min.x + p[0] * scene.width(),
+                scene.min.y + p[1] * scene.height(),
+            )
+        };
+        let axis = [
+            Color32::from_rgb(232, 72, 72),
+            Color32::from_rgb(96, 204, 96),
+            Color32::from_rgb(80, 140, 240),
+        ];
+        let painter = root.painter().with_clip_rect(scene);
+        let stroke = |kind: Kind| match kind {
+            Kind::Axis(a) => egui::Stroke::new(1.5, axis[a]),
+            Kind::Back(a) => egui::Stroke::new(1., axis[a].gamma_multiply(0.45)),
+            Kind::Bounds => egui::Stroke::new(1., Color32::from_rgb(250, 214, 110)),
+        };
+        for (a, b, kind) in &overlay.lines {
+            painter.line_segment([at(*a), at(*b)], stroke(*kind));
+        }
+        for (p, text, kind) in &overlay.labels {
+            painter.text(
+                at(*p) + egui::vec2(4., -4.),
+                egui::Align2::LEFT_BOTTOM,
+                text,
+                egui::FontId::proportional(13.),
+                stroke(*kind).color,
+            );
+        }
     }
     /// ADR-0041 model gizmo: X (red), Y (green), Z (blue) arrows from the
     /// bottom centre move the model; the square at the centre scales it.
@@ -763,6 +810,16 @@ impl ViewerUi {
                             ui.selectable_value(&mut self.lighting.mode,ShadingMode::BaseColor,"Базовый вид");
                             ui.selectable_value(&mut self.lighting.mode,ShadingMode::DirectPbr,"PBR · направленный свет");
                         });
+                        egui::ComboBox::from_label("Канал").selected_text(self.channel.label()).show_ui(ui,|ui|{
+                            for channel in ad_render_vulkan::lighting::Channel::ALL {
+                                ui.selectable_value(&mut self.channel,channel,channel.label());
+                            }
+                        }).response.on_hover_text("Что показывать на модели: обычное освещение или один канал данных (нормали, UV, карты материала). Только вид.");
+                        ui.horizontal(|ui|{
+                            ui.add_enabled(self.wireframe_supported,egui::Checkbox::new(&mut self.wireframe,"Каркас")).on_hover_text("Рёбра треугольников поверх модели.").on_disabled_hover_text("Видеокарта не поддерживает отрисовку линиями (fillModeNonSolid).");
+                            ui.checkbox(&mut self.show_axes,"Оси").on_hover_text("Мировые оси из начала координат: X красная, Y зелёная, Z синяя; отрицательные половины тусклее.");
+                            ui.checkbox(&mut self.show_bounds,"Габариты").on_hover_text("Ограничивающий бокс модели и её размеры (ширина x высота x глубина, в единицах файла).");
+                        });
                         if self.lighting.mode==ShadingMode::DirectPbr {
                             let _maps=ui.checkbox(&mut self.mr_maps,"Карты металла/шероховатости").on_hover_text("Включить карты параметров материала. Не зависит от переключателя базовых текстур; исходник не изменяется.");
                             #[cfg(test)]
@@ -776,6 +833,11 @@ impl ViewerUi {
                             let _emission=ui.checkbox(&mut self.emission,"Свечение").on_hover_text("Собственный цвет поверхности из материала и карты. Без ореола и освещения соседних объектов.");
                             #[cfg(test)]
                             {self.emission_rect=_emission.rect;}
+                            egui::ComboBox::from_label("Пресет света").selected_text("Выбрать").show_ui(ui,|ui|{
+                                for preset in crate::lamp::LightPreset::ALL {
+                                    if ui.selectable_label(false,preset.label()).clicked() {preset.apply(&mut self.lighting);}
+                                }
+                            }).response.on_hover_text("Задаёт лампу, основной свет, заполнение и экспозицию одним выбором. Окружение и режим не меняются.");
                             ui.add(egui::Slider::new(&mut self.lighting.exposure_ev,-6.0..=6.0).text("Экспозиция · EV"));
                             ui.add(egui::Slider::new(&mut self.lighting.key,0.0..=8.0).text("Основной свет"));
                             ui.add(egui::Slider::new(&mut self.lighting.fill,0.0..=1.0).text("Заполнение"));
@@ -838,6 +900,9 @@ impl ViewerUi {
             // mark it as UI-owned and consume the viewport's mouse input.
             {
                 self.scene=root.available_rect_before_wrap();
+                if asset.is_some() && let Some(overlay)=self.helper_overlay.as_ref() {
+                    Self::helpers_ui(root,self.scene,overlay);
+                }
                 if asset.is_some() && self.model_gizmo_on && let Some(gizmo)=self.model_gizmo {
                     self.model_gizmo_ui(&context,root,gizmo,&mut actions);
                 }

@@ -7,6 +7,55 @@ const STEP: f32 = 0.4;
 /// Elevation stays off the poles so the azimuth keeps a meaning.
 pub const MAX_ELEVATION: f32 = 89.;
 
+/// ADR-0042 lighting presets: lamp direction, colour, key, fill and
+/// exposure in one choice. The shading mode and environment are untouched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LightPreset {
+    Studio,
+    Contrast,
+    Soft,
+    Top,
+    Rim,
+    Warm,
+}
+impl LightPreset {
+    pub const ALL: [Self; 6] = [
+        Self::Studio,
+        Self::Contrast,
+        Self::Soft,
+        Self::Top,
+        Self::Rim,
+        Self::Warm,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Studio => "Студия",
+            Self::Contrast => "Контраст",
+            Self::Soft => "Мягкий",
+            Self::Top => "Сверху",
+            Self::Rim => "Контровой",
+            Self::Warm => "Тёплый вечер",
+        }
+    }
+    pub fn apply(self, lighting: &mut ad_render_vulkan::lighting::ViewLighting) {
+        let defaults = ad_render_vulkan::lighting::ViewLighting::default();
+        let (direction, key, fill, color) = match self {
+            Self::Studio => (defaults.direction, defaults.key, defaults.fill, [1.; 3]),
+            Self::Contrast => (from_angles(70., 35.), 5., 0.03, [1.; 3]),
+            Self::Soft => (from_angles(30., 60.), 1.6, 0.45, [1.; 3]),
+            Self::Top => (from_angles(0., MAX_ELEVATION), 3.5, 0.12, [1.; 3]),
+            Self::Rim => (from_angles(180., 25.), 5., 0.2, [1.; 3]),
+            Self::Warm => (from_angles(-60., 12.), 3.5, 0.18, kelvin_to_rgb(2800.)),
+        };
+        lighting.direction = direction;
+        lighting.key = key;
+        lighting.fill = fill;
+        lighting.color = color;
+        lighting.exposure_ev = 0.;
+        lighting.enabled = true;
+    }
+}
+
 /// Lamp colour for a colour temperature in kelvin (1000..=12000), scaled so
 /// the brightest channel is 1. An approximation of the black-body curve.
 pub fn kelvin_to_rgb(kelvin: f32) -> [f32; 3] {
@@ -102,6 +151,27 @@ mod tests {
         assert!((angles(from_angles(-120., 30.)).0 + 120.).abs() < 1e-3);
         let pole = from_angles(0., 95.);
         assert!((angles(pole).1 - MAX_ELEVATION).abs() < 1e-3);
+    }
+    #[test]
+    fn light_presets_are_valid_distinct_and_keep_the_shading_mode() {
+        use ad_render_vulkan::lighting::{ShadingMode, ViewLighting};
+        let mut seen = Vec::new();
+        for preset in LightPreset::ALL {
+            let mut l = ViewLighting {
+                mode: ShadingMode::DirectPbr,
+                enabled: false,
+                ..ViewLighting::default()
+            };
+            preset.apply(&mut l);
+            assert!(l.valid(), "{preset:?}");
+            assert_eq!(l.mode, ShadingMode::DirectPbr);
+            assert!(l.enabled);
+            assert!(!seen.contains(&l), "{preset:?} duplicates another preset");
+            seen.push(l);
+        }
+        let mut l = ViewLighting::default();
+        LightPreset::Studio.apply(&mut l);
+        assert_eq!(l, ViewLighting::default(), "studio is the default look");
     }
     #[test]
     fn colour_temperature_goes_from_warm_to_cool() {

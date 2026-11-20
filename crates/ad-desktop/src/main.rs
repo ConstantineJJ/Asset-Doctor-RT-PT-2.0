@@ -3,6 +3,7 @@
 mod camera;
 mod diagnostic_ui;
 mod edits;
+mod helpers;
 mod history;
 mod imports;
 mod lamp;
@@ -189,6 +190,8 @@ impl App {
             let sky_frames = renderer.sky_frames();
             let environment_light_frames = renderer.environment_light_frames();
             let panorama_frames = renderer.panorama_frames();
+            let wire_frames = renderer.wire_frames();
+            let wire_supported = renderer.wireframe_supported();
             let mr_frames = renderer.mr_frames;
             let normal_frames = renderer.normal_frames;
             let ao_frames = renderer.occlusion_frames;
@@ -280,6 +283,14 @@ impl App {
                         self.ui.lighting.mode
                     );
                     eprintln!("grid_smoke grid_frames={}", grid_frames);
+                    eprintln!(
+                        "view_smoke channel={:?} wireframe={} wire_supported={wire_supported} wire_frames={wire_frames} axes={} bounds={} helper_lines={}",
+                        self.ui.channel,
+                        self.ui.wireframe,
+                        self.ui.show_axes,
+                        self.ui.show_bounds,
+                        self.ui.helper_overlay.as_ref().map_or(0, |o| o.lines.len())
+                    );
                     let (azimuth, elevation) = lamp::angles(self.ui.lighting.direction);
                     eprintln!(
                         "lamp_smoke azimuth={azimuth:.1} elevation={elevation:.1} color={:?} icon={} enabled={}",
@@ -1556,6 +1567,18 @@ impl App {
                 view_h,
             )
         });
+        self.ui.helper_overlay = self.current.as_ref().and_then(|asset| {
+            (self.ui.show_axes || self.ui.show_bounds).then(|| {
+                helpers::build(
+                    &self.camera,
+                    asset.snapshot().bounds,
+                    self.ui.show_axes,
+                    self.ui.show_bounds,
+                    view_w,
+                    view_h,
+                )
+            })
+        });
         self.ui.placement = self
             .current
             .as_ref()
@@ -1641,6 +1664,9 @@ impl App {
                     .to_array(),
             )
         }));
+        renderer.set_channel(self.ui.channel);
+        renderer.set_wireframe(self.ui.wireframe);
+        self.ui.wireframe_supported = renderer.wireframe_supported();
         renderer.set_textures_enabled(self.ui.textures);
         renderer.set_mr_maps_enabled(self.ui.mr_maps);
         renderer.set_normal_maps_enabled(self.ui.normal_maps);
@@ -2177,6 +2203,26 @@ fn run() -> GpuResult<()> {
                     .ok_or("--environment-light needs a strength from 0 to 2")?;
             }
             "--lamp-off" => ui.lighting.enabled = false,
+            "--channel" => {
+                ui.channel = args
+                    .next()
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .and_then(|i| ad_render_vulkan::lighting::Channel::ALL.get(i).copied())
+                    .ok_or("--channel needs a channel number from 0")?;
+            }
+            "--wireframe" => ui.wireframe = true,
+            "--helpers" => {
+                ui.show_axes = true;
+                ui.show_bounds = true;
+            }
+            "--light-preset" => {
+                let preset = args
+                    .next()
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .and_then(|i| lamp::LightPreset::ALL.get(i).copied())
+                    .ok_or("--light-preset needs a preset number from 0")?;
+                preset.apply(&mut ui.lighting);
+            }
             "--lamp" => {
                 // AZIMUTH,ELEVATION[,R,G,B] in degrees and 0..1 colour.
                 let value = args
