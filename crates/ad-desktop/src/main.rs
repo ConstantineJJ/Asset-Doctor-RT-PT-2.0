@@ -1346,14 +1346,13 @@ impl App {
         }
         let renderer = self.renderer.as_mut().expect("Drawable renderer checked");
         let (width, height) = frame.scene.map_or((1, 1), |r| (r.width, r.height));
-        renderer.set_grid(if self.ui.floor_grid {
+        renderer.set_grid(self.ui.floor.and_then(|theme| {
             self.current.as_ref().and_then(|asset| {
                 let bounds = asset.snapshot().bounds;
                 ad_render_vulkan::grid::grid_for_bounds(bounds.min, bounds.max)
+                    .map(|grid| ad_render_vulkan::grid::GridSettings { theme, ..grid })
             })
-        } else {
-            None
-        });
+        }));
         renderer.set_camera(
             self.camera.matrix(width, height),
             self.camera.eye(width, height),
@@ -1681,8 +1680,8 @@ impl ApplicationHandler for App {
                         self.pending_overwrite = true
                     }
                     PhysicalKey::Code(KeyCode::KeyG) if !self.modifiers.control_key() => {
-                        let on = self.ui.toggle_floor_grid();
-                        eprintln!("grid_toggle on={on}");
+                        let on = self.ui.toggle_floor();
+                        eprintln!("floor_toggle on={on}");
                     }
                     PhysicalKey::Code(KeyCode::KeyF) => {
                         if let Some(asset) = self.current.as_ref() {
@@ -1861,6 +1860,20 @@ fn run() -> GpuResult<()> {
             "--smoke-guard" => smoke_guard = 1,
             "--smoke-overwrite" => smoke_overwrite = true,
             "--smoke-queue" => smoke_queue = true,
+            "--floor-theme" => {
+                let value = args
+                    .next()
+                    .ok_or("--floor-theme needs a theme number or none")?;
+                ui.floor = match value.as_str() {
+                    "none" => None,
+                    n => Some(
+                        n.parse::<usize>()
+                            .ok()
+                            .and_then(|i| ad_render_vulkan::grid::FloorTheme::ALL.get(i).copied())
+                            .ok_or("--floor-theme needs 0-4 or none")?,
+                    ),
+                };
+            }
             "--history" => {
                 history_path = Some(PathBuf::from(
                     args.next().ok_or("--history needs a file path")?,

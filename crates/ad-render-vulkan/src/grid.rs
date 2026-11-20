@@ -3,13 +3,51 @@ use crate::{context::GpuResult, gpu::Gpu, pipeline::Shader};
 use ash::vk;
 use std::sync::Arc;
 
-/// Floor grid placement in world units.
+/// Procedural floor themes (ADR-0040 increment 2). One is active at a time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FloorTheme {
+    StudioGrid,
+    DarkMatte,
+    LightStudio,
+    Checker,
+    Tiles,
+}
+impl FloorTheme {
+    pub const ALL: [Self; 5] = [
+        Self::StudioGrid,
+        Self::DarkMatte,
+        Self::LightStudio,
+        Self::Checker,
+        Self::Tiles,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::StudioGrid => "Сетка студии",
+            Self::DarkMatte => "Тёмный матовый",
+            Self::LightStudio => "Светлая студия",
+            Self::Checker => "Шахматка",
+            Self::Tiles => "Плитка",
+        }
+    }
+    /// Theme index read by grid.frag.
+    fn shader_id(self) -> f32 {
+        match self {
+            Self::StudioGrid => 0.,
+            Self::DarkMatte => 1.,
+            Self::LightStudio => 2.,
+            Self::Checker => 3.,
+            Self::Tiles => 4.,
+        }
+    }
+}
+/// Floor placement in world units and its theme.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GridSettings {
     pub floor_y: f32,
     pub center: [f32; 2],
     pub extent: f32,
     pub spacing: f32,
+    pub theme: FloorTheme,
 }
 /// Largest 1/2/5×10ⁿ step not above `x` (x > 0).
 pub fn nice_step(x: f32) -> f32 {
@@ -36,6 +74,7 @@ pub fn grid_for_bounds(min: [f32; 3], max: [f32; 3]) -> Option<GridSettings> {
         center: [(min[0] + max[0]) * 0.5, (min[2] + max[2]) * 0.5],
         extent: radius * 4.,
         spacing: nice_step(radius / 4.),
+        theme: FloorTheme::StudioGrid,
     })
 }
 
@@ -52,7 +91,7 @@ impl GridPush {
         Self {
             view_projection,
             plane: [grid.center[0], grid.floor_y, grid.center[1], grid.extent],
-            style: [grid.spacing, 5., 0., 1.],
+            style: [grid.spacing, 5., grid.theme.shader_id(), 1.],
         }
     }
 }
@@ -179,6 +218,21 @@ mod tests {
         assert_eq!(std::mem::size_of::<GridPush>(), 96);
         assert_eq!(std::mem::offset_of!(GridPush, plane), 64);
         assert_eq!(std::mem::offset_of!(GridPush, style), 80);
+    }
+    #[test]
+    fn floor_themes_are_distinct_and_reach_the_shader() {
+        let labels: std::collections::BTreeSet<_> =
+            FloorTheme::ALL.iter().map(|t| t.label()).collect();
+        assert_eq!(labels.len(), FloorTheme::ALL.len(), "unique labels");
+        let ids: std::collections::BTreeSet<_> = FloorTheme::ALL
+            .iter()
+            .map(|t| t.shader_id() as u32)
+            .collect();
+        assert_eq!(ids.len(), FloorTheme::ALL.len(), "distinct shader ids");
+        let mut g = grid_for_bounds([0.; 3], [1.; 3]).unwrap();
+        assert_eq!(g.theme, FloorTheme::StudioGrid);
+        g.theme = FloorTheme::Tiles;
+        assert_eq!(GridPush::new([[0.; 4]; 4], g).style[2], 4.);
     }
     #[test]
     fn nice_steps_and_grid_follow_model_size_and_lowest_point() {

@@ -133,8 +133,10 @@ pub struct ViewerUi {
     pub show_summary: bool,
     pub textures: bool,
     pub mr_maps: bool,
-    /// ADR-0040 floor grid under the model (view only).
-    pub floor_grid: bool,
+    /// ADR-0040 floor theme under the model (view only); None = no surface.
+    pub floor: Option<ad_render_vulkan::grid::FloorTheme>,
+    /// Theme G brings back after hiding the floor.
+    last_floor: ad_render_vulkan::grid::FloorTheme,
     pub normal_maps: bool,
     pub ao_maps: bool,
     pub emission: bool,
@@ -202,7 +204,8 @@ impl Default for ViewerUi {
             show_summary: true,
             textures: true,
             mr_maps: true,
-            floor_grid: true,
+            floor: Some(ad_render_vulkan::grid::FloorTheme::StudioGrid),
+            last_floor: ad_render_vulkan::grid::FloorTheme::StudioGrid,
             normal_maps: true,
             ao_maps: true,
             emission: true,
@@ -255,10 +258,16 @@ impl Default for ViewerUi {
     }
 }
 impl ViewerUi {
-    /// G key: shows or hides the floor grid; returns the new state.
-    pub fn toggle_floor_grid(&mut self) -> bool {
-        self.floor_grid = !self.floor_grid;
-        self.floor_grid
+    /// G key: hides the floor or brings back the last theme; true when shown.
+    pub fn toggle_floor(&mut self) -> bool {
+        self.floor = match self.floor {
+            Some(theme) => {
+                self.last_floor = theme;
+                None
+            }
+            None => Some(self.last_floor),
+        };
+        self.floor.is_some()
     }
     /// Replaces the status line; `warning` marks a refusal or failure.
     pub fn set_status(&mut self, text: impl Into<String>, warning: bool) {
@@ -439,7 +448,13 @@ impl ViewerUi {
                     egui::ScrollArea::vertical().show(ui,|ui| {
                         ui.heading("Сводка");ui.separator();
                         ui.checkbox(&mut self.textures,"Базовые текстуры").on_hover_text("Включить выборку встроенных PNG/JPEG. Исходные материалы не изменяются.");
-                    ui.checkbox(&mut self.floor_grid,"Сетка пола").on_hover_text("Сетка на уровне нижней точки модели, шаг по её размеру; красная ось X, синяя Z. Только вид — в модель и файл не попадает. Клавиша G.");
+                    let floor_label=self.floor.map_or("Без поверхности",|t|t.label());
+                    egui::ComboBox::from_label("Пол").selected_text(floor_label).show_ui(ui,|ui|{
+                        for theme in ad_render_vulkan::grid::FloorTheme::ALL {
+                            if ui.selectable_label(self.floor==Some(theme),theme.label()).clicked() {self.floor=Some(theme);self.last_floor=theme;}
+                        }
+                        if ui.selectable_label(self.floor.is_none(),"Без поверхности").clicked() {self.floor=None;}
+                    }).response.on_hover_text("Пол на уровне нижней точки модели, шаг по её размеру; красная ось X, синяя Z. Только вид — в модель и файл не попадает. G — скрыть или вернуть пол.");
                         egui::ComboBox::from_id_salt("shading_mode").selected_text(match self.lighting.mode {ShadingMode::BaseColor=>"Базовый вид", ShadingMode::DirectPbr=>"PBR · направленный свет"}).show_ui(ui,|ui| {
                             ui.selectable_value(&mut self.lighting.mode,ShadingMode::BaseColor,"Базовый вид");
                             ui.selectable_value(&mut self.lighting.mode,ShadingMode::DirectPbr,"PBR · направленный свет");
@@ -632,7 +647,7 @@ impl ViewerUi {
             egui::Window::new("Справка").open(&mut self.help).resizable(true).show(&context,|ui| {
                 ui.label("Открыть: Ctrl+O или перетащить GLB в окно.");
                 ui.label("ЛКМ — вращение; ПКМ / средняя — перемещение; колесо — масштаб.");
-                ui.label("F — вписать модель; G — сетка пола вкл/выкл; Esc — отменить загрузку или подготовку правки; H — справка.");
+                ui.label("F — вписать модель; G — скрыть или вернуть пол; Esc — отменить загрузку или подготовку правки; H — справка.");
                 ui.label("Ремонты G001–G005 и G012: «Диагностика», затем «Предпросмотр ремонта…» в строке замечания, затем «Применить»; все сразу — «Очередь ремонтов…». Ctrl+Z — отменить правку, Ctrl+Y — вернуть.");
                 ui.label("«Сохранить» (Ctrl+S) перезаписывает рабочий файл после подтверждения и проверки; «Сохранить копию…» (Ctrl+Shift+S) пишет проверенный GLB в новый файл. При закрытии или открытии другой модели с несохранёнными правками программа спросит, что делать.");
                 ui.separator();ui.label("Выбор узла показывает сведения. Подсветка узлов появится позднее.");
@@ -1125,11 +1140,26 @@ mod tests {
         assert!(!actions.save_copy);
     }
     #[test]
-    fn g_key_toggle_flips_the_floor_grid() {
+    fn g_key_hides_the_floor_and_restores_the_last_theme() {
+        use ad_render_vulkan::grid::FloorTheme;
         let mut ui = ViewerUi::default();
-        assert!(ui.floor_grid, "grid is on by default");
-        assert!(!ui.toggle_floor_grid());
-        assert!(ui.toggle_floor_grid());
+        assert_eq!(
+            ui.floor,
+            Some(FloorTheme::StudioGrid),
+            "studio grid by default"
+        );
+        ui.floor = Some(FloorTheme::Checker);
+        assert!(!ui.toggle_floor());
+        assert_eq!(ui.floor, None);
+        assert!(ui.toggle_floor());
+        assert_eq!(ui.floor, Some(FloorTheme::Checker));
+        // Cycling through every theme twice keeps exactly one floor choice.
+        for _ in 0..2 {
+            for theme in FloorTheme::ALL {
+                ui.floor = Some(theme);
+                assert_eq!(ui.floor, Some(theme));
+            }
+        }
     }
     #[test]
     fn history_lines_read_as_past_records_with_counts() {

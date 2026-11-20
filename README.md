@@ -10,8 +10,9 @@ written from scratch in Rust with a Vulkan renderer. Engineering prototype.
   normal, occlusion and emission maps.
 - Scene tree, summary and camera: left drag orbit, right/middle drag pan,
   wheel zoom, **F** frame, **Esc** cancel loading, **H** help.
-- **Сетка пола** (Сводка): an anti-aliased grid at the model's lowest point,
-  step scaled to the model, red X and blue Z axes; view only.
+- **Пол** (Сводка): studio grid, dark matte, light studio, checker, tiles or no
+  surface, at the model's lowest point with the step scaled to the model and
+  red X / blue Z axes; **G** hides it or brings back the last theme. View only.
 - **Диагностика**: geometry and UV checks G001–G012 (zero-area and duplicate
   triangles, unused vertices, missing/zero normals, boundary and non-manifold
   edges, connected groups, missing UV0, zero UV area, UV outside 0…1, exact
