@@ -167,6 +167,27 @@ fn decode(
     })
 }
 
+/// ADR-0040 skybox: decodes one PNG/JPEG file the owner chose (no glTF, no
+/// network). Format comes from the file signature, not the extension; the side
+/// and memory limits are those of material images.
+pub fn decode_image_file(encoded: &[u8], cancel: &Cancellation) -> AssetResult<TextureImage> {
+    let limits = ImportLimits::default();
+    if encoded.len() > limits.source_bytes {
+        return Err(budget());
+    }
+    let mime = if encoded.starts_with(&[0x89, b'P', b'N', b'G']) {
+        "image/png"
+    } else if encoded.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        "image/jpeg"
+    } else {
+        return Err(AssetError::new(
+            ErrorCode::Unsupported,
+            "Only PNG and JPEG images are supported",
+        ));
+    };
+    decode(encoded, mime, limits, limits.texture_bytes, cancel)
+}
+
 pub fn validate_attribute(
     accessor: gltf::Accessor<'_>,
     count: usize,
@@ -282,5 +303,34 @@ mod tests {
         let cancel = Cancellation::default();
         cancel.cancel();
         assert!(decode(&data, "image/jpeg", ImportLimits::default(), 256, &cancel).is_err());
+    }
+    #[test]
+    fn image_files_are_sniffed_by_signature_and_other_bytes_are_refused() {
+        use image::ImageEncoder;
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(
+                &[10, 20, 30, 40, 50, 60],
+                2,
+                1,
+                image::ExtendedColorType::Rgb8,
+            )
+            .unwrap();
+        let cancel = Cancellation::default();
+        let image = decode_image_file(&png, &cancel).unwrap();
+        assert_eq!((image.width, image.height), (2, 1));
+        assert_eq!(&image.rgba[..], &[10, 20, 30, 255, 40, 50, 60, 255]);
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+            .encode(&[200; 12], 2, 2, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        assert_eq!(decode_image_file(&jpeg, &cancel).unwrap().width, 2);
+        for bad in [&b"GIF89a"[..], &[], &png[1..]] {
+            let Err(error) = decode_image_file(bad, &cancel) else {
+                panic!("non-image bytes must be refused");
+            };
+            assert_eq!(error.code, ErrorCode::Unsupported);
+        }
+        assert!(decode_image_file(&png[..20], &cancel).is_err());
     }
 }

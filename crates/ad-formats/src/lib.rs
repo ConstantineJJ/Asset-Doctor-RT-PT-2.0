@@ -4,6 +4,7 @@ mod export;
 mod metadata;
 mod roundtrip;
 mod uv;
+pub use color::decode_image_file;
 pub use export::{ExportLimits, VerifiedGlb, preflight_changed_export, prepare_glb};
 
 /// Independent comparison of a freshly reimported document with the document

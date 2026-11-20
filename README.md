@@ -16,7 +16,8 @@ written from scratch in Rust with a Vulkan renderer. Engineering prototype.
   studio — or no surface,
 - **Окружение** (Сводка): sky background — dark studio, day, sunset, night,
   overcast, light studio; optional «Свет окружения» lights the model from the
-  sky in PBR; view only, lamps and exposure stay as they are, at the model's lowest point with the step scaled to the model and
+  sky in PBR; «Скайбокс...» shows your own 2:1 PNG/JPEG panorama (read
+  only, with yaw); view only, lamps and exposure stay as they are, at the model's lowest point with the step scaled to the model and
   red X / blue Z axes; **G** hides it or brings back the last theme. View only.
 - **Диагностика**: geometry and UV checks G001–G012 (zero-area and duplicate
   triangles, unused vertices, missing/zero normals, boundary and non-manifold

@@ -8,6 +8,7 @@ mod imports;
 mod native;
 mod queue;
 mod saving;
+mod skybox;
 mod ui_model;
 mod viewer_ui;
 mod worker;
@@ -116,6 +117,11 @@ struct App {
     pending_save: bool,
     /// «Сохранить» requested (Ctrl+S or button); runs from tick.
     pending_overwrite: bool,
+    /// ADR-0040 skybox: dialog requested, background decode, decoded image
+    /// waiting for upload.
+    pending_skybox_choose: bool,
+    skybox_job: Option<std::sync::mpsc::Receiver<Result<skybox::Loaded, String>>>,
+    pending_skybox: Option<skybox::Loaded>,
     /// File the current model was opened from (or last saved and reopened).
     working_path: Option<PathBuf>,
     /// Path of the import in flight; becomes the working path when published.
@@ -172,6 +178,7 @@ impl App {
             let grid_frames = renderer.grid_frames();
             let sky_frames = renderer.sky_frames();
             let environment_light_frames = renderer.environment_light_frames();
+            let panorama_frames = renderer.panorama_frames();
             let mr_frames = renderer.mr_frames;
             let normal_frames = renderer.normal_frames;
             let ao_frames = renderer.occlusion_frames;
@@ -264,7 +271,7 @@ impl App {
                     );
                     eprintln!("grid_smoke grid_frames={}", grid_frames);
                     eprintln!(
-                        "environment_smoke environment={} sky_frames={sky_frames} light={} light_frames={environment_light_frames}",
+                        "environment_smoke environment={} sky_frames={sky_frames} panorama_frames={panorama_frames} light={} light_frames={environment_light_frames}",
                         self.ui.environment.label(),
                         self.ui.environment_light
                     );
@@ -1325,6 +1332,74 @@ impl App {
         }
     }
 
+    /// ADR-0040 skybox: dialog, background decode and upload. Failures leave
+    /// the preset sky and say why in the status line.
+    fn poll_skybox(&mut self) {
+        if std::mem::take(&mut self.pending_skybox_choose)
+            && let Some(window) = self.window.as_ref()
+        {
+            match native::choose_image(window) {
+                Ok(Some(path)) => {
+                    self.skybox_job = Some(skybox::spawn(path));
+                    self.ui.set_status("Загрузка скайбокса...", false);
+                }
+                Ok(None) => (),
+                Err(error) => self.ui.set_status(error.to_string(), true),
+            }
+        }
+        if let Some(job) = self.skybox_job.as_ref() {
+            match job.try_recv() {
+                Ok(Ok(loaded)) => {
+                    self.skybox_job = None;
+                    self.pending_skybox = Some(loaded);
+                }
+                Ok(Err(error)) => {
+                    self.skybox_job = None;
+                    self.ui.set_status(error, true);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => (),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.skybox_job = None;
+                    self.ui.set_status("Скайбокс не загружен", true);
+                }
+            }
+        }
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+        if let Some(loaded) = self.pending_skybox.take() {
+            match renderer.set_skybox_image(Some(&loaded.image)) {
+                Ok(()) => {
+                    eprintln!(
+                        "skybox_loaded name={} size={}x{}",
+                        loaded.name, loaded.image.width, loaded.image.height
+                    );
+                    if loaded.not_panorama {
+                        self.ui.set_status(
+                            format!(
+                                "Скайбокс {}: не 2:1 ({}x{}), картинка будет растянута",
+                                loaded.name, loaded.image.width, loaded.image.height
+                            ),
+                            true,
+                        );
+                    } else {
+                        self.ui
+                            .set_status(format!("Скайбокс: {}", loaded.name), false);
+                    }
+                    self.ui.skybox_name = Some(loaded.name);
+                    self.ui.skybox_light = Some(loaded.light);
+                    self.ui.skybox_on = true;
+                }
+                Err(error) => {
+                    self.ui.skybox_name = None;
+                    self.ui.skybox_light = None;
+                    self.ui
+                        .set_status(format!("Скайбокс не загружен: {error}"), true);
+                }
+            }
+        }
+    }
+
     fn cancel_import(&mut self) {
         self.imports.cancel();
         self.importing = false;
@@ -1367,13 +1442,15 @@ impl App {
                 .inverse()
                 .to_cols_array_2d(),
             environment: self.ui.environment,
+            panorama: self.ui.skybox_on.then(|| self.ui.skybox_yaw.to_radians()),
         }));
-        renderer.set_environment_light(self.ui.environment_light.then_some(
+        let panorama_light = self.ui.skybox_light.filter(|_| self.ui.skybox_on);
+        renderer.set_environment_light(self.ui.environment_light.then(|| {
             ad_render_vulkan::sky::EnvironmentLight {
-                environment: self.ui.environment,
+                colors: panorama_light.unwrap_or_else(|| self.ui.environment.light_colors()),
                 strength: self.ui.environment_strength,
-            },
-        ));
+            }
+        }));
         renderer.set_camera(view_projection, self.camera.eye(width, height))?;
         renderer.set_textures_enabled(self.ui.textures);
         renderer.set_mr_maps_enabled(self.ui.mr_maps);
@@ -1388,6 +1465,17 @@ impl App {
                 width: size.width,
                 height: size.height,
             })?;
+        }
+        if actions.skybox_load {
+            self.pending_skybox_choose = true;
+        }
+        if actions.skybox_remove {
+            self.ui.skybox_name = None;
+            self.ui.skybox_light = None;
+            self.ui.skybox_on = false;
+            if let Some(renderer) = self.renderer.as_mut() {
+                renderer.set_skybox_image(None)?;
+            }
         }
         // Open native dialogs only after the acquired image has been submitted.
         if actions.open {
@@ -1503,6 +1591,7 @@ impl App {
         if std::mem::take(&mut self.pending_overwrite) {
             self.start_overwrite();
         }
+        self.poll_skybox();
         if std::mem::take(&mut self.pending_save) {
             self.start_save(None);
         }
@@ -1842,6 +1931,7 @@ fn run() -> GpuResult<()> {
     let mut smoke_guard = 0u8;
     let mut smoke_overwrite = false;
     let mut smoke_queue = false;
+    let mut pending_skybox = None;
     let mut history_path = None;
     let mut smoke_repair = ad_heal::RepairKind::DuplicateTriangles;
     let mut ui = viewer_ui::ViewerUi::default();
@@ -1884,13 +1974,15 @@ fn run() -> GpuResult<()> {
                     .next()
                     .and_then(|n| n.parse::<f32>().ok())
                     .filter(|s| {
-                        ad_render_vulkan::sky::EnvironmentLight {
-                            environment: ui.environment,
-                            strength: *s,
-                        }
-                        .valid()
+                        ad_render_vulkan::sky::EnvironmentLight::preset(ui.environment, *s).valid()
                     })
                     .ok_or("--environment-light needs a strength from 0 to 2")?;
+            }
+            "--skybox" => {
+                let path = args
+                    .next()
+                    .ok_or("--skybox needs a PNG/JPEG panorama path")?;
+                pending_skybox = Some(skybox::load(std::path::Path::new(&path))?);
             }
             "--environment" => {
                 ui.environment = args
@@ -2010,6 +2102,9 @@ fn run() -> GpuResult<()> {
         pending_guard: None,
         pending_save: false,
         pending_overwrite: false,
+        pending_skybox_choose: false,
+        skybox_job: None,
+        pending_skybox,
         working_path: None,
         pending_path: None,
         overwrite_confirmed: None,

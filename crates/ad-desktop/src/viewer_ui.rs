@@ -28,6 +28,9 @@ pub struct Actions {
     /// HEAL-03 history window (ADR-0039).
     pub history_open: bool,
     pub history_clear: bool,
+    /// ADR-0040 skybox: choose a panorama file / remove the loaded one.
+    pub skybox_load: bool,
+    pub skybox_remove: bool,
 }
 /// Repair history as shown by the UI; filled by the application on demand.
 #[derive(Default)]
@@ -140,6 +143,12 @@ pub struct ViewerUi {
     /// ADR-0040 environment light switch and strength (PBR only, view only).
     pub environment_light: bool,
     pub environment_strength: f32,
+    /// ADR-0040 skybox: loaded file name, shown or not, yaw in degrees and the
+    /// colours it lights the model with.
+    pub skybox_name: Option<String>,
+    pub skybox_on: bool,
+    pub skybox_yaw: f32,
+    pub skybox_light: Option<[[f32; 3]; 3]>,
     /// Theme G brings back after hiding the floor.
     last_floor: ad_render_vulkan::grid::FloorTheme,
     pub normal_maps: bool,
@@ -214,6 +223,10 @@ impl Default for ViewerUi {
             environment: ad_render_vulkan::sky::Environment::DarkStudio,
             environment_light: false,
             environment_strength: 1.,
+            skybox_name: None,
+            skybox_on: false,
+            skybox_yaw: 0.,
+            skybox_light: None,
             normal_maps: true,
             ao_maps: true,
             emission: true,
@@ -468,6 +481,16 @@ impl ViewerUi {
                             ui.selectable_value(&mut self.environment,preset,preset.label());
                         }
                     }).response.on_hover_text("Фон-небо за моделью. Только вид: лампы, экспозиция и подсветка не меняются, в модель и файл не попадает.");
+                    ui.horizontal(|ui|{
+                        if ui.button("Скайбокс...").on_hover_text("Выбрать свою панораму PNG/JPEG 2:1 (равнопромежуточную). Файл только читается; в модель и экспорт не попадает.").clicked() {actions.skybox_load=true;}
+                        if let Some(name)=self.skybox_name.clone() {
+                            ui.checkbox(&mut self.skybox_on,name).on_hover_text("Показать панораму вместо фона-неба. Свет окружения берёт её цвета.");
+                            if ui.button("Убрать").clicked() {actions.skybox_remove=true;}
+                        }
+                    });
+                    if self.skybox_name.is_some() && self.skybox_on {
+                        ui.add(egui::Slider::new(&mut self.skybox_yaw,0.0..=360.0).text("Поворот").suffix(" град."));
+                    }
                     ui.horizontal(|ui|{
                         ui.checkbox(&mut self.environment_light,"Свет окружения").on_hover_text("Режим PBR: модель дополнительно освещается цветами выбранного окружения (небо сверху, земля снизу). Лампы, экспозиция и подсветка остаются как есть. Это приближение, не HDR/IBL.");
                         ui.add_enabled(self.environment_light,egui::Slider::new(&mut self.environment_strength,0.0..=ad_render_vulkan::sky::EnvironmentLight::MAX_STRENGTH).text("Сила"));

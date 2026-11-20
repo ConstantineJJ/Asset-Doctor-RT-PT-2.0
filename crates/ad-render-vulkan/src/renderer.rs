@@ -84,6 +84,9 @@ pub struct Renderer {
     /// ADR-0040 environment light (PBR only); None = off.
     environment_light: Option<crate::sky::EnvironmentLight>,
     environment_light_frames: u64,
+    /// ADR-0040 owner panorama; replaced only after waiting for idle.
+    skybox: Option<crate::sky::Skybox>,
+    panorama_frames: u64,
     sample_textures: bool,
     sample_mr_maps: bool,
     sample_normal_maps: bool,
@@ -140,6 +143,8 @@ impl Renderer {
             sky_frames: 0,
             environment_light: None,
             environment_light_frames: 0,
+            skybox: None,
+            panorama_frames: 0,
             frames: 0,
             mesh_frames: 0,
             pbr_frames: 0,
@@ -245,6 +250,24 @@ impl Renderer {
     /// Presented PBR frames lit by the environment (smoke evidence).
     pub fn environment_light_frames(&self) -> u64 {
         self.environment_light_frames
+    }
+    /// ADR-0040: uploads the owner's panorama (or removes it with None). Waits
+    /// for idle first; on failure the previous panorama is already gone and
+    /// the preset sky is drawn.
+    pub fn set_skybox_image(&mut self, image: Option<&ad_document::TextureImage>) -> GpuResult<()> {
+        self.wait_idle()?;
+        self.skybox = None;
+        if let Some(image) = image {
+            self.skybox = Some(crate::sky::Skybox::new(self.gpu.clone(), image)?);
+        }
+        Ok(())
+    }
+    pub fn has_skybox(&self) -> bool {
+        self.skybox.is_some()
+    }
+    /// Frames in which the panorama was recorded (smoke evidence).
+    pub fn panorama_frames(&self) -> u64 {
+        self.panorama_frames
     }
     /// Frames in which the sky was recorded (smoke evidence).
     pub fn sky_frames(&self) -> u64 {
@@ -476,7 +499,43 @@ impl Renderer {
                     }],
                 );
                 // ADR-0040: sky behind everything, then the mesh pipeline again.
-                if let (Some(push), Some(sky)) = (
+                let panorama = self.sky.and_then(|sky| sky.panorama.map(|yaw| (sky, yaw)));
+                if let (Some((settings, yaw)), Some(skybox), Some(sky)) =
+                    (panorama, self.skybox.as_ref(), chain.sky_panorama.as_ref())
+                {
+                    let push = crate::sky::SkyPush::panorama(settings, yaw, !chain.encode_srgb);
+                    device.cmd_bind_pipeline(
+                        self.command,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        sky.handle,
+                    );
+                    device.cmd_bind_descriptor_sets(
+                        self.command,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        sky.layout,
+                        0,
+                        &[skybox.set],
+                        &[],
+                    );
+                    let bytes = std::slice::from_raw_parts(
+                        (&push as *const crate::sky::SkyPush).cast::<u8>(),
+                        std::mem::size_of::<crate::sky::SkyPush>(),
+                    );
+                    device.cmd_push_constants(
+                        self.command,
+                        sky.layout,
+                        vk::ShaderStageFlags::FRAGMENT,
+                        0,
+                        bytes,
+                    );
+                    device.cmd_draw(self.command, 3, 1, 0, 0);
+                    self.panorama_frames += 1;
+                    device.cmd_bind_pipeline(
+                        self.command,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        pipeline.handle,
+                    );
+                } else if let (Some(push), Some(sky)) = (
                     self.sky
                         .and_then(|sky| crate::sky::SkyPush::new(sky, !chain.encode_srgb)),
                     chain.sky.as_ref(),
