@@ -19,7 +19,7 @@ layout(set=1,binding=7) uniform sampler occlusion_sampler;
 layout(set=1,binding=8) uniform texture2D emissive_image;
 layout(set=1,binding=9) uniform sampler emissive_sampler;
 layout(location=0) out vec4 color;
-layout(set=0,binding=0,std140) uniform Frame { mat4 view_projection; vec4 eye_exposure; vec4 lighting; vec4 sky_zenith; vec4 sky_horizon; vec4 sky_ground; } frame;
+layout(set=0,binding=0,std140) uniform Frame { mat4 view_projection; vec4 eye_exposure; vec4 lighting; vec4 sky_zenith; vec4 sky_horizon; vec4 sky_ground; vec4 light_direction; vec4 light_color; } frame;
 layout(push_constant) uniform Push { vec4 base_color; vec4 material; vec4 view; vec4 emissive; } pc;
 const float PI=3.14159265359;
 // Scale first so tiny/large derivative normals do not underflow/overflow in dot.
@@ -80,7 +80,7 @@ vec3 environment_light(vec3 base,vec3 n,vec3 v,float metal,float rough,vec3 f0) 
     return ((vec3(1.0)-fresnel)*(1.0-metal)*base*irradiance+fresnel*reflected)*frame.sky_zenith.w;
 }
 vec3 direct_pbr(vec3 base,vec3 n,vec2 mr,vec3 v,float occlusion,vec3 emission) {
-    vec3 l=normalize(vec3(0.4,0.8,0.3));
+    vec3 l=frame.light_direction.xyz;
     vec3 h=unit_or(v+l,n);
     float nv=max(dot(n,v),0.00001);
     float nl=max(dot(n,l),0.0);
@@ -98,7 +98,7 @@ vec3 direct_pbr(vec3 base,vec3 n,vec2 mr,vec3 v,float occlusion,vec3 emission) {
     vec3 diffuse=(vec3(1.0)-fresnel)*(1.0-metal)*base/PI;
     vec3 specular=fresnel*distribution*visibility;
     // Inspection fill is an explicit approximation; no environment is sampled.
-    vec3 radiance=(diffuse+specular)*nl*frame.lighting.x+((1.0-metal)*base+f0)*frame.lighting.y*occlusion;
+    vec3 radiance=(diffuse+specular)*nl*frame.lighting.x*frame.light_color.rgb+((1.0-metal)*base+f0)*frame.lighting.y*occlusion;
     if (frame.sky_zenith.w>0.0) {radiance+=environment_light(base,n,v,metal,rough,f0)*occlusion;}
     vec3 exposed=max((radiance+emission)*exp2(frame.eye_exposure.w),vec3(0.0));
     return exposed/(vec3(1.0)+exposed);
@@ -111,7 +111,7 @@ void main() {
     vec3 face=cross(px,py);
     vec3 n=face;
     n/=max(length(n),0.00000001);
-    float light=0.25+0.75*abs(dot(n,normalize(vec3(0.4,0.8,0.3))));
+    vec3 light=vec3(0.25)+0.75*abs(dot(n,frame.light_direction.xyz))*frame.light_color.rgb;
     vec4 base=pc.base_color*tint;
     uint flags=uint(pc.view.x);
     if ((flags&2u)!=0u) {base*=texture(sampler2D(base_color_image,base_color_sampler),uv);}

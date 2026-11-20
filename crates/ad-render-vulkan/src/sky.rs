@@ -53,6 +53,9 @@ impl Environment {
 }
 
 /// sRGB display value to linear.
+pub(crate) fn srgb_to_linear(c: f32) -> f32 {
+    linear(c)
+}
 fn linear(c: f32) -> f32 {
     if c <= 0.04045 {
         c / 12.92

@@ -14,6 +14,9 @@ written from scratch in Rust with a Vulkan renderer. Engineering prototype.
   light, checker, tiles, grass, dry grass, countryside, sand, asphalt,
   cobblestone, red brick, moon, Mars, lake, snow, clay, moss, blue and purple
   studio — or no surface,
+- **Лампа**: a sun icon in the viewport — drag it to turn the light around the
+  model, right click for its menu (reset, from above, from the camera, on/off,
+  colour, temperature, hide); also in Сводка,
 - **Окружение** (Сводка): sky background — dark studio, day, sunset, night,
   overcast, light studio; optional «Свет окружения» lights the model from the
   sky in PBR; «Скайбокс...» shows your own 2:1 PNG/JPEG panorama (read

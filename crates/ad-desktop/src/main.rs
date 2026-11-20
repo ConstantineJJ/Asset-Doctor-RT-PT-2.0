@@ -5,6 +5,7 @@ mod diagnostic_ui;
 mod edits;
 mod history;
 mod imports;
+mod lamp;
 mod native;
 mod queue;
 mod saving;
@@ -120,6 +121,8 @@ struct App {
     /// ADR-0040 skybox: dialog requested, background decode, decoded image
     /// waiting for upload.
     pending_skybox_choose: bool,
+    /// Viewport size of the last frame (lamp gizmo projection).
+    last_view: (u32, u32),
     skybox_job: Option<std::sync::mpsc::Receiver<Result<skybox::Loaded, String>>>,
     pending_skybox: Option<skybox::Loaded>,
     /// File the current model was opened from (or last saved and reopened).
@@ -270,6 +273,11 @@ impl App {
                         self.ui.lighting.mode
                     );
                     eprintln!("grid_smoke grid_frames={}", grid_frames);
+                    let (azimuth, elevation) = lamp::angles(self.ui.lighting.direction);
+                    eprintln!(
+                        "lamp_smoke azimuth={azimuth:.1} elevation={elevation:.1} color={:?} icon={} enabled={}",
+                        self.ui.lighting.color, self.ui.lamp_icon, self.ui.lighting.enabled
+                    );
                     eprintln!(
                         "environment_smoke environment={} sky_frames={sky_frames} panorama_frames={panorama_frames} light={} light_frames={environment_light_frames}",
                         self.ui.environment.label(),
@@ -1415,6 +1423,21 @@ impl App {
             return Ok(());
         }
         self.refresh_edit_ui();
+        // ADR-0040 lamp gizmo: lamp 1.25 model radii from the centre.
+        let (view_w, view_h) = self.last_view;
+        self.ui.lamp_gizmo = self.current.as_ref().and_then(|_| {
+            Some(viewer_ui::LampGizmo {
+                lamp: self.camera.project_direction(
+                    self.ui.lighting.direction,
+                    LAMP_DISTANCE,
+                    view_w,
+                    view_h,
+                )?,
+                center: self
+                    .camera
+                    .project_direction([0., 1., 0.], 0., view_w, view_h)?,
+            })
+        });
         let (mut frame, actions) = self
             .ui
             .frame(&window, self.current.as_ref(), self.importing);
@@ -1428,6 +1451,16 @@ impl App {
         }
         let renderer = self.renderer.as_mut().expect("Drawable renderer checked");
         let (width, height) = frame.scene.map_or((1, 1), |r| (r.width, r.height));
+        self.last_view = (width, height);
+        if let Some([dx, dy]) = actions.lamp_drag {
+            let camera = &self.camera;
+            self.ui.lighting.direction = lamp::drag(self.ui.lighting.direction, dx, dy, |d| {
+                camera.project_direction(d, LAMP_DISTANCE, width, height)
+            });
+        }
+        if actions.lamp_from_camera {
+            self.ui.lighting.direction = self.camera.view_direction();
+        }
         renderer.set_grid(self.ui.floor.and_then(|theme| {
             self.current.as_ref().and_then(|asset| {
                 let bounds = asset.snapshot().bounds;
@@ -1906,6 +1939,9 @@ impl ApplicationHandler for App {
     }
 }
 
+/// ADR-0040: the lamp gizmo sits this many model radii from the centre.
+const LAMP_DISTANCE: f32 = 1.25;
+
 fn edit_name(kind: EditKind) -> &'static str {
     match kind {
         EditKind::RemoveDuplicates(_)
@@ -1977,6 +2013,28 @@ fn run() -> GpuResult<()> {
                         ad_render_vulkan::sky::EnvironmentLight::preset(ui.environment, *s).valid()
                     })
                     .ok_or("--environment-light needs a strength from 0 to 2")?;
+            }
+            "--lamp-off" => ui.lighting.enabled = false,
+            "--lamp" => {
+                // AZIMUTH,ELEVATION[,R,G,B] in degrees and 0..1 colour.
+                let value = args
+                    .next()
+                    .ok_or("--lamp needs AZIMUTH,ELEVATION[,R,G,B]")?;
+                let parts: Vec<f32> = value
+                    .split(',')
+                    .map(|p| p.trim().parse::<f32>())
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| "--lamp needs numbers")?;
+                let (Some(&azimuth), Some(&elevation)) = (parts.first(), parts.get(1)) else {
+                    return Err("--lamp needs AZIMUTH,ELEVATION[,R,G,B]".into());
+                };
+                ui.lighting.direction = lamp::from_angles(azimuth, elevation);
+                if let [_, _, r, g, b] = parts[..] {
+                    ui.lighting.color = [r, g, b];
+                }
+                if !ui.lighting.valid() {
+                    return Err("--lamp values out of range".into());
+                }
             }
             "--skybox" => {
                 let path = args
@@ -2103,6 +2161,7 @@ fn run() -> GpuResult<()> {
         pending_save: false,
         pending_overwrite: false,
         pending_skybox_choose: false,
+        last_view: (1, 1),
         skybox_job: None,
         pending_skybox,
         working_path: None,

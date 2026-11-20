@@ -11,7 +11,15 @@ pub struct ViewLighting {
     pub exposure_ev: f32,
     pub key: f32,
     pub fill: f32,
+    /// ADR-0040 lamp: unit world direction towards the lamp.
+    pub direction: [f32; 3],
+    /// Lamp colour, display RGB 0..=1 (white keeps the previous look).
+    pub color: [f32; 3],
+    /// Lamp switched on; off leaves only fill and environment light.
+    pub enabled: bool,
 }
+/// The lamp direction used before the lamp became a scene object.
+pub const DEFAULT_LAMP_DIRECTION: [f32; 3] = [0.423_999_15, 0.847_998_3, 0.317_999_36];
 impl Default for ViewLighting {
     fn default() -> Self {
         Self {
@@ -19,6 +27,9 @@ impl Default for ViewLighting {
             exposure_ev: 0.,
             key: 3.,
             fill: 0.15,
+            direction: DEFAULT_LAMP_DIRECTION,
+            color: [1.; 3],
+            enabled: true,
         }
     }
 }
@@ -30,6 +41,9 @@ impl ViewLighting {
             && (0.0..=8.0).contains(&self.key)
             && self.fill.is_finite()
             && (0.0..=1.0).contains(&self.fill)
+            && self.direction.iter().all(|v| v.is_finite())
+            && (self.direction.iter().map(|v| v * v).sum::<f32>() - 1.).abs() < 1e-3
+            && self.color.iter().all(|c| (0.0..=1.0).contains(c))
     }
     pub(crate) fn flags(
         self,
@@ -74,6 +88,25 @@ mod tests {
         assert!(!view.valid());
         view.key = 3.;
         view.fill = 1.1;
+        assert!(!view.valid());
+        view.fill = 0.15;
+        assert!(view.valid());
+        let d = DEFAULT_LAMP_DIRECTION;
+        let legacy = [0.4f32, 0.8, 0.3];
+        let len = legacy.iter().map(|v| v * v).sum::<f32>().sqrt();
+        for i in 0..3 {
+            assert!(
+                (d[i] - legacy[i] / len).abs() < 1e-6,
+                "default lamp unchanged"
+            );
+        }
+        for direction in [[0., 0., 0.], [0., 2., 0.], [f32::NAN, 1., 0.]] {
+            view.direction = direction;
+            assert!(!view.valid());
+        }
+        view.direction = [0., 1., 0.];
+        assert!(view.valid());
+        view.color = [1.2, 1., 1.];
         assert!(!view.valid());
     }
 }

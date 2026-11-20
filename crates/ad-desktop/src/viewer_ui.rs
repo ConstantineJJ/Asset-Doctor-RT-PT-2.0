@@ -31,6 +31,17 @@ pub struct Actions {
     /// ADR-0040 skybox: choose a panorama file / remove the loaded one.
     pub skybox_load: bool,
     pub skybox_remove: bool,
+    /// ADR-0040 lamp gizmo dragged by (dx, dy) logical points this frame.
+    pub lamp_drag: Option<[f32; 2]>,
+    /// Lamp context menu: point the lamp from the camera.
+    pub lamp_from_camera: bool,
+}
+/// ADR-0040 lamp gizmo for this frame: viewport positions (0..1, y down) of
+/// the lamp and the model centre, set by the application from the camera.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LampGizmo {
+    pub lamp: [f32; 2],
+    pub center: [f32; 2],
 }
 /// Repair history as shown by the UI; filled by the application on demand.
 #[derive(Default)]
@@ -149,6 +160,12 @@ pub struct ViewerUi {
     pub skybox_on: bool,
     pub skybox_yaw: f32,
     pub skybox_light: Option<[[f32; 3]; 3]>,
+    /// ADR-0040 lamp gizmo: where to draw it (None = off screen) and whether
+    /// the owner keeps the icon visible.
+    pub lamp_gizmo: Option<LampGizmo>,
+    pub lamp_icon: bool,
+    /// Colour temperature last chosen for the lamp, kelvin.
+    pub lamp_kelvin: f32,
     /// Theme G brings back after hiding the floor.
     last_floor: ad_render_vulkan::grid::FloorTheme,
     pub normal_maps: bool,
@@ -191,6 +208,8 @@ pub struct ViewerUi {
     #[cfg(test)]
     reset_lighting_rect: egui::Rect,
     #[cfg(test)]
+    lamp_gizmo_rect: egui::Rect,
+    #[cfg(test)]
     mr_maps_rect: egui::Rect,
     #[cfg(test)]
     normal_maps_rect: egui::Rect,
@@ -227,6 +246,9 @@ impl Default for ViewerUi {
             skybox_on: false,
             skybox_yaw: 0.,
             skybox_light: None,
+            lamp_gizmo: None,
+            lamp_icon: true,
+            lamp_kelvin: 6500.,
             normal_maps: true,
             ao_maps: true,
             emission: true,
@@ -265,6 +287,8 @@ impl Default for ViewerUi {
             queue_start_rect: egui::Rect::NOTHING,
             #[cfg(test)]
             reset_lighting_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            lamp_gizmo_rect: egui::Rect::NOTHING,
             #[cfg(test)]
             mr_maps_rect: egui::Rect::NOTHING,
             #[cfg(test)]
@@ -309,6 +333,110 @@ impl ViewerUi {
         self.input
             .as_mut()
             .is_some_and(|input| input.on_window_event(window, event).consumed)
+    }
+    /// ADR-0040 lamp gizmo over the viewport: a sun icon on a line from the
+    /// model centre. Dragging it turns the lamp, right click opens its menu.
+    /// Hidden when the lamp is outside the viewport.
+    fn lamp_gizmo_ui(
+        &mut self,
+        context: &egui::Context,
+        root: &egui::Ui,
+        gizmo: LampGizmo,
+        actions: &mut Actions,
+    ) {
+        let at = |p: [f32; 2]| {
+            egui::pos2(
+                self.scene.min.x + p[0] * self.scene.width(),
+                self.scene.min.y + p[1] * self.scene.height(),
+            )
+        };
+        let (lamp, center) = (at(gizmo.lamp), at(gizmo.center));
+        if !self.scene.shrink(14.).contains(lamp) {
+            return;
+        }
+        let [r, g, b] = self.lighting.color.map(|c| (c.clamp(0., 1.) * 255.) as u8);
+        let color = Color32::from_rgb(r.max(60), g.max(60), b.max(60));
+        root.painter().with_clip_rect(self.scene).line_segment(
+            [center, lamp],
+            egui::Stroke::new(1., Color32::from_rgba_unmultiplied(255, 214, 120, 110)),
+        );
+        egui::Area::new(egui::Id::new("lamp_gizmo"))
+            .order(egui::Order::Middle)
+            .fixed_pos(lamp - egui::vec2(14., 14.))
+            .show(context, |ui| {
+                let (rect, response) =
+                    ui.allocate_exact_size(egui::vec2(28., 28.), egui::Sense::click_and_drag());
+                #[cfg(test)]
+                {
+                    self.lamp_gizmo_rect = rect;
+                }
+                let hot = response.hovered() || response.dragged();
+                let radius = if hot { 8. } else { 6. };
+                let painter = ui.painter();
+                let dark = egui::Stroke::new(1.5, Color32::from_rgb(40, 36, 24));
+                painter.circle_filled(rect.center(), radius, color);
+                painter.circle_stroke(rect.center(), radius, dark);
+                for i in 0..8 {
+                    let a = i as f32 * std::f32::consts::FRAC_PI_4;
+                    let v = egui::vec2(a.cos(), a.sin());
+                    painter.line_segment(
+                        [
+                            rect.center() + v * (radius + 2.),
+                            rect.center() + v * (radius + 5.),
+                        ],
+                        egui::Stroke::new(2., color),
+                    );
+                }
+                if response.dragged() {
+                    let d = response.drag_delta();
+                    if d != egui::Vec2::ZERO {
+                        actions.lamp_drag = Some([d.x, d.y]);
+                    }
+                }
+                let response = response.on_hover_text(
+                    "Лампа. Тяните — повернуть свет вокруг модели; правая кнопка — меню.",
+                );
+                response.context_menu(|ui| {
+                    if ui.button("Сбросить положение").clicked() {
+                        self.lighting.direction =
+                            ad_render_vulkan::lighting::DEFAULT_LAMP_DIRECTION;
+                        ui.close();
+                    }
+                    if ui.button("Свет сверху").clicked() {
+                        let (azimuth, _) = crate::lamp::angles(self.lighting.direction);
+                        self.lighting.direction =
+                            crate::lamp::from_angles(azimuth, crate::lamp::MAX_ELEVATION);
+                        ui.close();
+                    }
+                    if ui.button("Свет от камеры").clicked() {
+                        actions.lamp_from_camera = true;
+                        ui.close();
+                    }
+                    ui.checkbox(&mut self.lighting.enabled, "Лампа включена");
+                    ui.horizontal(|ui| {
+                        ui.label("Цвет");
+                        ui.color_edit_button_rgb(&mut self.lighting.color);
+                    });
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut self.lamp_kelvin, 1500.0..=10000.0)
+                                .text("Температура, K"),
+                        )
+                        .changed()
+                    {
+                        self.lighting.color = crate::lamp::kelvin_to_rgb(self.lamp_kelvin);
+                    }
+                    if ui.button("Белый свет").clicked() {
+                        self.lighting.color = [1.; 3];
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button("Скрыть значок").clicked() {
+                        self.lamp_icon = false;
+                        ui.close();
+                    }
+                });
+            });
     }
     pub fn camera_at(&self, x: f64, y: f64) -> bool {
         let scale = self.context.pixels_per_point() as f64;
@@ -515,6 +643,19 @@ impl ViewerUi {
                             ui.add(egui::Slider::new(&mut self.lighting.exposure_ev,-6.0..=6.0).text("Экспозиция · EV"));
                             ui.add(egui::Slider::new(&mut self.lighting.key,0.0..=8.0).text("Основной свет"));
                             ui.add(egui::Slider::new(&mut self.lighting.fill,0.0..=1.0).text("Заполнение"));
+                            let (mut azimuth,mut elevation)=crate::lamp::angles(self.lighting.direction);
+                            let turned=ui.add(egui::Slider::new(&mut azimuth,-180.0..=180.0).text("Лампа · азимут")).changed();
+                            let raised=ui.add(egui::Slider::new(&mut elevation,-crate::lamp::MAX_ELEVATION..=crate::lamp::MAX_ELEVATION).text("Лампа · высота")).changed();
+                            if turned||raised {self.lighting.direction=crate::lamp::from_angles(azimuth,elevation);}
+                            ui.horizontal(|ui|{
+                                ui.checkbox(&mut self.lighting.enabled,"Лампа включена").on_hover_text("Выключенная лампа не светит; остаются заполнение и свет окружения.");
+                                if ui.add(egui::Slider::new(&mut self.lamp_kelvin,1500.0..=10000.0).text("K")).on_hover_text("Цветовая температура лампы: меньше — теплее, больше — холоднее.").changed() {self.lighting.color=crate::lamp::kelvin_to_rgb(self.lamp_kelvin);}
+                            });
+                            ui.horizontal(|ui|{
+                                ui.label("Цвет лампы");
+                                ui.color_edit_button_rgb(&mut self.lighting.color);
+                                ui.checkbox(&mut self.lamp_icon,"Значок лампы").on_hover_text("Значок лампы во вьюпорте: тяните его, чтобы повернуть свет; правая кнопка — меню.");
+                            });
                             let reset=ui.button("Сбросить освещение");
                             #[cfg(test)]
                             {self.reset_lighting_rect=reset.rect;}
@@ -561,6 +702,9 @@ impl ViewerUi {
             // mark it as UI-owned and consume the viewport's mouse input.
             {
                 self.scene=root.available_rect_before_wrap();
+                if asset.is_some() && self.lamp_icon && let Some(gizmo)=self.lamp_gizmo {
+                    self.lamp_gizmo_ui(&context,root,gizmo,&mut actions);
+                }
                 if asset.is_none() {
                     let center=self.scene.center();
                     root.painter().text(center-egui::vec2(0.,16.),egui::Align2::CENTER_CENTER,"Откройте модель",egui::FontId::proportional(24.),Color32::from_rgb(220,224,232));
@@ -687,7 +831,7 @@ impl ViewerUi {
             egui::Window::new("Справка").open(&mut self.help).resizable(true).show(&context,|ui| {
                 ui.label("Открыть: Ctrl+O или перетащить GLB в окно.");
                 ui.label("ЛКМ — вращение; ПКМ / средняя — перемещение; колесо — масштаб.");
-                ui.label("F — вписать модель; G — скрыть или вернуть пол; Esc — отменить загрузку или подготовку правки; H — справка.");
+                ui.label("F — вписать модель; G — скрыть или вернуть пол; значок лампы во вьюпорте — тянуть, чтобы повернуть свет, правая кнопка — меню лампы; Esc — отменить загрузку или подготовку правки; H — справка.");
                 ui.label("Ремонты G001–G005 и G012: «Диагностика», затем «Предпросмотр ремонта…» в строке замечания, затем «Применить»; все сразу — «Очередь ремонтов…». Ctrl+Z — отменить правку, Ctrl+Y — вернуть.");
                 ui.label("«Сохранить» (Ctrl+S) перезаписывает рабочий файл после подтверждения и проверки; «Сохранить копию…» (Ctrl+Shift+S) пишет проверенный GLB в новый файл. При закрытии или открытии другой модели с несохранёнными правками программа спросит, что делать.");
                 ui.separator();ui.label("Выбор узла показывает сведения. Подсветка узлов появится позднее.");
@@ -764,6 +908,9 @@ mod tests {
                 exposure_ev: 2.,
                 key: 7.,
                 fill: 0.8,
+                direction: [0., 1., 0.],
+                color: [1., 0.5, 0.2],
+                enabled: false,
             },
             textures: false,
             mr_maps: false,
@@ -1178,6 +1325,80 @@ mod tests {
             click(&mut ui, None, rect, (1200., 760.))
         };
         assert!(!actions.save_copy);
+    }
+    #[test]
+    fn lamp_gizmo_captures_the_pointer_and_reports_drags() {
+        let mut ui = ViewerUi::default();
+        let asset = crate::imports::prepare(&crate::worker::Request {
+            ticket: 1,
+            input: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/Pbr_Factors.glb"),
+            cancel: ad_document::Cancellation::default(),
+        })
+        .unwrap();
+        ui.lamp_gizmo = Some(LampGizmo {
+            lamp: [0.7, 0.3],
+            center: [0.5, 0.5],
+        });
+        // A new egui area is measured invisibly on its first frame.
+        for _ in 0..2 {
+            let (out, _, _) = ui.layout(raw(1400., 1000.), Some(&asset), false);
+            out.drop_without_applying_deltas();
+        }
+        let at = ui.lamp_gizmo_rect.center();
+        assert!(ui.scene.contains(at), "gizmo inside the viewport");
+        let mut drags = Vec::new();
+        let steps = [
+            vec![egui::Event::PointerMoved(at)],
+            vec![egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }],
+            vec![egui::Event::PointerMoved(at + egui::vec2(15., 0.))],
+            vec![egui::Event::PointerMoved(at + egui::vec2(30., -10.))],
+            vec![egui::Event::PointerButton {
+                pos: at + egui::vec2(30., -10.),
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        ];
+        for (i, events) in steps.into_iter().enumerate() {
+            let mut input = raw(1400., 1000.);
+            input.events = events;
+            let (out, _, actions) = ui.layout(input, Some(&asset), false);
+            if i == 0 {
+                assert!(
+                    ui.context.egui_wants_pointer_input(),
+                    "camera must not orbit"
+                );
+            }
+            drags.extend(actions.lamp_drag);
+            out.drop_without_applying_deltas();
+        }
+        let total = drags
+            .iter()
+            .fold([0., 0.], |a, d| [a[0] + d[0], a[1] + d[1]]);
+        assert!(total[0] > 0. && total[1] < 0., "{drags:?}");
+        // Hidden icon or off-screen lamp: the viewport pointer is the camera's.
+        for (icon, lamp) in [(false, [0.7, 0.3]), (true, [1.5, 0.3])] {
+            ui.lamp_icon = icon;
+            ui.lamp_gizmo = Some(LampGizmo {
+                lamp,
+                center: [0.5, 0.5],
+            });
+            let mut input = raw(1400., 1000.);
+            input.events.push(egui::Event::PointerMoved(at));
+            let (out, _, _) = ui.layout(input, Some(&asset), false);
+            out.drop_without_applying_deltas();
+            let mut input = raw(1400., 1000.);
+            input.events.push(egui::Event::PointerMoved(at));
+            let (out, _, _) = ui.layout(input, Some(&asset), false);
+            assert!(!ui.context.egui_wants_pointer_input());
+            out.drop_without_applying_deltas();
+        }
     }
     #[test]
     fn environment_never_changes_lighting() {

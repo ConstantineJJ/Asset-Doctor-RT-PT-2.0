@@ -73,6 +73,35 @@ impl Camera {
         (reverse * projection * rh::view::look_at_mat4(eye, self.center, Vec3::Y))
             .to_cols_array_2d()
     }
+    /// ADR-0040 lamp gizmo: screen position (0..1, y down) of the point
+    /// `distance` model radii from the centre along `direction`; None when it
+    /// is behind the camera.
+    pub fn project_direction(
+        &self,
+        direction: [f32; 3],
+        distance: f32,
+        width: u32,
+        height: u32,
+    ) -> Option<[f32; 2]> {
+        self.project(
+            (self.center + Vec3::from_array(direction) * self.radius * distance).to_array(),
+            width,
+            height,
+        )
+    }
+    /// Screen position (0..1, y down) of a world point; None behind the camera.
+    pub fn project(&self, point: [f32; 3], width: u32, height: u32) -> Option<[f32; 2]> {
+        let m = glam::Mat4::from_cols_array_2d(&self.matrix(width, height));
+        let clip = m * Vec3::from_array(point).extend(1.);
+        if !clip.is_finite() || clip.w <= 1e-6 {
+            return None;
+        }
+        Some([clip.x / clip.w * 0.5 + 0.5, clip.y / clip.w * 0.5 + 0.5])
+    }
+    /// Unit direction from the model centre towards the eye.
+    pub fn view_direction(&self) -> [f32; 3] {
+        self.direction().to_array()
+    }
     pub fn eye(&self, width: u32, height: u32) -> [f32; 3] {
         let aspect = width.max(1) as f32 / height.max(1) as f32;
         (self.center + self.direction() * (self.distance / aspect.clamp(0.05, 1.0))).to_array()
@@ -108,6 +137,21 @@ mod tests {
         // The near plane is distance / 500 in front of the eye.
         let near = (eye - camera.center).length() / 500.;
         assert!(depth(eye - toward_eye * (near * 1.0001)) > 0.99);
+    }
+    #[test]
+    fn projection_puts_up_at_the_top_and_hides_points_behind_the_eye() {
+        let mut camera = Camera::default();
+        camera.fit(Bounds {
+            min: [-1.; 3],
+            max: [1.; 3],
+        });
+        let center = camera.project([0.; 3], 1200, 760).unwrap();
+        assert!((center[0] - 0.5).abs() < 1e-4 && (center[1] - 0.5).abs() < 1e-4);
+        let above = camera.project([0., 0.5, 0.], 1200, 760).unwrap();
+        assert!(above[1] < center[1], "y grows downwards");
+        let eye = Vec3::from_array(camera.eye(1200, 760));
+        let behind = eye + (eye - camera.center);
+        assert!(camera.project(behind.to_array(), 1200, 760).is_none());
     }
     /// ADR-0040 sky: the shader unprojects the pixel at depth 1 (near) and 0
     /// (far); the resulting ray must point up where the sky above the model

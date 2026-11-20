@@ -403,6 +403,18 @@ impl Renderer {
                     sky_zenith: sky_light[0],
                     sky_horizon: sky_light[1],
                     sky_ground: sky_light[2],
+                    light_direction: [
+                        self.lighting.direction[0],
+                        self.lighting.direction[1],
+                        self.lighting.direction[2],
+                        0.,
+                    ],
+                    light_color: if self.lighting.enabled {
+                        let [r, g, b] = self.lighting.color.map(crate::sky::srgb_to_linear);
+                        [r, g, b, 1.]
+                    } else {
+                        [0., 0., 0., 0.]
+                    },
                 })?;
             let (image, suboptimal) = match chain.loader.acquire_next_image(
                 chain.handle,

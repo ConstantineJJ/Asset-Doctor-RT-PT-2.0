@@ -14,6 +14,9 @@ pub(crate) struct FrameData {
     pub sky_zenith: [f32; 4],
     pub sky_horizon: [f32; 4],
     pub sky_ground: [f32; 4],
+    /// ADR-0040 lamp: unit direction towards it (w unused) and linear colour.
+    pub light_direction: [f32; 4],
+    pub light_color: [f32; 4],
 }
 impl FrameData {
     fn bytes(&self) -> &[u8] {
@@ -132,7 +135,9 @@ mod tests {
     use super::*;
     #[test]
     fn std140_frame_offsets_and_data_bytes_match_glsl() {
-        assert_eq!(std::mem::size_of::<FrameData>(), 144);
+        assert_eq!(std::mem::size_of::<FrameData>(), 176);
+        assert_eq!(std::mem::offset_of!(FrameData, light_direction), 144);
+        assert_eq!(std::mem::offset_of!(FrameData, light_color), 160);
         assert_eq!(std::mem::offset_of!(FrameData, sky_zenith), 96);
         assert_eq!(std::mem::offset_of!(FrameData, sky_ground), 128);
         assert_eq!(std::mem::offset_of!(FrameData, eye_exposure), 64);
