@@ -6,6 +6,7 @@ mod edits;
 mod helpers;
 mod history;
 mod imports;
+mod input;
 mod lamp;
 mod model_gizmo;
 mod native;
@@ -95,6 +96,12 @@ struct App {
     current: Option<PreparedAsset>,
     camera: Camera,
     mouse: Option<MouseButton>,
+    /// ADR-0043: drag action of the held mouse button.
+    mouse_drag: Option<input::Action>,
+    /// Bindings file (None in smoke runs without --bindings: never written).
+    bindings_path: Option<PathBuf>,
+    smoke_input: bool,
+    input_smoke_done: bool,
     cursor: Option<(f64, f64)>,
     modifiers: ModifiersState,
     initial_path: Option<PathBuf>,
@@ -1482,6 +1489,125 @@ impl App {
         }
     }
 
+    fn mods(&self) -> input::Mods {
+        input::Mods {
+            ctrl: self.modifiers.control_key(),
+            shift: self.modifiers.shift_key(),
+            alt: self.modifiers.alt_key(),
+        }
+    }
+    /// ADR-0043: the next key or mouse button goes to the slot being
+    /// captured. A modifier alone waits; plain Esc cancels; a chord owned by
+    /// another action asks the owner first.
+    fn capture_chord(&mut self, chord: input::Chord, escape: bool, modifier: bool) {
+        let Some((action, slot)) = self.ui.input_capture else {
+            return;
+        };
+        match input::capture(&mut self.ui.bindings, action, slot, chord, escape, modifier) {
+            input::Captured::Wait => return,
+            input::Captured::Cancelled => (),
+            input::Captured::Assigned => self.ui.bindings_changed = true,
+            input::Captured::Conflict(owner) => {
+                self.ui.input_conflict = Some((action, slot, chord, owner))
+            }
+        }
+        self.ui.input_capture = None;
+    }
+    fn run_command(&mut self, action: input::Action) {
+        use input::Action as A;
+        match action {
+            A::Open => self.pending_guard = Some(AfterSave::Choose),
+            A::Save => self.pending_overwrite = true,
+            A::SaveCopy => self.pending_save = true,
+            A::Undo => self.request_history(EditKind::Undo),
+            A::Redo => self.request_history(EditKind::Redo),
+            A::Fit => {
+                if let Some(asset) = self.current.as_ref() {
+                    self.camera.fit(asset.snapshot().bounds);
+                }
+            }
+            A::ToggleFloor => {
+                let on = self.ui.toggle_floor();
+                eprintln!("floor_toggle on={on}");
+            }
+            A::ToggleWireframe => {
+                self.ui.wireframe = !self.ui.wireframe && self.ui.wireframe_supported;
+            }
+            A::ToggleAxes => self.ui.show_axes = !self.ui.show_axes,
+            A::ToggleBounds => self.ui.show_bounds = !self.ui.show_bounds,
+            A::ToggleLampIcon => self.ui.lamp_icon = !self.ui.lamp_icon,
+            A::ToggleModelGizmo => self.ui.model_gizmo_on = !self.ui.model_gizmo_on,
+            A::Help => self.ui.help(),
+            A::Cancel => {
+                self.ui.dismiss_help();
+                if self.importing {
+                    self.cancel_import();
+                }
+                self.cancel_edit();
+            }
+            A::Orbit | A::Pan => (),
+        }
+    }
+    /// Writes changed bindings; a failure is a warning, the change stays.
+    fn save_bindings(&mut self) {
+        if !std::mem::take(&mut self.ui.bindings_changed) {
+            return;
+        }
+        let Some(path) = self.bindings_path.as_ref() else {
+            return;
+        };
+        match input::save(path, &self.ui.bindings) {
+            Ok(()) => eprintln!("bindings_saved ok=true"),
+            Err(error) => {
+                eprintln!("bindings_saved ok=false");
+                self.ui
+                    .set_status(format!("Управление не сохранено: {error}"), true);
+            }
+        }
+    }
+    /// Smoke: a new binding, a refused conflict and a dispatched chord.
+    fn advance_input_smoke(&mut self) {
+        if !self.smoke_input || self.input_smoke_done || self.current.is_none() {
+            return;
+        }
+        self.input_smoke_done = true;
+        let w = input::Chord::key(KeyCode::KeyW, input::Mods::NONE);
+        let added = self
+            .ui
+            .bindings
+            .assign(input::Action::ToggleWireframe, 0, w, false)
+            .is_ok();
+        self.ui.bindings_changed |= added;
+        let floor = self.ui.bindings.slots(input::Action::ToggleFloor)[0];
+        let refused =
+            floor.map(|chord| self.ui.bindings.assign(input::Action::Fit, 0, chord, false));
+        eprintln!(
+            "input_conflict refused={} owner={}",
+            matches!(refused, Some(Err(_))),
+            match refused {
+                Some(Err(owner)) => owner.action.key(),
+                _ => "-",
+            }
+        );
+        // Press the rebound floor key twice: off, then back on.
+        for _ in 0..2 {
+            if let Some(chord) = floor
+                && let Some(action) = self.ui.bindings.command(chord)
+            {
+                self.run_command(action);
+                eprintln!(
+                    "input_dispatch chord={} action={} floor_on={}",
+                    chord.name(),
+                    action.key(),
+                    self.ui.floor.is_some()
+                );
+            }
+        }
+        eprintln!(
+            "input_assigned toggle_wireframe={}",
+            self.ui.bindings.describe(input::Action::ToggleWireframe)
+        );
+    }
     /// ADR-0041: gizmo drags update the preview; release or reset requests
     /// one placement edit.
     fn model_gizmo_actions(&mut self, actions: &viewer_ui::Actions, width: u32, height: u32) {
@@ -1807,6 +1933,8 @@ impl App {
             self.start_overwrite();
         }
         self.poll_skybox();
+        self.advance_input_smoke();
+        self.save_bindings();
         if std::mem::take(&mut self.pending_save) {
             self.start_save(None);
         }
@@ -1969,6 +2097,7 @@ impl ApplicationHandler for App {
         let result: GpuResult<()> = match event {
             WindowEvent::Focused(false) => {
                 self.mouse = None;
+                self.mouse_drag = None;
                 self.cursor = None;
                 self.modifiers = ModifiersState::default();
                 Ok(())
@@ -1982,63 +2111,46 @@ impl ApplicationHandler for App {
                 Ok(())
             }
             WindowEvent::KeyboardInput { event, .. }
-                if event.state == ElementState::Pressed
-                    && !event.repeat
-                    && (!self.ui.context.text_edit_focused()
-                        || event.physical_key == PhysicalKey::Code(KeyCode::Escape)
-                        || (event.physical_key == PhysicalKey::Code(KeyCode::KeyO)
-                            && self.modifiers.control_key())) =>
+                if event.state == ElementState::Pressed && !event.repeat =>
             {
-                match event.physical_key {
-                    PhysicalKey::Code(KeyCode::KeyO) if self.modifiers.control_key() => {
-                        self.pending_guard = Some(AfterSave::Choose)
-                    }
-                    PhysicalKey::Code(KeyCode::KeyS)
-                        if self.modifiers.control_key() && self.modifiers.shift_key() =>
+                // ADR-0043: every key goes through the owner's bindings.
+                if let PhysicalKey::Code(code) = event.physical_key {
+                    let chord = input::Chord::key(code, self.mods());
+                    if self.ui.input_capture.is_some() {
+                        self.capture_chord(
+                            chord,
+                            code == KeyCode::Escape,
+                            input::is_modifier(code),
+                        );
+                    } else if let Some(action) = self.ui.bindings.command(chord)
+                        && (!self.ui.context.text_edit_focused()
+                            || chord.mods.ctrl
+                            || chord.mods.alt
+                            || action == input::Action::Cancel)
                     {
-                        self.pending_save = true
+                        self.run_command(action);
                     }
-                    PhysicalKey::Code(KeyCode::KeyS) if self.modifiers.control_key() => {
-                        self.pending_overwrite = true
-                    }
-                    PhysicalKey::Code(KeyCode::KeyG) if !self.modifiers.control_key() => {
-                        let on = self.ui.toggle_floor();
-                        eprintln!("floor_toggle on={on}");
-                    }
-                    PhysicalKey::Code(KeyCode::KeyF) => {
-                        if let Some(asset) = self.current.as_ref() {
-                            self.camera.fit(asset.snapshot().bounds);
-                        }
-                    }
-                    PhysicalKey::Code(KeyCode::Escape) => {
-                        self.ui.dismiss_help();
-                        if self.importing {
-                            self.cancel_import();
-                        }
-                        self.cancel_edit();
-                    }
-                    PhysicalKey::Code(KeyCode::KeyZ)
-                        if self.modifiers.control_key() && self.modifiers.shift_key() =>
-                    {
-                        self.request_history(EditKind::Redo)
-                    }
-                    PhysicalKey::Code(KeyCode::KeyZ) if self.modifiers.control_key() => {
-                        self.request_history(EditKind::Undo)
-                    }
-                    PhysicalKey::Code(KeyCode::KeyY) if self.modifiers.control_key() => {
-                        self.request_history(EditKind::Redo)
-                    }
-                    PhysicalKey::Code(KeyCode::KeyH) => self.ui.help(),
-                    _ => (),
                 }
                 Ok(())
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                let chord = input::Chord {
+                    input: input::Input::Mouse(button),
+                    mods: self.mods(),
+                };
                 let inside = self.cursor.is_some_and(|(x, y)| self.ui.camera_at(x, y));
-                if state == ElementState::Pressed && !consumed && inside {
-                    self.mouse = Some(button);
-                } else if self.mouse == Some(button) {
+                if state == ElementState::Pressed && self.ui.input_capture.is_some() {
+                    self.capture_chord(chord, false, false);
+                } else if state == ElementState::Pressed && !consumed {
+                    if let Some(action) = self.ui.bindings.command(chord) {
+                        self.run_command(action);
+                    } else if inside && let Some(drag) = self.ui.bindings.drag(button, chord.mods) {
+                        self.mouse = Some(button);
+                        self.mouse_drag = Some(drag);
+                    }
+                } else if state == ElementState::Released && self.mouse == Some(button) {
                     self.mouse = None;
+                    self.mouse_drag = None;
                 }
                 Ok(())
             }
@@ -2046,9 +2158,9 @@ impl ApplicationHandler for App {
                 if let Some((x, y)) = self.cursor {
                     let dx = (position.x - x) as f32;
                     let dy = (position.y - y) as f32;
-                    match self.mouse {
-                        Some(MouseButton::Left) => self.camera.orbit(dx, dy),
-                        Some(MouseButton::Right | MouseButton::Middle) => {
+                    match self.mouse_drag {
+                        Some(input::Action::Orbit) => self.camera.orbit(dx, dy),
+                        Some(input::Action::Pan) => {
                             self.camera.pan(dx, dy, self.ui.camera_height())
                         }
                         _ => (),
@@ -2068,7 +2180,11 @@ impl ApplicationHandler for App {
                 };
                 let inside = self.cursor.is_some_and(|(x, y)| self.ui.camera_at(x, y));
                 if !consumed && inside {
-                    self.camera.zoom(steps);
+                    self.camera.zoom(if self.ui.bindings.invert_zoom {
+                        -steps
+                    } else {
+                        steps
+                    });
                 }
                 Ok(())
             }
@@ -2151,6 +2267,8 @@ fn run() -> GpuResult<()> {
     let mut smoke_overwrite = false;
     let mut smoke_queue = false;
     let mut smoke_place = false;
+    let mut smoke_input = false;
+    let mut bindings_arg: Option<PathBuf> = None;
     let mut pending_skybox = None;
     let mut history_path = None;
     let mut smoke_repair = ad_heal::RepairKind::DuplicateTriangles;
@@ -2203,6 +2321,12 @@ fn run() -> GpuResult<()> {
                     .ok_or("--environment-light needs a strength from 0 to 2")?;
             }
             "--lamp-off" => ui.lighting.enabled = false,
+            "--bindings" => {
+                bindings_arg = Some(PathBuf::from(
+                    args.next().ok_or("--bindings needs a file path")?,
+                ))
+            }
+            "--smoke-input" => smoke_input = true,
             "--channel" => {
                 ui.channel = args
                     .next()
@@ -2330,6 +2454,21 @@ fn run() -> GpuResult<()> {
     };
     let smoke_good = smoke_gpu_fault.and(initial_path.clone());
     let event_loop = EventLoop::new()?;
+    // ADR-0043: smoke runs never read or write the owner's bindings file.
+    let bindings_path = bindings_arg.or_else(|| if smoke { None } else { input::default_path() });
+    if let Some(path) = bindings_path.as_ref() {
+        let (bindings, warnings) = input::load(path);
+        eprintln!(
+            "input_loaded warnings={} toggle_floor={} orbit={}",
+            warnings.len(),
+            bindings.describe(input::Action::ToggleFloor),
+            bindings.describe(input::Action::Orbit)
+        );
+        if !warnings.is_empty() {
+            ui.set_status(format!("Управление: {}", warnings.join("; ")), true);
+        }
+        ui.bindings = bindings;
+    }
     let mut app = App {
         renderer: None,
         window: None,
@@ -2350,6 +2489,10 @@ fn run() -> GpuResult<()> {
         current: None,
         camera: Camera::default(),
         mouse: None,
+        mouse_drag: None,
+        bindings_path,
+        smoke_input,
+        input_smoke_done: false,
         cursor: None,
         modifiers: ModifiersState::default(),
         initial_path,

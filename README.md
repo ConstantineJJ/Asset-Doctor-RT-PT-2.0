@@ -18,6 +18,9 @@ written from scratch in Rust with a Vulkan renderer. Engineering prototype.
   metal, roughness, AO or emission instead of lighting; triangle edges over the
   model; world axes and the bounding box with its size; «Пресет света» sets the
   lamp, key, fill and exposure in one choice,
+- **Управление…** (Сводка): every key and mouse button, side buttons included,
+  can be rebound (two chords per action, conflicts refused or moved, reset);
+  saved to `%LOCALAPPDATA%\AssetDoctorRTPT\input-bindings.json`,
 - **Гизмо модели**: X/Y/Z arrows move the model, the centre square scales it
   uniformly from the bottom centre; each release is one edit (Ctrl+Z undoes it,
   «Сохранить» writes the new root node transforms; primitives stay byte-exact),

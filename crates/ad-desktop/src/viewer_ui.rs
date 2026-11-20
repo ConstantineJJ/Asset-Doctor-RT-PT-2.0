@@ -184,6 +184,18 @@ pub struct ViewerUi {
     pub model_gizmo_on: bool,
     /// ADR-0042 render channel, wireframe and helpers (view only).
     pub channel: ad_render_vulkan::lighting::Channel,
+    /// ADR-0043 input bindings, the slot being captured, a pending conflict
+    /// (action, slot, chord, owner), and a change the app should save.
+    pub bindings: crate::input::Bindings,
+    pub input_capture: Option<(crate::input::Action, usize)>,
+    pub input_conflict: Option<(
+        crate::input::Action,
+        usize,
+        crate::input::Chord,
+        crate::input::Conflict,
+    )>,
+    pub bindings_changed: bool,
+    pub show_controls: bool,
     pub wireframe: bool,
     pub wireframe_supported: bool,
     pub show_axes: bool,
@@ -278,6 +290,11 @@ impl Default for ViewerUi {
             model_gizmo: None,
             model_gizmo_on: true,
             channel: ad_render_vulkan::lighting::Channel::Lit,
+            bindings: crate::input::Bindings::default(),
+            input_capture: None,
+            input_conflict: None,
+            bindings_changed: false,
+            show_controls: false,
             wireframe: false,
             wireframe_supported: true,
             show_axes: false,
@@ -370,6 +387,104 @@ impl ViewerUi {
         self.input
             .as_mut()
             .is_some_and(|input| input.on_window_event(window, event).consumed)
+    }
+    /// ADR-0043 «Управление»: two chords per action; click a slot, then
+    /// press a key or mouse button (Esc cancels, right click on a slot clears).
+    fn controls_ui(&mut self, ui: &mut egui::Ui) {
+        use crate::input::Action;
+        if let Some((action, slot, chord, owner)) = self.input_conflict {
+            ui.colored_label(
+                Color32::from_rgb(240, 180, 80),
+                format!(
+                    "«{}» уже назначено на «{}». Переназначить на «{}»?",
+                    chord.name(),
+                    owner.action.label(),
+                    action.label()
+                ),
+            );
+            ui.horizontal(|ui| {
+                if ui.button("Заменить").clicked() {
+                    let _ = self.bindings.assign(action, slot, chord, true);
+                    self.bindings_changed = true;
+                    self.input_conflict = None;
+                }
+                if ui.button("Отмена").clicked() {
+                    self.input_conflict = None;
+                }
+            });
+            ui.separator();
+        }
+        if let Some((action, _)) = self.input_capture {
+            ui.colored_label(
+                Color32::from_rgb(120, 190, 255),
+                format!(
+                    "«{}»: нажмите клавишу (с Ctrl/Shift/Alt при желании) или кнопку мыши, включая боковые. Esc — отмена.",
+                    action.label()
+                ),
+            );
+        } else {
+            ui.weak(
+                "Нажмите на поле, затем клавишу или кнопку мыши. Правая кнопка по полю — очистить.",
+            );
+        }
+        egui::ScrollArea::vertical()
+            .max_height(380.)
+            .show(ui, |ui| {
+                egui::Grid::new("bindings_grid")
+                    .striped(true)
+                    .num_columns(4)
+                    .show(ui, |ui| {
+                        for action in Action::ALL {
+                            ui.label(action.label());
+                            let slots = self.bindings.slots(action);
+                            for (slot, chord) in slots.iter().enumerate() {
+                                let capturing = self.input_capture == Some((action, slot));
+                                let text = if capturing {
+                                    "Нажмите...".to_owned()
+                                } else {
+                                    chord.map_or("—".into(), |c| c.name())
+                                };
+                                let response = ui.add(
+                                    egui::Button::new(text)
+                                        .selected(capturing)
+                                        .min_size(egui::vec2(140., 0.)),
+                                );
+                                if response.clicked() {
+                                    self.input_capture = Some((action, slot));
+                                    self.input_conflict = None;
+                                }
+                                response.context_menu(|ui| {
+                                    if ui.button("Очистить").clicked() {
+                                        self.bindings.clear(action, slot);
+                                        self.bindings_changed = true;
+                                        ui.close();
+                                    }
+                                });
+                            }
+                            if ui
+                                .small_button("Сброс")
+                                .on_hover_text("Вернуть значения по умолчанию для этого действия")
+                                .clicked()
+                            {
+                                self.bindings.reset(action);
+                                self.bindings_changed = true;
+                            }
+                            ui.end_row();
+                        }
+                    });
+            });
+        ui.separator();
+        if ui
+            .checkbox(&mut self.bindings.invert_zoom, "Обратный зум колесом")
+            .changed()
+        {
+            self.bindings_changed = true;
+        }
+        if ui.button("Сбросить всё").clicked() {
+            self.bindings.reset_all();
+            self.bindings_changed = true;
+            self.input_capture = None;
+        }
     }
     /// ADR-0042 helpers: world axes (negative halves dimmer) and the model's
     /// bounding box with its size, clipped to the viewport.
@@ -815,6 +930,7 @@ impl ViewerUi {
                                 ui.selectable_value(&mut self.channel,channel,channel.label());
                             }
                         }).response.on_hover_text("Что показывать на модели: обычное освещение или один канал данных (нормали, UV, карты материала). Только вид.");
+                        if ui.button("Управление...").on_hover_text("Переназначить клавиши и кнопки мыши, включая боковые; конфликты, сброс.").clicked() {self.show_controls=true;}
                         ui.horizontal(|ui|{
                             ui.add_enabled(self.wireframe_supported,egui::Checkbox::new(&mut self.wireframe,"Каркас")).on_hover_text("Рёбра треугольников поверх модели.").on_disabled_hover_text("Видеокарта не поддерживает отрисовку линиями (fillModeNonSolid).");
                             ui.checkbox(&mut self.show_axes,"Оси").on_hover_text("Мировые оси из начала координат: X красная, Y зелёная, Z синяя; отрицательные половины тусклее.");
@@ -1032,10 +1148,22 @@ impl ViewerUi {
                 });
                 self.history.open&=open;
             }
+            if self.show_controls {
+                let mut open = true;
+                egui::Window::new("Управление").id(egui::Id::new("input_bindings")).open(&mut open).resizable(true).default_size([560.,520.]).show(&context,|ui| {
+                    self.controls_ui(ui);
+                });
+                if !open {
+                    self.show_controls=false;
+                    self.input_capture=None;
+                    self.input_conflict=None;
+                }
+            }
             egui::Window::new("Справка").open(&mut self.help).resizable(true).show(&context,|ui| {
-                ui.label("Открыть: Ctrl+O или перетащить GLB в окно.");
-                ui.label("ЛКМ — вращение; ПКМ / средняя — перемещение; колесо — масштаб.");
-                ui.label("F — вписать модель; G — скрыть или вернуть пол; значок лампы во вьюпорте — тянуть, чтобы повернуть свет, правая кнопка — меню лампы; стрелки X/Y/Z — сдвинуть модель, квадрат — масштаб (каждое отпускание — одна правка, Ctrl+Z); Esc — отменить загрузку или подготовку правки; H — справка.");
+                ui.label(format!("Открыть: {} или перетащить GLB в окно.",self.bindings.describe(crate::input::Action::Open)));
+                ui.label(format!("{} — вращение; {} — перемещение; колесо — масштаб.",self.bindings.describe(crate::input::Action::Orbit),self.bindings.describe(crate::input::Action::Pan)));
+                ui.label(format!("{} — вписать модель; {} — скрыть или вернуть пол; значок лампы во вьюпорте — тянуть, чтобы повернуть свет, правая кнопка — меню лампы; стрелки X/Y/Z — сдвинуть модель, квадрат — масштаб (каждое отпускание — одна правка, {} отменит); {} — отменить загрузку или подготовку правки; {} — справка.", self.bindings.describe(crate::input::Action::Fit), self.bindings.describe(crate::input::Action::ToggleFloor), self.bindings.describe(crate::input::Action::Undo), self.bindings.describe(crate::input::Action::Cancel), self.bindings.describe(crate::input::Action::Help)));
+                ui.label("Все клавиши и кнопки мыши, включая боковые, можно переназначить: «Управление…» в Сводке.");
                 ui.label("Ремонты G001–G005 и G012: «Диагностика», затем «Предпросмотр ремонта…» в строке замечания, затем «Применить»; все сразу — «Очередь ремонтов…». Ctrl+Z — отменить правку, Ctrl+Y — вернуть.");
                 ui.label("«Сохранить» (Ctrl+S) перезаписывает рабочий файл после подтверждения и проверки; «Сохранить копию…» (Ctrl+Shift+S) пишет проверенный GLB в новый файл. При закрытии или открытии другой модели с несохранёнными правками программа спросит, что делать.");
                 ui.separator();ui.label("Выбор узла показывает сведения. Подсветка узлов появится позднее.");
