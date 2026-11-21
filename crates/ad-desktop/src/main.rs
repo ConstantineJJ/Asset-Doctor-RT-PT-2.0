@@ -2094,6 +2094,35 @@ impl App {
                 model_gizmo::Handle::Scale => model_gizmo::drag_scale(delta, current, drag[1]),
             }
         }
+        // A ring grabbed anywhere: the pointer's angle around the centre.
+        if let Some((axis, [bx, by], [ax, ay])) = actions.model_ring_drag
+            && !self.model_pending
+        {
+            self.model_turning = Some(axis);
+            let delta = self
+                .model_preview
+                .get_or_insert_with(|| model_gizmo::Delta::new(model_gizmo::pivot(bounds)));
+            let origin = delta
+                .matrix()
+                .transform_point3(glam::Vec3::from_array(delta.pivot));
+            if let Some(c) = self.camera.project(origin.to_array(), width, height) {
+                let eye = glam::Vec3::from_array(self.camera.eye(width, height)) - origin;
+                let axis_vector = if axis == 0 {
+                    glam::Vec3::X
+                } else {
+                    glam::Vec3::Y
+                };
+                let (w, h) = (width as f32, height as f32);
+                model_gizmo::drag_ring(
+                    delta,
+                    axis,
+                    [bx * w, by * h],
+                    [ax * w, ay * h],
+                    [c[0] * w, c[1] * h],
+                    axis_vector.dot(eye.normalize_or_zero()),
+                );
+            }
+        }
         if actions.model_drag_end {
             self.model_turning = None;
         }

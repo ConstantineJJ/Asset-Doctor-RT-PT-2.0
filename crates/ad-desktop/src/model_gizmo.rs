@@ -230,6 +230,37 @@ pub fn drag_turn(delta: &mut Delta, axis: usize, drag: [f32; 2], tangent_px: [f3
         .to_array();
 }
 
+/// Turns about `axis` by the pointer's angle around the ring centre on
+/// screen (pixels, y down) — the ring can be grabbed anywhere. `facing` is
+/// the dot product of the axis with the direction towards the eye.
+pub fn drag_ring(
+    delta: &mut Delta,
+    axis: usize,
+    before: [f32; 2],
+    after: [f32; 2],
+    centre: [f32; 2],
+    facing: f32,
+) {
+    let angle = |p: [f32; 2]| (p[1] - centre[1]).atan2(p[0] - centre[0]);
+    let (a, b) = (angle(before), angle(after));
+    if !a.is_finite() || !b.is_finite() {
+        return;
+    }
+    let mut step = b - a;
+    if step > std::f32::consts::PI {
+        step -= std::f32::consts::TAU;
+    } else if step < -std::f32::consts::PI {
+        step += std::f32::consts::TAU;
+    }
+    // Clockwise on a y-down screen is a negative turn about an axis that
+    // points at the eye.
+    let sign = if facing >= 0. { -1. } else { 1. };
+    delta.turned += sign * step.clamp(-0.5, 0.5);
+    delta.rotation = Quat::from_axis_angle(axis_vector(axis), delta.turned)
+        .normalize()
+        .to_array();
+}
+
 /// Screen positions (viewport 0..1, y down) of the gizmo for this frame.
 /// `turning`: the ring being dragged, whose knob follows the preview.
 pub fn screen(
@@ -428,6 +459,44 @@ mod tests {
         let t = Vec3::from_array(knob_tangent(1, c, a));
         let moved = (Vec3::from_array(b) - Vec3::from_array(a)) / 0.01;
         assert!((moved - t).length() < 1e-2 * r.max(1.), "{moved} vs {t}");
+    }
+    #[test]
+    fn grabbing_a_ring_anywhere_turns_with_the_pointer_around_its_centre() {
+        let mut camera = Camera::default();
+        camera.fit(cube());
+        let (w, h) = (1200, 800);
+        let base = pivot(cube());
+        let radius = ring_radius(cube());
+        let centre = camera.project(base, w, h).unwrap();
+        let px = |p: [f32; 3]| {
+            let s = camera.project(p, w, h).unwrap();
+            [s[0] * w as f32, s[1] * h as f32]
+        };
+        let c = [centre[0] * w as f32, centre[1] * h as f32];
+        let eye = Vec3::from_array(camera.eye(w, h)) - Vec3::from_array(base);
+        // Y ring: move the pointer from one ring point to the next one along
+        // a positive turn; the delta turns the same way.
+        let axis = 1;
+        let facing = Vec3::Y.dot(eye.normalize());
+        let from = knob(axis, base, radius, 0.4, 0.);
+        let to = knob(axis, base, radius, 0.4, 0.2);
+        let mut d = Delta::new(base);
+        drag_ring(&mut d, axis, px(from), px(to), c, facing);
+        assert!((d.turned - 0.2).abs() < 0.05, "{}", d.turned);
+        // Back again: no turn left.
+        drag_ring(&mut d, axis, px(to), px(from), c, facing);
+        assert!(d.turned.abs() < 1e-4, "{}", d.turned);
+        // The wrap at ±π does not jump.
+        let mut e = Delta::new(base);
+        drag_ring(
+            &mut e,
+            axis,
+            [c[0] - 100., c[1] + 1.],
+            [c[0] - 100., c[1] - 1.],
+            c,
+            1.,
+        );
+        assert!(e.turned.abs() < 0.05, "{}", e.turned);
     }
     #[test]
     fn numeric_fields_round_trip_and_turning_keeps_the_offset() {

@@ -83,6 +83,9 @@ pub struct Actions {
     /// ADR-0041 model gizmo: handle dragged by (dx, dy) in viewport units
     /// (0..1 of its width/height), released this frame, or reset requested.
     pub model_drag: Option<(crate::model_gizmo::Handle, [f32; 2])>,
+    /// A ring grabbed anywhere: axis and the pointer before and after
+    /// (viewport units).
+    pub model_ring_drag: Option<(usize, [f32; 2], [f32; 2])>,
     pub model_drag_end: bool,
     pub model_reset: bool,
     /// ADR-0041 numeric fields: preview of the edited placement, and the
@@ -857,13 +860,67 @@ impl ViewerUi {
                 }
             }
         }
+        // The rings can be grabbed anywhere: a small grab area follows the
+        // pointer while it is near a ring (or while that ring is dragged).
+        let pointer = context.pointer_hover_pos();
         for (slot, axis) in crate::model_gizmo::RING_AXES.into_iter().enumerate() {
-            let color = colors[axis].gamma_multiply(0.8);
             let ring = &gizmo.rings[slot];
+            let grab_id = egui::Id::new(("model_ring_grab", axis));
+            let dragging = context.is_being_dragged(grab_id);
+            let near = pointer.is_some_and(|p| {
+                (0..ring.len()).any(|i| match (ring[i], ring[(i + 1) % ring.len()]) {
+                    (Some(a), Some(b)) => {
+                        egui::emath::Rect::from_two_pos(at(a), at(b))
+                            .expand(7.)
+                            .contains(p)
+                            && segment_distance(p, at(a), at(b)) < 7.
+                    }
+                    _ => false,
+                })
+            });
+            let hot = dragging || near;
+            let color = if hot {
+                colors[axis]
+            } else {
+                colors[axis].gamma_multiply(0.8)
+            };
             for i in 0..ring.len() {
                 if let (Some(a), Some(b)) = (ring[i], ring[(i + 1) % ring.len()]) {
-                    painter.line_segment([at(a), at(b)], egui::Stroke::new(1.6, color));
+                    painter.line_segment(
+                        [at(a), at(b)],
+                        egui::Stroke::new(if hot { 3. } else { 1.6 }, color),
+                    );
                 }
+            }
+            if let Some(p) = pointer.filter(|_| hot && scene.contains(pointer.unwrap_or_default()))
+            {
+                egui::Area::new(egui::Id::new(("model_ring_area", axis)))
+                    .order(egui::Order::Middle)
+                    .fixed_pos(p - egui::vec2(10., 10.))
+                    .show(context, |ui| {
+                        let rect = egui::Rect::from_center_size(p, egui::vec2(20., 20.));
+                        let response = ui.interact(rect, grab_id, egui::Sense::drag());
+                        if response.dragged() {
+                            let d = response.drag_delta();
+                            if d != egui::Vec2::ZERO {
+                                let uv = |q: egui::Pos2| {
+                                    [
+                                        (q.x - scene.min.x) / scene.width(),
+                                        (q.y - scene.min.y) / scene.height(),
+                                    ]
+                                };
+                                actions.model_ring_drag = Some((axis, uv(p - d), uv(p)));
+                            }
+                        }
+                        if response.drag_stopped() {
+                            actions.model_drag_end = true;
+                        }
+                        response.on_hover_text(if axis == 0 {
+                            "Тяните по красному кольцу — наклон вокруг X"
+                        } else {
+                            "Тяните по зелёному кольцу — поворот вокруг Y"
+                        });
+                    });
             }
             if let Some(knob) = gizmo.knobs[slot].map(at)
                 && scene.shrink(10.).contains(knob)
@@ -1451,6 +1508,13 @@ impl ViewerUi {
         });
         (output, self.scene, actions)
     }
+}
+
+/// Distance from a point to a segment (screen points).
+fn segment_distance(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
+    let ab = b - a;
+    let t = ((p - a).dot(ab) / ab.length_sq().max(1e-6)).clamp(0., 1.);
+    (a + ab * t - p).length()
 }
 
 #[cfg(test)]
