@@ -1,0 +1,16 @@
+Bundled SkyBox panoramas (Radiance HDR, equirectangular 2:1)
+
+Source: Poly Haven, https://polyhaven.com/hdris — CC0 1.0 (public domain).
+
+4096x2048, unchanged downloads:
+  qwantani_sunset_puresky_4k.hdr   sunset sky
+  ferndale_studio_06_4k.hdr        studio
+  snowy_park_01_4k.hdr             winter park
+
+2048x1024, made by Asset Doctor from the 4K downloads (2x2 box average in
+linear radiance, RGBE run-length):
+  tears_of_steel_bridge_2k.hdr     city, day
+  modern_buildings_night_2k.hdr    city, night
+
+Other panoramas in this folder are local only and are not part of the
+program (see .gitignore).
