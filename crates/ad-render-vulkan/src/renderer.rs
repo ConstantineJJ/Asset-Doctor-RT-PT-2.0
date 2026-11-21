@@ -116,6 +116,8 @@ pub struct Renderer {
     ibl_frames: u64,
     /// Per-draw Work-Tree overrides (used when the length matches the scene).
     overrides: Vec<DrawOverride>,
+    /// ADR-0048 object drag preview: matrix and the draws it moves.
+    node_preview: Option<([[f32; 4]; 4], Vec<usize>)>,
     /// Object outline of this frame and frames that drew one.
     outline: crate::outline::OutlineSettings,
     outline_frames: u64,
@@ -185,6 +187,7 @@ impl Renderer {
             overrides: Vec::new(),
             outline: Default::default(),
             outline_frames: 0,
+            node_preview: None,
             model_preview: None,
             channel: crate::lighting::Channel::Lit,
             wireframe: false,
@@ -331,6 +334,10 @@ impl Renderer {
             self.skybox = Some(skybox);
         }
         Ok(())
+    }
+    /// ADR-0048: while an object is dragged, move these draws by `matrix`.
+    pub fn set_node_preview(&mut self, preview: Option<([[f32; 4]; 4], Vec<usize>)>) {
+        self.node_preview = preview.filter(|(m, _)| m.iter().flatten().all(|v| v.is_finite()));
     }
     /// Selected (solid) and hovered (dashed) draws to outline.
     pub fn set_outline(&mut self, outline: crate::outline::OutlineSettings) {
@@ -589,6 +596,15 @@ impl Renderer {
                     }),
                     ibl: ibl.map_or([0.; 4], |i| i.0),
                     sh: ibl.map_or([[0.; 4]; 9], |i| i.1),
+                    node_preview: self.node_preview.as_ref().map_or(
+                        [
+                            [1., 0., 0., 0.],
+                            [0., 1., 0., 0.],
+                            [0., 0., 1., 0.],
+                            [0., 0., 0., 1.],
+                        ],
+                        |p| p.0,
+                    ),
                     light_color: if self.lighting.enabled {
                         let [r, g, b] = self.lighting.color.map(crate::sky::srgb_to_linear);
                         [r, g, b, 1.]
@@ -972,7 +988,16 @@ impl Renderer {
                                 draw.emissive_factor[0],
                                 draw.emissive_factor[1],
                                 draw.emissive_factor[2],
-                                0.,
+                                // ADR-0048: this draw follows the drag preview.
+                                if self
+                                    .node_preview
+                                    .as_ref()
+                                    .is_some_and(|p| p.1.contains(&index))
+                                {
+                                    1.
+                                } else {
+                                    0.
+                                },
                             ],
                         };
                         // mesh.frag bit 128: wireframe line colour.

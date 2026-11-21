@@ -67,6 +67,8 @@ pub struct Actions {
     pub skybox_remove: bool,
     /// SkyBox quality changed: prepare this panorama again.
     pub skybox_reload: Option<std::path::PathBuf>,
+    /// Right-click menu «Удалить»: take this object out of the scene.
+    pub delete_object: Option<ad_document::NodeId>,
     /// Fixed camera view chosen in the viewport corner.
     pub camera_view: Option<crate::camera::View>,
     /// SkyBox window: show this panorama; choose the library folder.
@@ -259,6 +261,10 @@ pub struct ViewerUi {
     pub outline_on: bool,
     pub outline_color: Option<usize>,
     pub hover_node: Option<ad_document::NodeId>,
+    /// ADR-0048: the gizmo works on this object instead of the whole model.
+    pub object_gizmo: Option<ad_document::NodeId>,
+    /// Right-click menu: where (points) and on which object.
+    context_menu: Option<(egui::Pos2, Option<ad_document::NodeId>)>,
     log_seen_warnings: u64,
     log_filter: String,
     log_only_warnings: bool,
@@ -420,6 +426,8 @@ impl Default for ViewerUi {
             outline_on: true,
             outline_color: None,
             hover_node: None,
+            object_gizmo: None,
+            context_menu: None,
             log_seen_warnings: 0,
             log_filter: String::new(),
             log_only_warnings: false,
@@ -1149,6 +1157,12 @@ impl ViewerUi {
                 });
             });
     }
+    /// Opens the right-click menu at a window position (pixels).
+    pub fn open_context_menu(&mut self, x: f64, y: f64, node: Option<ad_document::NodeId>) {
+        let scale = self.context.pixels_per_point() as f64;
+        self.context_menu = Some((egui::pos2((x / scale) as f32, (y / scale) as f32), node));
+        self.menu = None;
+    }
     /// Viewport coordinates (0..1, y down) of a window position in pixels.
     pub fn viewport_uv(&self, x: f64, y: f64) -> Option<[f32; 2]> {
         let scale = self.context.pixels_per_point() as f64;
@@ -1292,6 +1306,7 @@ impl ViewerUi {
             self.skybox_tile_rects.clear();
             self.skybox_window(&context,&mut actions);
             self.log_window(&context);
+            self.context_menu_ui(&context,asset,&mut actions);
             if let Some(info)=self.edit.preview.clone() {
                 let ready=!loading && self.edit.busy.is_none();
                 let code=crate::edits::repair_label(info.kind);
@@ -1876,6 +1891,38 @@ FORMAT=32-bit_rle_rgbe
         // The left block mirrors the right one: about 390 points wide.
         assert!(open.left() - closed.left() > 300., "{closed:?} {open:?}");
         assert!(ui.tree.hidden.is_empty());
+    }
+    #[test]
+    fn right_click_menu_offers_object_gizmo_delete_and_view_submenus() {
+        let asset = fixture("Twin_Cubes.glb");
+        let mut ui = ViewerUi::default();
+        ui.tree.replace(asset.document());
+        let size = (1400., 900.);
+        warm(&mut ui, Some(&asset), size);
+        ui.open_context_menu(500., 400., Some(ad_document::NodeId(1)));
+        warm(&mut ui, Some(&asset), size);
+        let area = ui
+            .context
+            .memory(|m| m.area_rect(egui::Id::new("viewport_context_menu")))
+            .unwrap();
+        assert!(
+            area.contains(egui::pos2(510., 410.)) && area.height() > 150.,
+            "{area:?}"
+        );
+        // «Gizmo» is the first button under the name.
+        let gizmo = egui::Rect::from_center_size(
+            egui::pos2(area.left() + 60., area.top() + 40.),
+            egui::vec2(2., 2.),
+        );
+        click(&mut ui, Some(&asset), gizmo, size);
+        assert_eq!(ui.object_gizmo, Some(ad_document::NodeId(1)));
+        assert!(ui.context_menu.is_none(), "a choice closes the menu");
+        // A press outside closes it; Esc too.
+        ui.open_context_menu(500., 400., None);
+        warm(&mut ui, Some(&asset), size);
+        let outside = egui::Rect::from_center_size(egui::pos2(900., 700.), egui::vec2(2., 2.));
+        click(&mut ui, Some(&asset), outside, size);
+        assert!(ui.context_menu.is_none());
     }
     /// Each menu shows all its items at once, also after switching menus.
     #[test]

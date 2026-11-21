@@ -15,6 +15,8 @@ pub(crate) enum CandidateData<'a> {
     Primitive(&'a MeshPrimitive, Option<&'a [u32]>, bool),
     /// ADR-0041: a new model placement; primitives stay current.
     Placement(crate::Placement),
+    /// ADR-0048: a new object edit state; primitives stay current.
+    Nodes(&'a crate::NodeEdits),
 }
 impl<'a> CandidateData<'a> {
     /// Proposed indices, or None when the primitive data stays current.
@@ -22,7 +24,7 @@ impl<'a> CandidateData<'a> {
         match self {
             Self::Indices(v) => Some(v),
             Self::Primitive(p, ..) => Some(&p.indices),
-            Self::Placement(_) => None,
+            Self::Placement(_) | Self::Nodes(_) => None,
         }
     }
 }
@@ -76,6 +78,10 @@ impl<'a> CandidateIndices<'a> {
     pub fn changes_placement(&self) -> bool {
         matches!(self.data, CandidateData::Placement(_))
     }
+    /// True when publication only changes object edits (ADR-0048).
+    pub fn changes_nodes(&self) -> bool {
+        matches!(self.data, CandidateData::Nodes(_))
+    }
 }
 
 /// Immutable view used by snapshots and analysis. A candidate view never
@@ -117,6 +123,13 @@ impl<'a> DocumentView<'a> {
         {
             Some(Some(indices)) => indices,
             _ => &self.document.parts.meshes[mesh.0].indices,
+        }
+    }
+    /// Object edits as seen through this view (ADR-0048).
+    pub fn node_edits(&self) -> &'a crate::NodeEdits {
+        match self.candidate {
+            Some((_, CandidateData::Nodes(e))) => e,
+            _ => self.document.node_edits(),
         }
     }
     /// Model placement as seen through this view (ADR-0041).
@@ -201,6 +214,24 @@ impl AssetDocument {
             .get(candidate.mesh.0)
             .ok_or_else(invalid)?;
         let vertices = match candidate.data {
+            CandidateData::Nodes(e) => {
+                if e.locals
+                    .keys()
+                    .chain(e.detached.iter())
+                    .any(|n| *n >= self.parts.nodes.len())
+                    || e.locals
+                        .values()
+                        .any(|m| !crate::NodeEdits::valid_local(*m))
+                {
+                    return Err(invalid());
+                }
+                cancel.check()?;
+                return Ok(DocumentView {
+                    document: self,
+                    tag: candidate.next,
+                    candidate: Some((candidate.mesh, candidate.data)),
+                });
+            }
             CandidateData::Placement(p) => {
                 if !p.valid() {
                     return Err(invalid());

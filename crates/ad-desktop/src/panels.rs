@@ -1039,6 +1039,138 @@ impl ViewerUi {
         ui.weak("Статические GLB: PNG/JPEG, цвета вершин, нормали, OPAQUE/MASK. PBR — предварительный режим. BLEND, скелеты и анимации пока не поддерживаются.");
     }
 
+    /// Right-click menu: the object under the pointer (gizmo, delete, hide,
+    /// mark, find in the Work-Tree) and the view submenus. Esc or a press
+    /// outside closes it.
+    pub(super) fn context_menu_ui(
+        &mut self,
+        context: &egui::Context,
+        asset: Option<&PreparedAsset>,
+        actions: &mut Actions,
+    ) {
+        let Some((at, node)) = self.context_menu else {
+            return;
+        };
+        if context.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.context_menu = None;
+            return;
+        }
+        let mut close = false;
+        let area = egui::Area::new(egui::Id::new("viewport_context_menu"))
+            .order(egui::Order::Foreground)
+            .constrain(true)
+            .fixed_pos(at)
+            .show(context, |ui| {
+                egui::Frame::menu(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(220.);
+                    if let (Some(node), Some(asset)) = (node, asset) {
+                        let name = asset
+                            .document()
+                            .nodes()
+                            .get(node.0)
+                            .map_or(String::new(), |n| n.name.clone());
+                        ui.label(
+                            RichText::new(if name.is_empty() {
+                                "Без имени"
+                            } else {
+                                &name
+                            })
+                            .strong(),
+                        );
+                        if ui
+                            .button("Gizmo: переместить, повернуть, масштаб")
+                            .clicked()
+                        {
+                            self.object_gizmo = Some(node);
+                            self.model_gizmo_on = true;
+                            close = true;
+                        }
+                        if ui.button("Удалить (X)").clicked() {
+                            actions.delete_object = Some(node);
+                            close = true;
+                        }
+                        if ui
+                            .button("Скрыть")
+                            .on_hover_text("Только вид; вернуть — глазом в Work-Tree")
+                            .clicked()
+                        {
+                            self.tree.hidden.insert(node.0);
+                            self.tree.rev += 1;
+                            close = true;
+                        }
+                        ui.menu_button("Пометить цветом", |ui| {
+                            ui.horizontal(|ui| {
+                                for color in MARK_COLORS {
+                                    let (r, response) = ui.allocate_exact_size(
+                                        egui::vec2(20., 20.),
+                                        egui::Sense::click(),
+                                    );
+                                    ui.painter().rect_filled(
+                                        r,
+                                        3.,
+                                        Color32::from_rgb(color[0], color[1], color[2]),
+                                    );
+                                    if response.clicked() {
+                                        self.tree.tints.insert(node.0, color);
+                                        self.tree.rev += 1;
+                                        close = true;
+                                    }
+                                }
+                            });
+                            if ui.button("Без пометки").clicked() {
+                                self.tree.tints.remove(&node.0);
+                                self.tree.rev += 1;
+                                close = true;
+                            }
+                        });
+                        if ui.button("Показать в Work-Tree").clicked() {
+                            self.show_tree = true;
+                            close = true;
+                        }
+                        ui.separator();
+                    }
+                    if self.object_gizmo.is_some() && ui.button("Gizmo: вся модель").clicked()
+                    {
+                        self.object_gizmo = None;
+                        close = true;
+                    }
+                    if ui.button("Вписать (F)").clicked() {
+                        actions.fit = true;
+                        close = true;
+                    }
+                    if ui
+                        .checkbox(&mut self.outline_on, "Контур объектов (Tab)")
+                        .changed()
+                    {
+                        close = true;
+                    }
+                    ui.separator();
+                    ui.menu_button("Вид", |ui| self.view_menu(ui));
+                    ui.menu_button("Сетка и помощники", |ui| self.grid_menu(ui));
+                    ui.menu_button("Освещение", |ui| self.light_menu(ui));
+                    ui.menu_button("Лампа", |ui| self.lamp_menu(ui, actions));
+                    ui.menu_button("Окружение", |ui| self.sky_menu(ui));
+                });
+            });
+        let rect = area.response.rect;
+        let press = context.input(|i| {
+            i.pointer
+                .any_pressed()
+                .then(|| i.pointer.interact_pos())
+                .flatten()
+        });
+        if close
+            || press.is_some_and(|pos| {
+                !rect.contains(pos)
+                    && !context.layer_id_at(pos).is_some_and(|layer| {
+                        matches!(layer.order, egui::Order::Foreground | egui::Order::Tooltip)
+                    })
+            })
+        {
+            self.context_menu = None;
+        }
+    }
+
     /// A bug in the bottom-right corner opens the program log; amber when
     /// new warnings came since the log was last open.
     pub(super) fn bug_button(&mut self, ui: &mut egui::Ui) {
