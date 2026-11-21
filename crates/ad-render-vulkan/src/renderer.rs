@@ -116,6 +116,9 @@ pub struct Renderer {
     ibl_frames: u64,
     /// Per-draw Work-Tree overrides (used when the length matches the scene).
     overrides: Vec<DrawOverride>,
+    /// Object outline of this frame and frames that drew one.
+    outline: crate::outline::OutlineSettings,
+    outline_frames: u64,
     sample_textures: bool,
     sample_mr_maps: bool,
     sample_normal_maps: bool,
@@ -180,6 +183,8 @@ impl Renderer {
             environment_fallback: None,
             ibl_frames: 0,
             overrides: Vec::new(),
+            outline: Default::default(),
+            outline_frames: 0,
             model_preview: None,
             channel: crate::lighting::Channel::Lit,
             wireframe: false,
@@ -326,6 +331,14 @@ impl Renderer {
             self.skybox = Some(skybox);
         }
         Ok(())
+    }
+    /// Selected (solid) and hovered (dashed) draws to outline.
+    pub fn set_outline(&mut self, outline: crate::outline::OutlineSettings) {
+        self.outline = outline;
+    }
+    /// Frames with an outline recorded (smoke evidence).
+    pub fn outline_frames(&self) -> u64 {
+        self.outline_frames
     }
     /// Work-Tree: hidden and tinted draws, one entry per scene draw (an
     /// empty or mismatched list draws everything as it is).
@@ -644,6 +657,108 @@ impl Renderer {
                 device.cmd_end_render_pass(self.command);
                 self.shadow_frames += 1;
             }
+            let scene_rect = if let Some(frame) = ui.as_deref() {
+                frame.scene.and_then(|r| {
+                    r.clipped(&SurfaceSize {
+                        width: chain.extent.width,
+                        height: chain.extent.height,
+                    })
+                })
+            } else {
+                Some(ViewportRect {
+                    x: 0,
+                    y: 0,
+                    width: chain.extent.width,
+                    height: chain.extent.height,
+                })
+            };
+            // Object outline: the selected/hovered draws into the mask image.
+            let outline_on =
+                !self.outline.is_empty() && self.scene.is_some() && scene_rect.is_some();
+            if let (true, Some(target), Some(scene), Some(rect)) = (
+                outline_on,
+                chain.outline.as_ref(),
+                self.scene.as_ref(),
+                scene_rect,
+            ) {
+                target.begin(self.command);
+                device.cmd_bind_pipeline(
+                    self.command,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    target.mask_pipeline,
+                );
+                device.cmd_set_viewport(
+                    self.command,
+                    0,
+                    &[vk::Viewport {
+                        x: rect.x as f32,
+                        y: rect.y as f32,
+                        width: rect.width as f32,
+                        height: rect.height as f32,
+                        min_depth: 0.0,
+                        max_depth: 1.0,
+                    }],
+                );
+                device.cmd_set_scissor(
+                    self.command,
+                    0,
+                    &[vk::Rect2D {
+                        offset: vk::Offset2D {
+                            x: rect.x as i32,
+                            y: rect.y as i32,
+                        },
+                        extent: vk::Extent2D {
+                            width: rect.width,
+                            height: rect.height,
+                        },
+                    }],
+                );
+                device.cmd_bind_vertex_buffers(self.command, 0, &[scene.vertices.handle], &[0]);
+                device.cmd_bind_index_buffer(
+                    self.command,
+                    scene.indices.handle,
+                    0,
+                    vk::IndexType::UINT32,
+                );
+                let view_projection = self.model_preview.map_or(self.view_projection, |p| p.0);
+                for (draws, value) in [
+                    (&self.outline.selected, [1., 0., 0., 1.]),
+                    (&self.outline.hovered, [0., 1., 0., 1.]),
+                ] {
+                    let push = crate::outline::MaskPush {
+                        view_projection,
+                        value,
+                    };
+                    let bytes = std::slice::from_raw_parts(
+                        (&push as *const crate::outline::MaskPush).cast::<u8>(),
+                        std::mem::size_of::<crate::outline::MaskPush>(),
+                    );
+                    device.cmd_push_constants(
+                        self.command,
+                        target.mask_layout,
+                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                        0,
+                        bytes,
+                    );
+                    for &index in draws.iter() {
+                        let Some(draw) = scene.draws.get(index) else {
+                            continue;
+                        };
+                        if self.draw_override(index, scene.draws.len()).hidden {
+                            continue;
+                        }
+                        device.cmd_draw_indexed(
+                            self.command,
+                            draw.index_count,
+                            1,
+                            draw.index_start,
+                            0,
+                            0,
+                        );
+                    }
+                }
+                device.cmd_end_render_pass(self.command);
+            }
             let area = vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
                 extent: chain.extent,
@@ -671,21 +786,6 @@ impl Renderer {
                     .clear_values(&clear),
                 vk::SubpassContents::INLINE,
             );
-            let scene_rect = if let Some(frame) = ui.as_deref() {
-                frame.scene.and_then(|r| {
-                    r.clipped(&SurfaceSize {
-                        width: chain.extent.width,
-                        height: chain.extent.height,
-                    })
-                })
-            } else {
-                Some(ViewportRect {
-                    x: 0,
-                    y: 0,
-                    width: chain.extent.width,
-                    height: chain.extent.height,
-                })
-            };
             if let (Some(scene), Some(rect)) = (self.scene.as_ref(), scene_rect) {
                 let pipeline = chain
                     .pipeline
@@ -945,6 +1045,42 @@ impl Renderer {
                     );
                     device.cmd_draw(self.command, 6, 1, 0, 0);
                     self.grid_frames += 1;
+                }
+                // Object outline over the scene (before the UI).
+                if let (true, Some(target)) = (outline_on, chain.outline.as_ref()) {
+                    let pipeline = if self.outline.color.is_none() {
+                        target.invert_pipeline
+                    } else {
+                        target.blend_pipeline
+                    };
+                    device.cmd_bind_pipeline(
+                        self.command,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        pipeline,
+                    );
+                    device.cmd_bind_descriptor_sets(
+                        self.command,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        target.layout,
+                        0,
+                        &[target.set],
+                        &[],
+                    );
+                    let push =
+                        crate::outline::OutlinePush::new(self.outline.color, !chain.encode_srgb);
+                    let bytes = std::slice::from_raw_parts(
+                        (&push as *const crate::outline::OutlinePush).cast::<u8>(),
+                        std::mem::size_of::<crate::outline::OutlinePush>(),
+                    );
+                    device.cmd_push_constants(
+                        self.command,
+                        target.layout,
+                        vk::ShaderStageFlags::FRAGMENT,
+                        0,
+                        bytes,
+                    );
+                    device.cmd_draw(self.command, 3, 1, 0, 0);
+                    self.outline_frames += 1;
                 }
             } else if ui.is_none() {
                 // Visible clear marker only until a real scene has been imported.

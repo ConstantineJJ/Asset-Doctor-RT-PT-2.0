@@ -137,6 +137,7 @@ impl ViewerUi {
             ui.add_space(free.right() - edge);
         }
         let start = ui.available_rect_before_wrap().right();
+        self.amoeba_switch(ui);
         self.lamp_switch(ui);
         for (menu, label, brief) in VIEW_MENUS.into_iter().rev() {
             if menu == TopMenu::Sky {
@@ -207,6 +208,66 @@ impl ViewerUi {
             self.menu_anchor = response.rect;
         }
         response
+    }
+
+    /// The amoeba: object outline on/off (Tab). Coloured like the outline
+    /// (several colours for the dynamic contrast), grey when off.
+    fn amoeba_switch(&mut self, ui: &mut egui::Ui) {
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(30., 30.), egui::Sense::click());
+        #[cfg(test)]
+        {
+            self.amoeba_rect = rect;
+        }
+        let painter = ui.painter();
+        if response.hovered() {
+            painter.rect_filled(rect, 5., ui.visuals().widgets.hovered.weak_bg_fill);
+        }
+        let c = rect.center();
+        let n = 28;
+        let points: Vec<egui::Pos2> = (0..n)
+            .map(|i| {
+                let a = i as f32 / n as f32 * std::f32::consts::TAU;
+                let r = 9. + 1.8 * (3. * a).sin() + 1.1 * (5. * a + 1.).cos();
+                c + egui::vec2(a.cos(), a.sin()) * r
+            })
+            .collect();
+        let fixed = self
+            .outline_color
+            .map(|i| MARK_COLORS[i % MARK_COLORS.len()]);
+        if self.outline_on {
+            let fill = fixed.map_or(
+                Color32::from_rgba_unmultiplied(255, 255, 255, 40),
+                |[r, g, b]| Color32::from_rgba_unmultiplied(r, g, b, 70),
+            );
+            painter.add(egui::Shape::convex_polygon(
+                points.clone(),
+                fill,
+                egui::Stroke::NONE,
+            ));
+        }
+        // Dashed outline: every other segment; the dynamic mode cycles colours.
+        for i in (0..n).step_by(2) {
+            let color = match (self.outline_on, fixed) {
+                (false, _) => ui.visuals().weak_text_color(),
+                (true, Some([r, g, b])) => Color32::from_rgb(r, g, b),
+                (true, None) => {
+                    let [r, g, b] = MARK_COLORS[(i / 2) % MARK_COLORS.len()];
+                    Color32::from_rgb(r, g, b)
+                }
+            };
+            painter.line_segment(
+                [points[i], points[(i + 1) % n]],
+                egui::Stroke::new(1.8, color),
+            );
+        }
+        let response = response.on_hover_text(if self.outline_on {
+            "Контур объектов включён (Tab): пунктир — под курсором, сплошной — выбранный. Цвет — в «Настройках»."
+        } else {
+            "Контур объектов выключен (Tab)."
+        });
+        if response.clicked() {
+            self.outline_on = !self.outline_on;
+        }
     }
 
     /// Yellow lamp: the lamp shines; grey and black: it is off. Click toggles.
@@ -333,6 +394,33 @@ impl ViewerUi {
             self.show_controls = true;
             self.menu = None;
         }
+        ui.separator();
+        Self::heading(ui, "Контур объектов");
+        ui.checkbox(&mut self.outline_on, "Показывать контур (Tab)");
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut self.outline_color, None, "Динамический контраст")
+                .on_hover_text("Линия инвертирует то, что под ней: видна на любом фоне.");
+        });
+        ui.horizontal(|ui| {
+            ui.label("Фиксированный цвет:");
+            for (i, [r, g, b]) in MARK_COLORS.into_iter().enumerate() {
+                let (rect, response) =
+                    ui.allocate_exact_size(egui::vec2(20., 20.), egui::Sense::click());
+                ui.painter()
+                    .rect_filled(rect.shrink(1.), 3., Color32::from_rgb(r, g, b));
+                if self.outline_color == Some(i) {
+                    ui.painter().rect_stroke(
+                        rect,
+                        3.,
+                        egui::Stroke::new(2., ui.visuals().strong_text_color()),
+                        egui::StrokeKind::Inside,
+                    );
+                }
+                if response.clicked() {
+                    self.outline_color = Some(i);
+                }
+            }
+        });
         ui.separator();
         Self::heading(ui, "Справка");
         if ui

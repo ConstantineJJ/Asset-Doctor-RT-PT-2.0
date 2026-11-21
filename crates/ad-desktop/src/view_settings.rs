@@ -87,6 +87,8 @@ impl ViewerUi {
             })),
             "model_gizmo": self.model_gizmo_on,
             "log_to_file": self.log_to_file,
+            "outline": self.outline_on,
+            "outline_color": self.outline_color,
             "layout": {
                 "right_block": self.show_summary,
                 "tab": if self.tab == Tab::Info { "info" } else { "health" },
@@ -285,6 +287,15 @@ impl ViewerUi {
         }
         flag(value, "model_gizmo", &mut self.model_gizmo_on, &mut bad);
         flag(value, "log_to_file", &mut self.log_to_file, &mut bad);
+        flag(value, "outline", &mut self.outline_on, &mut bad);
+        match value.get("outline_color") {
+            None => {}
+            Some(Value::Null) => self.outline_color = None,
+            Some(n) => match n.as_u64().map(|n| n as usize) {
+                Some(i) if i < 7 => self.outline_color = Some(i),
+                _ => bad.push("outline_color".into()),
+            },
+        }
         if let Some(layout) = value.get("layout") {
             flag(layout, "right_block", &mut self.show_summary, &mut bad);
             flag(layout, "tree", &mut self.show_tree, &mut bad);

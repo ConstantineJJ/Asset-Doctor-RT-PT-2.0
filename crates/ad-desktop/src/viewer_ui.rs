@@ -9,6 +9,7 @@ use winit::{event::WindowEvent, window::Window};
 
 #[path = "panels.rs"]
 mod panels;
+pub(crate) use panels::MARK_COLORS;
 #[path = "view_settings.rs"]
 pub mod view_settings;
 
@@ -252,6 +253,12 @@ pub struct ViewerUi {
     /// already seen (the bug turns amber for new ones).
     pub show_log: bool,
     pub log_to_file: bool,
+    /// Object outline (Tab, amoeba icon): on/off and colour (None: dynamic
+    /// contrast, Some: index into the seven fixed colours). The hovered node
+    /// is set by the application from the pointer.
+    pub outline_on: bool,
+    pub outline_color: Option<usize>,
+    pub hover_node: Option<ad_document::NodeId>,
     log_seen_warnings: u64,
     log_filter: String,
     log_only_warnings: bool,
@@ -373,6 +380,8 @@ pub struct ViewerUi {
     #[cfg(test)]
     bug_rect: egui::Rect,
     #[cfg(test)]
+    amoeba_rect: egui::Rect,
+    #[cfg(test)]
     view_rects: Vec<(crate::camera::View, egui::Rect)>,
     #[cfg(test)]
     skybox_tile_rects: Vec<egui::Rect>,
@@ -408,6 +417,9 @@ impl Default for ViewerUi {
             skybox_hover: None,
             show_log: false,
             log_to_file: false,
+            outline_on: true,
+            outline_color: None,
+            hover_node: None,
             log_seen_warnings: 0,
             log_filter: String::new(),
             log_only_warnings: false,
@@ -507,6 +519,8 @@ impl Default for ViewerUi {
             skybox_button_rect: egui::Rect::NOTHING,
             #[cfg(test)]
             bug_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            amoeba_rect: egui::Rect::NOTHING,
             #[cfg(test)]
             view_rects: Vec::new(),
             #[cfg(test)]
@@ -1135,6 +1149,17 @@ impl ViewerUi {
                 });
             });
     }
+    /// Viewport coordinates (0..1, y down) of a window position in pixels.
+    pub fn viewport_uv(&self, x: f64, y: f64) -> Option<[f32; 2]> {
+        let scale = self.context.pixels_per_point() as f64;
+        let p = egui::pos2((x / scale) as f32, (y / scale) as f32);
+        self.scene.contains(p).then(|| {
+            [
+                (p.x - self.scene.min.x) / self.scene.width(),
+                (p.y - self.scene.min.y) / self.scene.height(),
+            ]
+        })
+    }
     pub fn camera_at(&self, x: f64, y: f64) -> bool {
         let scale = self.context.pixels_per_point() as f64;
         self.scene
@@ -1741,7 +1766,7 @@ mod tests {
             rect_of(TopMenu::View).left() > ui.open_rect.right(),
             "{menus:?}"
         );
-        let end = ui.lamp_switch_rect.right();
+        let end = ui.amoeba_rect.right();
         assert!(
             end <= ui.scene.right() && end > ui.scene.right() - 30.,
             "{end} {:?}",

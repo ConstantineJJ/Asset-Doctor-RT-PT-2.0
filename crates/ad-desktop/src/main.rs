@@ -20,6 +20,7 @@ mod lamp;
 mod log;
 mod model_gizmo;
 mod native;
+mod picking;
 mod queue;
 mod saving;
 mod skybox;
@@ -123,6 +124,11 @@ struct App {
     overrides_key: Option<(u64, ad_document::DocumentId, u64)>,
     /// Smoke: hide the first child node and mark the second.
     smoke_work_tree: bool,
+    /// Picking: draw boxes and node parents of the shown snapshot; where the
+    /// left button went down (a click selects).
+    pick_cache: Option<PickCache>,
+    press: Option<(f64, f64)>,
+    smoke_select: bool,
     /// --camera-view: applied once a model is shown.
     initial_view: Option<camera::View>,
     smoke_input: bool,
@@ -228,6 +234,7 @@ impl App {
             let ibl_frames = renderer.ibl_frames();
             let panorama_frames = renderer.panorama_frames();
             let wire_frames = renderer.wire_frames();
+            let outline_frames = renderer.outline_frames();
             let shadow_frames = renderer.shadow_frames();
             let wire_supported = renderer.wireframe_supported();
             let mr_frames = renderer.mr_frames;
@@ -321,6 +328,10 @@ impl App {
                         self.ui.lighting.mode
                     );
                     eprintln!("grid_smoke grid_frames={}", grid_frames);
+                    eprintln!(
+                        "outline_smoke on={} color={:?} outline_frames={outline_frames}",
+                        self.ui.outline_on, self.ui.outline_color
+                    );
                     eprintln!(
                         "view_smoke channel={:?} wireframe={} wire_supported={wire_supported} wire_frames={wire_frames} axes={} bounds={} helper_lines={}",
                         self.ui.channel,
@@ -1655,6 +1666,8 @@ impl App {
             A::ToggleBounds => self.ui.show_bounds = !self.ui.show_bounds,
             A::ToggleLampIcon => self.ui.lamp_icon = !self.ui.lamp_icon,
             A::ToggleModelGizmo => self.ui.model_gizmo_on = !self.ui.model_gizmo_on,
+            A::ToggleOutline => self.ui.outline_on = !self.ui.outline_on,
+            A::DeleteObject => self.delete_selected(),
             A::Help => self.ui.help(),
             A::Cancel => {
                 self.ui.dismiss_help();
@@ -1664,6 +1677,123 @@ impl App {
                 self.cancel_edit();
             }
             A::Orbit | A::Pan => (),
+        }
+    }
+    /// Scene node under a window position (pixels), if any.
+    fn pick_at(&mut self, x: f64, y: f64) -> Option<ad_document::NodeId> {
+        self.current.as_ref()?;
+        let uv = self.ui.viewport_uv(x, y)?;
+        self.ensure_pick_cache();
+        let asset = self.current.as_ref()?;
+        let cache = self.pick_cache.as_ref()?;
+        let (w, h) = self.last_view;
+        let (origin, direction) = picking::ray(&self.camera, uv, w, h)?;
+        let marks = ui_model::node_marks(asset.document(), &self.ui.tree);
+        let snapshot = asset.snapshot();
+        let (draw, _) = picking::pick(snapshot, &cache.bounds, origin, direction, |i| {
+            marks.get(snapshot.draws[i].node.0).is_some_and(|m| m.0)
+        })?;
+        Some(snapshot.draws[draw].node)
+    }
+    /// Builds the picking data of the shown snapshot once.
+    fn ensure_pick_cache(&mut self) {
+        let Some(asset) = self.current.as_ref() else {
+            return;
+        };
+        let key = (asset.snapshot().revision, asset.document().id());
+        if self.pick_cache.as_ref().is_some_and(|c| c.key == key) {
+            return;
+        }
+        let document = asset.document();
+        let mut parents = vec![None; document.nodes().len()];
+        for (i, node) in document.nodes().iter().enumerate() {
+            for child in &node.children {
+                if let Some(p) = parents.get_mut(child.0) {
+                    *p = Some(i);
+                }
+            }
+        }
+        self.pick_cache = Some(PickCache {
+            key,
+            bounds: picking::draw_bounds(asset.snapshot()),
+            parents,
+        });
+    }
+    /// Outline of this frame: the selected and the hovered node with all
+    /// their children (the hovered one only when it is another node).
+    fn outline_settings(&mut self) -> ad_render_vulkan::outline::OutlineSettings {
+        if !self.ui.outline_on || self.current.is_none() {
+            return Default::default();
+        }
+        self.ensure_pick_cache();
+        let selected = self.ui.tree.selected;
+        let hovered = self.ui.hover_node.filter(|h| Some(*h) != selected);
+        ad_render_vulkan::outline::OutlineSettings {
+            selected: selected.map(|n| self.subtree_draws(n)).unwrap_or_default(),
+            hovered: hovered.map(|n| self.subtree_draws(n)).unwrap_or_default(),
+            color: self.ui.outline_color.map(|i| viewer_ui::MARK_COLORS[i % 7]),
+        }
+    }
+    /// Selects a node (Work-Tree, Info, outline) or clears the selection.
+    fn select(&mut self, node: Option<ad_document::NodeId>) {
+        self.ui.tree.selected = node;
+        let name = node
+            .and_then(|n| {
+                self.current
+                    .as_ref()?
+                    .document()
+                    .nodes()
+                    .get(n.0)
+                    .map(|n| n.name.clone())
+            })
+            .map(|n| {
+                if n.is_empty() {
+                    "Без имени".to_string()
+                } else {
+                    n
+                }
+            });
+        match name {
+            Some(name) => self.ui.set_status(format!("Выбран объект: {name}"), false),
+            None => eprintln!("selection_cleared"),
+        }
+    }
+    /// Draws of a node and all nodes under it.
+    fn subtree_draws(&self, node: ad_document::NodeId) -> Vec<usize> {
+        let (Some(asset), Some(cache)) = (self.current.as_ref(), self.pick_cache.as_ref()) else {
+            return Vec::new();
+        };
+        asset
+            .snapshot()
+            .draws
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| {
+                let mut at = Some(d.node.0);
+                let mut steps = 0;
+                while let Some(n) = at {
+                    if n == node.0 {
+                        return true;
+                    }
+                    steps += 1;
+                    if steps > cache.parents.len() {
+                        return false;
+                    }
+                    at = cache.parents.get(n).copied().flatten();
+                }
+                false
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+    /// X / Delete: removing objects comes with the context menu step.
+    fn delete_selected(&mut self) {
+        if self.ui.tree.selected.is_none() {
+            self.ui
+                .set_status("Нет выбранного объекта: выберите его левой кнопкой", true);
+        } else {
+            self.ui
+                .set_status("Удаление объектов появится следующим шагом", true);
         }
     }
     /// SkyBox width: the chosen quality within what the GPU accepts.
@@ -1971,7 +2101,9 @@ impl App {
             let (width, height) = frame.scene.map_or((1, 1), |r| (r.width, r.height));
             self.model_gizmo_actions(&actions, width, height);
         }
+        let outline = self.outline_settings();
         let renderer = self.renderer.as_mut().expect("Drawable renderer checked");
+        renderer.set_outline(outline);
         let (width, height) = frame.scene.map_or((1, 1), |r| (r.width, r.height));
         self.last_view = (width, height);
         if let Some([dx, dy]) = actions.lamp_drag {
@@ -2079,6 +2211,12 @@ impl App {
                 );
                 renderer.set_draw_overrides(overrides);
             }
+        }
+        if self.smoke_select && self.current.is_some() {
+            self.smoke_select = false;
+            self.ui.tree.selected = Some(ad_document::NodeId(1));
+            self.ui.hover_node = Some(ad_document::NodeId(2));
+            eprintln!("select_smoke selected=1 hovered=2");
         }
         renderer.set_channel(self.ui.channel);
         renderer.set_wireframe(self.ui.wireframe);
@@ -2459,10 +2597,20 @@ impl ApplicationHandler for App {
                     } else if inside && let Some(drag) = self.ui.bindings.drag(button, chord.mods) {
                         self.mouse = Some(button);
                         self.mouse_drag = Some(drag);
+                    } else if inside && button == MouseButton::Left {
+                        // The left button is the cursor: a click selects.
+                        self.press = self.cursor;
                     }
                 } else if state == ElementState::Released && self.mouse == Some(button) {
                     self.mouse = None;
                     self.mouse_drag = None;
+                } else if state == ElementState::Released
+                    && button == MouseButton::Left
+                    && let (Some((px, py)), Some((x, y))) = (self.press.take(), self.cursor)
+                    && (px - x).hypot(py - y) < 5.
+                {
+                    let picked = self.pick_at(x, y);
+                    self.select(picked);
                 }
                 Ok(())
             }
@@ -2479,6 +2627,14 @@ impl ApplicationHandler for App {
                     }
                 }
                 self.cursor = Some((position.x, position.y));
+                // Hover outline: the object under the pointer (not over UI,
+                // not while the camera moves).
+                let hover = if self.mouse_drag.is_none() && !consumed {
+                    self.pick_at(position.x, position.y)
+                } else {
+                    None
+                };
+                self.ui.hover_node = hover;
                 Ok(())
             }
             WindowEvent::CursorLeft { .. } => {
@@ -2547,6 +2703,13 @@ impl ApplicationHandler for App {
     fn exiting(&mut self, event_loop: &ActiveEventLoop) {
         self.finish(event_loop);
     }
+}
+
+/// Picking data of one snapshot.
+struct PickCache {
+    key: (u64, ad_document::DocumentId),
+    bounds: Vec<(glam::Vec3, glam::Vec3)>,
+    parents: Vec<Option<usize>>,
 }
 
 /// ADR-0040: the lamp gizmo sits this many model radii from the centre.
@@ -2626,6 +2789,7 @@ fn run() -> GpuResult<()> {
     let mut smoke_view_change = false;
     let mut initial_view = None;
     let mut smoke_work_tree = false;
+    let mut smoke_select = false;
     let mut args = argv.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -2685,6 +2849,7 @@ fn run() -> GpuResult<()> {
             }
             "--smoke-view-change" => smoke_view_change = true,
             "--smoke-work-tree" => smoke_work_tree = true,
+            "--smoke-select" => smoke_select = true,
             "--channel" => {
                 ui.channel = args
                     .next()
@@ -2844,6 +3009,8 @@ fn run() -> GpuResult<()> {
         if !warnings.is_empty() {
             ui.set_status(format!("Управление: {}", warnings.join("; ")), true);
         }
+        // An older file moved to the new mouse layout: write it back.
+        ui.bindings_changed = bindings.migrated;
         ui.bindings = bindings;
     }
     // Program log file, when the owner turned it on (never in smoke runs).
@@ -2897,6 +3064,9 @@ fn run() -> GpuResult<()> {
         smoke_view_change,
         overrides_key: None,
         smoke_work_tree,
+        pick_cache: None,
+        press: None,
+        smoke_select,
         initial_view,
         smoke_input,
         input_smoke_done: false,

@@ -9,6 +9,9 @@ fn main() {
         ("shadow.vert", naga::ShaderStage::Vertex),
         ("sky.frag", naga::ShaderStage::Fragment),
         ("sky_panorama.frag", naga::ShaderStage::Fragment),
+        ("mask.vert", naga::ShaderStage::Vertex),
+        ("mask.frag", naga::ShaderStage::Fragment),
+        ("outline.frag", naga::ShaderStage::Fragment),
     ] {
         let path = format!("shaders/{name}");
         println!("cargo:rerun-if-changed={path}");

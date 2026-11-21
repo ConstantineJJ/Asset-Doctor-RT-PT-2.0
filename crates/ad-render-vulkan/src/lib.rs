@@ -6,6 +6,7 @@ mod gpu;
 pub mod grid;
 pub mod ibl;
 pub mod lighting;
+pub mod outline;
 mod pipeline;
 pub mod presentation;
 pub mod renderer;
