@@ -6,6 +6,7 @@ fn main() {
         ("grid.vert", naga::ShaderStage::Vertex),
         ("grid.frag", naga::ShaderStage::Fragment),
         ("sky.vert", naga::ShaderStage::Vertex),
+        ("shadow.vert", naga::ShaderStage::Vertex),
         ("sky.frag", naga::ShaderStage::Fragment),
         ("sky_panorama.frag", naga::ShaderStage::Fragment),
     ] {
@@ -30,9 +31,10 @@ fn main() {
         let options = naga::back::spv::Options {
             flags: naga::back::spv::WriterFlags::LABEL_VARYINGS,
             fake_missing_bindings: false,
-            // Set 0: frame uniform (mesh) or panorama image/sampler (sky);
+            // Set 0: frame uniform + shadow map (mesh, floor) or panorama
+            // image/sampler (sky);
             // set 1: material images and samplers.
-            binding_map: (0..2)
+            binding_map: (0..3)
                 .map(|binding| (0, binding))
                 .chain((0..10).map(|binding| (1, binding)))
                 .map(|(group, binding)| {

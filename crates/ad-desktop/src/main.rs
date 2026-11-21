@@ -3,8 +3,10 @@
 mod camera;
 mod diagnostic_ui;
 mod edits;
+mod helpers;
 mod history;
 mod imports;
+mod input;
 mod lamp;
 mod model_gizmo;
 mod native;
@@ -94,6 +96,20 @@ struct App {
     current: Option<PreparedAsset>,
     camera: Camera,
     mouse: Option<MouseButton>,
+    /// ADR-0043: drag action of the held mouse button.
+    mouse_drag: Option<input::Action>,
+    /// Bindings file (None in smoke runs without --bindings: never written).
+    bindings_path: Option<PathBuf>,
+    /// View settings file (None in smoke runs without --view-settings), the
+    /// settings last read or written, and a change waiting to settle.
+    view_settings_path: Option<PathBuf>,
+    view_saved: serde_json::Value,
+    view_pending: Option<(serde_json::Value, Instant)>,
+    /// A skybox restored from the settings keeps its saved «on» flag.
+    skybox_restore_on: Option<bool>,
+    smoke_view_change: bool,
+    smoke_input: bool,
+    input_smoke_done: bool,
     cursor: Option<(f64, f64)>,
     modifiers: ModifiersState,
     initial_path: Option<PathBuf>,
@@ -127,6 +143,8 @@ struct App {
     /// ADR-0041 gizmo drag preview, kept until its placement edit finishes.
     model_preview: Option<model_gizmo::Delta>,
     model_pending: bool,
+    /// Ring being turned (its knob follows the preview).
+    model_turning: Option<usize>,
     /// Smoke: place, Undo, Redo, then a verified export of the placement.
     smoke_place: bool,
     place_smoke_done: bool,
@@ -178,6 +196,7 @@ impl App {
         if self.closed {
             return;
         }
+        self.save_view_settings(true);
         self.closed = true;
         self.imports.cancel();
         if let Some(renderer) = self.renderer.take() {
@@ -189,6 +208,9 @@ impl App {
             let sky_frames = renderer.sky_frames();
             let environment_light_frames = renderer.environment_light_frames();
             let panorama_frames = renderer.panorama_frames();
+            let wire_frames = renderer.wire_frames();
+            let shadow_frames = renderer.shadow_frames();
+            let wire_supported = renderer.wireframe_supported();
             let mr_frames = renderer.mr_frames;
             let normal_frames = renderer.normal_frames;
             let ao_frames = renderer.occlusion_frames;
@@ -280,6 +302,18 @@ impl App {
                         self.ui.lighting.mode
                     );
                     eprintln!("grid_smoke grid_frames={}", grid_frames);
+                    eprintln!(
+                        "view_smoke channel={:?} wireframe={} wire_supported={wire_supported} wire_frames={wire_frames} axes={} bounds={} helper_lines={}",
+                        self.ui.channel,
+                        self.ui.wireframe,
+                        self.ui.show_axes,
+                        self.ui.show_bounds,
+                        self.ui.helper_overlay.as_ref().map_or(0, |o| o.lines.len())
+                    );
+                    eprintln!(
+                        "shadow_smoke shadows={} lamp={} shadow_frames={shadow_frames}",
+                        self.ui.shadows, self.ui.lighting.enabled
+                    );
                     let (azimuth, elevation) = lamp::angles(self.ui.lighting.direction);
                     eprintln!(
                         "lamp_smoke azimuth={azimuth:.1} elevation={elevation:.1} color={:?} icon={} enabled={}",
@@ -552,7 +586,8 @@ impl App {
         }
         self.editing = false;
         // ADR-0041: the drag preview ends with its edit, applied or refused.
-        if std::mem::take(&mut self.model_pending) {
+        let placing = std::mem::take(&mut self.model_pending);
+        if placing {
             self.model_preview = None;
         }
         let prepare_ms = self.edit_started.elapsed().as_millis();
@@ -605,7 +640,11 @@ impl App {
                     return Err(error.into());
                 }
                 self.ui.set_status(
-                    format!("Правка не подготовлена, модель прежняя: {error}"),
+                    if placing {
+                        format!("Модель не перемещена, положение прежнее: {error}")
+                    } else {
+                        format!("Правка не подготовлена, модель прежняя: {error}")
+                    },
                     true,
                 );
                 return Ok(());
@@ -806,14 +845,51 @@ impl App {
             let mut delta = model_gizmo::Delta::new(model_gizmo::pivot(bounds));
             delta.factor = 1.5;
             delta.offset = [model_gizmo::handle_length(bounds), 0., 0.];
+            // A quarter turn about Y keeps the placed bounds exact below.
+            delta.turned = std::f32::consts::FRAC_PI_2;
+            delta.rotation = glam::Quat::from_rotation_y(delta.turned).to_array();
             let placement = delta.placement(asset.document().placement());
             eprintln!(
-                "place_smoke_target scale={} translation={:?}",
-                placement.scale, placement.translation
+                "place_smoke_target scale={} rotation={:?} translation={:?}",
+                placement.scale, placement.rotation, placement.translation
             );
             self.edit_mesh = Some(MeshId(0));
-            self.edit_queue =
-                VecDeque::from([EditKind::Place(placement), EditKind::Undo, EditKind::Redo]);
+            // Then «В центр» + «На пол» on the placed bounds, as the buttons do.
+            let mut placed = ad_document::Bounds {
+                min: [f32::INFINITY; 3],
+                max: [f32::NEG_INFINITY; 3],
+            };
+            for i in 0..8 {
+                let corner = [
+                    if i & 1 == 0 {
+                        bounds.min[0]
+                    } else {
+                        bounds.max[0]
+                    },
+                    if i & 2 == 0 {
+                        bounds.min[1]
+                    } else {
+                        bounds.max[1]
+                    },
+                    if i & 4 == 0 {
+                        bounds.min[2]
+                    } else {
+                        bounds.max[2]
+                    },
+                ];
+                let p = placement.apply(corner);
+                for a in 0..3 {
+                    placed.min[a] = placed.min[a].min(p[a]);
+                    placed.max[a] = placed.max[a].max(p[a]);
+                }
+            }
+            let grounded = model_gizmo::on_floor(model_gizmo::centred(placement, placed), placed);
+            self.edit_queue = VecDeque::from([
+                EditKind::Place(placement),
+                EditKind::Undo,
+                EditKind::Redo,
+                EditKind::Place(grounded),
+            ]);
         }
         if self.edit_mesh.is_none() {
             let mesh = self
@@ -878,10 +954,18 @@ impl App {
         )?;
         ad_formats::compare_reimported(document, &reimported, &cancel)?;
         let placement = document.placement();
+        let b = asset.snapshot().bounds;
         eprintln!(
-            "place_export_verified revision={} scale={} translation={:?} bytes={} source_bytes={}",
+            "place_grounded min_y={:.5} centre_x={:.5} centre_z={:.5}",
+            b.min[1],
+            (b.min[0] + b.max[0]) * 0.5,
+            (b.min[2] + b.max[2]) * 0.5
+        );
+        eprintln!(
+            "place_export_verified revision={} scale={} rotation={:?} translation={:?} bytes={} source_bytes={}",
             document.revision(),
             placement.scale,
+            placement.rotation,
             placement.translation,
             verified.bytes().len(),
             document.source().len()
@@ -1426,7 +1510,14 @@ impl App {
                 }
                 Ok(Err(error)) => {
                     self.skybox_job = None;
-                    self.ui.set_status(error, true);
+                    if self.skybox_restore_on.take().is_some() {
+                        self.ui.set_status(
+                            format!("Скайбокс прошлого запуска не загружен: {error}"),
+                            true,
+                        );
+                    } else {
+                        self.ui.set_status(error, true);
+                    }
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => (),
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -1458,12 +1549,15 @@ impl App {
                             .set_status(format!("Скайбокс: {}", loaded.name), false);
                     }
                     self.ui.skybox_name = Some(loaded.name);
+                    self.ui.skybox_path = Some(loaded.path);
                     self.ui.skybox_light = Some(loaded.light);
-                    self.ui.skybox_on = true;
+                    self.ui.skybox_on = self.skybox_restore_on.take().unwrap_or(true);
                 }
                 Err(error) => {
                     self.ui.skybox_name = None;
+                    self.ui.skybox_path = None;
                     self.ui.skybox_light = None;
+                    self.skybox_restore_on = None;
                     self.ui
                         .set_status(format!("Скайбокс не загружен: {error}"), true);
                 }
@@ -1471,6 +1565,160 @@ impl App {
         }
     }
 
+    fn mods(&self) -> input::Mods {
+        input::Mods {
+            ctrl: self.modifiers.control_key(),
+            shift: self.modifiers.shift_key(),
+            alt: self.modifiers.alt_key(),
+        }
+    }
+    /// ADR-0043: the next key or mouse button goes to the slot being
+    /// captured. A modifier alone waits; plain Esc cancels; a chord owned by
+    /// another action asks the owner first.
+    fn capture_chord(&mut self, chord: input::Chord, escape: bool, modifier: bool) {
+        let Some((action, slot)) = self.ui.input_capture else {
+            return;
+        };
+        match input::capture(&mut self.ui.bindings, action, slot, chord, escape, modifier) {
+            input::Captured::Wait => return,
+            input::Captured::Cancelled => (),
+            input::Captured::Assigned => self.ui.bindings_changed = true,
+            input::Captured::Conflict(owner) => {
+                self.ui.input_conflict = Some((action, slot, chord, owner))
+            }
+        }
+        self.ui.input_capture = None;
+    }
+    fn run_command(&mut self, action: input::Action) {
+        use input::Action as A;
+        match action {
+            A::Open => self.pending_guard = Some(AfterSave::Choose),
+            A::Save => self.pending_overwrite = true,
+            A::SaveCopy => self.pending_save = true,
+            A::Undo => self.request_history(EditKind::Undo),
+            A::Redo => self.request_history(EditKind::Redo),
+            A::Fit => {
+                if let Some(asset) = self.current.as_ref() {
+                    self.camera.fit(asset.snapshot().bounds);
+                }
+            }
+            A::ToggleFloor => {
+                let on = self.ui.toggle_floor();
+                eprintln!("floor_toggle on={on}");
+            }
+            A::ToggleWireframe => {
+                self.ui.wireframe = !self.ui.wireframe && self.ui.wireframe_supported;
+            }
+            A::ToggleAxes => self.ui.show_axes = !self.ui.show_axes,
+            A::ToggleBounds => self.ui.show_bounds = !self.ui.show_bounds,
+            A::ToggleLampIcon => self.ui.lamp_icon = !self.ui.lamp_icon,
+            A::ToggleModelGizmo => self.ui.model_gizmo_on = !self.ui.model_gizmo_on,
+            A::Help => self.ui.help(),
+            A::Cancel => {
+                self.ui.dismiss_help();
+                if self.importing {
+                    self.cancel_import();
+                }
+                self.cancel_edit();
+            }
+            A::Orbit | A::Pan => (),
+        }
+    }
+    /// Writes the view settings once a change has settled for a second
+    /// (`now`: at exit, at once). A failure is a warning and is not retried
+    /// until the next change.
+    fn save_view_settings(&mut self, now: bool) {
+        let Some(path) = self.view_settings_path.clone() else {
+            return;
+        };
+        let current = self.ui.view_settings();
+        if current == self.view_saved {
+            self.view_pending = None;
+            return;
+        }
+        let due = match &self.view_pending {
+            Some((pending, since)) if *pending == current => {
+                now || since.elapsed() >= std::time::Duration::from_secs(1)
+            }
+            _ => {
+                self.view_pending = Some((current.clone(), Instant::now()));
+                now
+            }
+        };
+        if !due {
+            return;
+        }
+        match viewer_ui::view_settings::save(&path, &current) {
+            Ok(()) => eprintln!("view_settings_saved ok=true"),
+            Err(error) => {
+                eprintln!("view_settings_saved ok=false");
+                self.ui
+                    .set_status(format!("Настройки вида не сохранены: {error}"), true);
+            }
+        }
+        self.view_saved = current;
+        self.view_pending = None;
+    }
+    /// Writes changed bindings; a failure is a warning, the change stays.
+    fn save_bindings(&mut self) {
+        if !std::mem::take(&mut self.ui.bindings_changed) {
+            return;
+        }
+        let Some(path) = self.bindings_path.as_ref() else {
+            return;
+        };
+        match input::save(path, &self.ui.bindings) {
+            Ok(()) => eprintln!("bindings_saved ok=true"),
+            Err(error) => {
+                eprintln!("bindings_saved ok=false");
+                self.ui
+                    .set_status(format!("Управление не сохранено: {error}"), true);
+            }
+        }
+    }
+    /// Smoke: a new binding, a refused conflict and a dispatched chord.
+    fn advance_input_smoke(&mut self) {
+        if !self.smoke_input || self.input_smoke_done || self.current.is_none() {
+            return;
+        }
+        self.input_smoke_done = true;
+        let w = input::Chord::key(KeyCode::KeyW, input::Mods::NONE);
+        let added = self
+            .ui
+            .bindings
+            .assign(input::Action::ToggleWireframe, 0, w, false)
+            .is_ok();
+        self.ui.bindings_changed |= added;
+        let floor = self.ui.bindings.slots(input::Action::ToggleFloor)[0];
+        let refused =
+            floor.map(|chord| self.ui.bindings.assign(input::Action::Fit, 0, chord, false));
+        eprintln!(
+            "input_conflict refused={} owner={}",
+            matches!(refused, Some(Err(_))),
+            match refused {
+                Some(Err(owner)) => owner.action.key(),
+                _ => "-",
+            }
+        );
+        // Press the rebound floor key twice: off, then back on.
+        for _ in 0..2 {
+            if let Some(chord) = floor
+                && let Some(action) = self.ui.bindings.command(chord)
+            {
+                self.run_command(action);
+                eprintln!(
+                    "input_dispatch chord={} action={} floor_on={}",
+                    chord.name(),
+                    action.key(),
+                    self.ui.floor.is_some()
+                );
+            }
+        }
+        eprintln!(
+            "input_assigned toggle_wireframe={}",
+            self.ui.bindings.describe(input::Action::ToggleWireframe)
+        );
+    }
     /// ADR-0041: gizmo drags update the preview; release or reset requests
     /// one placement edit.
     fn model_gizmo_actions(&mut self, actions: &viewer_ui::Actions, width: u32, height: u32) {
@@ -1486,9 +1734,34 @@ impl App {
                 .model_preview
                 .get_or_insert_with(|| model_gizmo::Delta::new(model_gizmo::pivot(bounds)));
             let drag = [nx * width as f32, ny * height as f32];
+            let camera = &self.camera;
+            let px = |p: [f32; 3]| {
+                camera
+                    .project(p, width, height)
+                    .map(|[x, y]| [x * width as f32, y * height as f32])
+            };
             match handle {
+                model_gizmo::Handle::Rotate(axis) => {
+                    self.model_turning = Some(axis);
+                    let origin = delta
+                        .matrix()
+                        .transform_point3(glam::Vec3::from_array(delta.pivot));
+                    let origin = origin.to_array();
+                    let radius = model_gizmo::ring_radius(bounds) * delta.factor;
+                    let base = model_gizmo::knob_angle(axis, origin, camera.eye(width, height));
+                    let knob = model_gizmo::knob(axis, origin, radius, base, delta.turned);
+                    let tangent = model_gizmo::knob_tangent(axis, origin, knob);
+                    // Screen motion per radian, from a small step along the tangent.
+                    let step = 1e-3;
+                    let ahead = [0, 1, 2].map(|a| knob[a] + tangent[a] * step);
+                    if let (Some(a), Some(b)) = (px(knob), px(ahead)) {
+                        let tangent_px = [(b[0] - a[0]) / step, (b[1] - a[1]) / step];
+                        model_gizmo::drag_turn(delta, axis, drag, tangent_px);
+                    }
+                }
                 model_gizmo::Handle::Axis(axis) => {
-                    if let Some(g) = model_gizmo::screen(&self.camera, bounds, None, width, height)
+                    if let Some(g) =
+                        model_gizmo::screen(&self.camera, bounds, None, None, width, height)
                         && let Some(end) = g.ends[axis]
                     {
                         let axis_px = [
@@ -1501,6 +1774,9 @@ impl App {
                 }
                 model_gizmo::Handle::Scale => model_gizmo::drag_scale(delta, current, drag[1]),
             }
+        }
+        if actions.model_drag_end {
+            self.model_turning = None;
         }
         if actions.model_drag_end && !self.model_pending {
             match self.model_preview {
@@ -1517,6 +1793,26 @@ impl App {
                     }
                 }
                 _ => self.model_preview = None,
+            }
+        }
+        // Numeric fields: preview while editing, one edit on release.
+        if let Some(target) = actions.place_preview
+            && !self.model_pending
+        {
+            self.model_preview = Some(model_gizmo::between(current, target));
+        }
+        if let Some(target) = actions.place
+            && !self.model_pending
+        {
+            if target == current || !target.valid() {
+                self.model_preview = None;
+            } else if self.request_edit(EditKind::Place(target)) {
+                self.model_pending = true;
+                self.model_preview = Some(model_gizmo::between(current, target));
+            } else {
+                self.model_preview = None;
+                self.ui
+                    .set_status("Положение не изменено: идёт другая работа", true);
             }
         }
         if actions.model_reset
@@ -1544,6 +1840,12 @@ impl App {
             return Ok(());
         }
         self.refresh_edit_ui();
+        if self.smoke_view_change && self.current.is_some() {
+            self.smoke_view_change = false;
+            self.ui.show_axes = !self.ui.show_axes;
+            eprintln!("view_settings_changed axes={}", self.ui.show_axes);
+        }
+        self.save_view_settings(false);
         // ADR-0040 lamp gizmo: lamp 1.25 model radii from the centre.
         let (view_w, view_h) = self.last_view;
         // ADR-0041 model gizmo at the (previewed) bottom centre.
@@ -1552,9 +1854,22 @@ impl App {
                 &self.camera,
                 asset.snapshot().bounds,
                 self.model_preview.as_ref(),
+                self.model_turning,
                 view_w,
                 view_h,
             )
+        });
+        self.ui.helper_overlay = self.current.as_ref().and_then(|asset| {
+            (self.ui.show_axes || self.ui.show_bounds).then(|| {
+                helpers::build(
+                    &self.camera,
+                    asset.snapshot().bounds,
+                    self.ui.show_axes,
+                    self.ui.show_bounds,
+                    view_w,
+                    view_h,
+                )
+            })
         });
         self.ui.placement = self
             .current
@@ -1563,16 +1878,19 @@ impl App {
                 a.document().placement()
             });
         self.ui.lamp_gizmo = self.current.as_ref().and_then(|_| {
+            let camera = &self.camera;
+            let guides = lamp::guides(self.ui.lighting.direction, |d| {
+                camera.project_direction(d, LAMP_DISTANCE, view_w, view_h)
+            });
             Some(viewer_ui::LampGizmo {
-                lamp: self.camera.project_direction(
+                lamp: camera.project_direction(
                     self.ui.lighting.direction,
                     LAMP_DISTANCE,
                     view_w,
                     view_h,
                 )?,
-                center: self
-                    .camera
-                    .project_direction([0., 1., 0.], 0., view_w, view_h)?,
+                center: camera.project_direction([0., 1., 0.], 0., view_w, view_h)?,
+                guides: Some(std::sync::Arc::new(guides)),
             })
         });
         let (mut frame, actions) = self
@@ -1599,22 +1917,44 @@ impl App {
                 camera.project_direction(d, LAMP_DISTANCE, width, height)
             });
         }
+        if let Some([turn_azimuth, turn_elevation]) = actions.lamp_turn {
+            let (azimuth, elevation) = lamp::angles(self.ui.lighting.direction);
+            self.ui.lighting.direction =
+                lamp::from_angles(azimuth + turn_azimuth, elevation + turn_elevation);
+        }
         if actions.lamp_from_camera {
             self.ui.lighting.direction = self.camera.view_direction();
         }
-        renderer.set_grid(self.ui.floor.and_then(|theme| {
+        let floor_grid = self.ui.floor.and_then(|theme| {
             self.current.as_ref().and_then(|asset| {
                 // ADR-0041: the floor stays at the imported model's bottom,
-                // so a moved model is seen moving against it.
-                let placement = asset.document().placement();
-                let bounds = asset.snapshot().bounds;
-                ad_render_vulkan::grid::grid_for_bounds(
-                    placement.unapply(bounds.min),
-                    placement.unapply(bounds.max),
-                )
-                .map(|grid| ad_render_vulkan::grid::GridSettings { theme, ..grid })
+                // so a moved or turned model is seen moving against it.
+                let bounds = asset.snapshot().source_bounds;
+                ad_render_vulkan::grid::grid_for_bounds(bounds.min, bounds.max)
+                    .map(|grid| ad_render_vulkan::grid::GridSettings { theme, ..grid })
             })
-        }));
+        });
+        renderer.set_grid(floor_grid);
+        // ADR-0044: lamp shadow fitted to the model and its shadow on the floor.
+        renderer.set_shadow(
+            self.current
+                .as_ref()
+                .filter(|_| self.ui.shadows)
+                .and_then(|asset| {
+                    lamp::shadow_matrix(
+                        self.ui.lighting.direction,
+                        asset.snapshot().bounds,
+                        floor_grid.map(|g| g.floor_y),
+                        ad_render_vulkan::shadow::SIZE,
+                    )
+                })
+                .map(|(matrix, texel)| ad_render_vulkan::shadow::ShadowSettings {
+                    light_view_projection: matrix.to_cols_array_2d(),
+                    strength: self.ui.shadow_strength,
+                    bias: 0.0015,
+                    normal_offset: texel * 1.5,
+                }),
+        );
         let view_projection = self.camera.matrix(width, height);
         // ADR-0040 environment: sky only, lamps/exposure stay as they are.
         renderer.set_sky(Some(ad_render_vulkan::sky::SkySettings {
@@ -1632,15 +1972,25 @@ impl App {
             }
         }));
         renderer.set_camera(view_projection, self.camera.eye(width, height))?;
+        let lamp_direction = self.ui.lighting.direction;
         renderer.set_model_preview(self.model_preview.map(|delta| {
             let m = delta.matrix();
+            let inverse = m.inverse();
             (
                 (glam::Mat4::from_cols_array_2d(&view_projection) * m).to_cols_array_2d(),
-                m.inverse()
+                inverse
                     .transform_point3(glam::Vec3::from_array(self.camera.eye(width, height)))
+                    .to_array(),
+                // The lamp in the previewed model's frame: it does not turn.
+                inverse
+                    .transform_vector3(glam::Vec3::from_array(lamp_direction))
+                    .normalize_or_zero()
                     .to_array(),
             )
         }));
+        renderer.set_channel(self.ui.channel);
+        renderer.set_wireframe(self.ui.wireframe);
+        self.ui.wireframe_supported = renderer.wireframe_supported();
         renderer.set_textures_enabled(self.ui.textures);
         renderer.set_mr_maps_enabled(self.ui.mr_maps);
         renderer.set_normal_maps_enabled(self.ui.normal_maps);
@@ -1660,6 +2010,7 @@ impl App {
         }
         if actions.skybox_remove {
             self.ui.skybox_name = None;
+            self.ui.skybox_path = None;
             self.ui.skybox_light = None;
             self.ui.skybox_on = false;
             if let Some(renderer) = self.renderer.as_mut() {
@@ -1781,6 +2132,8 @@ impl App {
             self.start_overwrite();
         }
         self.poll_skybox();
+        self.advance_input_smoke();
+        self.save_bindings();
         if std::mem::take(&mut self.pending_save) {
             self.start_save(None);
         }
@@ -1943,6 +2296,7 @@ impl ApplicationHandler for App {
         let result: GpuResult<()> = match event {
             WindowEvent::Focused(false) => {
                 self.mouse = None;
+                self.mouse_drag = None;
                 self.cursor = None;
                 self.modifiers = ModifiersState::default();
                 Ok(())
@@ -1956,63 +2310,46 @@ impl ApplicationHandler for App {
                 Ok(())
             }
             WindowEvent::KeyboardInput { event, .. }
-                if event.state == ElementState::Pressed
-                    && !event.repeat
-                    && (!self.ui.context.text_edit_focused()
-                        || event.physical_key == PhysicalKey::Code(KeyCode::Escape)
-                        || (event.physical_key == PhysicalKey::Code(KeyCode::KeyO)
-                            && self.modifiers.control_key())) =>
+                if event.state == ElementState::Pressed && !event.repeat =>
             {
-                match event.physical_key {
-                    PhysicalKey::Code(KeyCode::KeyO) if self.modifiers.control_key() => {
-                        self.pending_guard = Some(AfterSave::Choose)
-                    }
-                    PhysicalKey::Code(KeyCode::KeyS)
-                        if self.modifiers.control_key() && self.modifiers.shift_key() =>
+                // ADR-0043: every key goes through the owner's bindings.
+                if let PhysicalKey::Code(code) = event.physical_key {
+                    let chord = input::Chord::key(code, self.mods());
+                    if self.ui.input_capture.is_some() {
+                        self.capture_chord(
+                            chord,
+                            code == KeyCode::Escape,
+                            input::is_modifier(code),
+                        );
+                    } else if let Some(action) = self.ui.bindings.command(chord)
+                        && (!self.ui.context.text_edit_focused()
+                            || chord.mods.ctrl
+                            || chord.mods.alt
+                            || action == input::Action::Cancel)
                     {
-                        self.pending_save = true
+                        self.run_command(action);
                     }
-                    PhysicalKey::Code(KeyCode::KeyS) if self.modifiers.control_key() => {
-                        self.pending_overwrite = true
-                    }
-                    PhysicalKey::Code(KeyCode::KeyG) if !self.modifiers.control_key() => {
-                        let on = self.ui.toggle_floor();
-                        eprintln!("floor_toggle on={on}");
-                    }
-                    PhysicalKey::Code(KeyCode::KeyF) => {
-                        if let Some(asset) = self.current.as_ref() {
-                            self.camera.fit(asset.snapshot().bounds);
-                        }
-                    }
-                    PhysicalKey::Code(KeyCode::Escape) => {
-                        self.ui.dismiss_help();
-                        if self.importing {
-                            self.cancel_import();
-                        }
-                        self.cancel_edit();
-                    }
-                    PhysicalKey::Code(KeyCode::KeyZ)
-                        if self.modifiers.control_key() && self.modifiers.shift_key() =>
-                    {
-                        self.request_history(EditKind::Redo)
-                    }
-                    PhysicalKey::Code(KeyCode::KeyZ) if self.modifiers.control_key() => {
-                        self.request_history(EditKind::Undo)
-                    }
-                    PhysicalKey::Code(KeyCode::KeyY) if self.modifiers.control_key() => {
-                        self.request_history(EditKind::Redo)
-                    }
-                    PhysicalKey::Code(KeyCode::KeyH) => self.ui.help(),
-                    _ => (),
                 }
                 Ok(())
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                let chord = input::Chord {
+                    input: input::Input::Mouse(button),
+                    mods: self.mods(),
+                };
                 let inside = self.cursor.is_some_and(|(x, y)| self.ui.camera_at(x, y));
-                if state == ElementState::Pressed && !consumed && inside {
-                    self.mouse = Some(button);
-                } else if self.mouse == Some(button) {
+                if state == ElementState::Pressed && self.ui.input_capture.is_some() {
+                    self.capture_chord(chord, false, false);
+                } else if state == ElementState::Pressed && !consumed {
+                    if let Some(action) = self.ui.bindings.command(chord) {
+                        self.run_command(action);
+                    } else if inside && let Some(drag) = self.ui.bindings.drag(button, chord.mods) {
+                        self.mouse = Some(button);
+                        self.mouse_drag = Some(drag);
+                    }
+                } else if state == ElementState::Released && self.mouse == Some(button) {
                     self.mouse = None;
+                    self.mouse_drag = None;
                 }
                 Ok(())
             }
@@ -2020,9 +2357,9 @@ impl ApplicationHandler for App {
                 if let Some((x, y)) = self.cursor {
                     let dx = (position.x - x) as f32;
                     let dy = (position.y - y) as f32;
-                    match self.mouse {
-                        Some(MouseButton::Left) => self.camera.orbit(dx, dy),
-                        Some(MouseButton::Right | MouseButton::Middle) => {
+                    match self.mouse_drag {
+                        Some(input::Action::Orbit) => self.camera.orbit(dx, dy),
+                        Some(input::Action::Pan) => {
                             self.camera.pan(dx, dy, self.ui.camera_height())
                         }
                         _ => (),
@@ -2042,7 +2379,11 @@ impl ApplicationHandler for App {
                 };
                 let inside = self.cursor.is_some_and(|(x, y)| self.ui.camera_at(x, y));
                 if !consumed && inside {
-                    self.camera.zoom(steps);
+                    self.camera.zoom(if self.ui.bindings.invert_zoom {
+                        -steps
+                    } else {
+                        steps
+                    });
                 }
                 Ok(())
             }
@@ -2125,11 +2466,52 @@ fn run() -> GpuResult<()> {
     let mut smoke_overwrite = false;
     let mut smoke_queue = false;
     let mut smoke_place = false;
+    let mut smoke_input = false;
+    let mut bindings_arg: Option<PathBuf> = None;
     let mut pending_skybox = None;
     let mut history_path = None;
     let mut smoke_repair = ad_heal::RepairKind::DuplicateTriangles;
     let mut ui = viewer_ui::ViewerUi::default();
-    let mut args = std::env::args().skip(1);
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    // View settings first, so command-line options still win. Smoke runs
+    // never read or write the owner's file (only --view-settings).
+    let smoke_run = argv.iter().any(|a| a.starts_with("--smoke"));
+    let view_settings_path = argv
+        .iter()
+        .position(|a| a == "--view-settings")
+        .map(|i| {
+            argv.get(i + 1)
+                .map(PathBuf::from)
+                .ok_or("--view-settings needs a file path")
+        })
+        .transpose()?
+        .or_else(|| {
+            if smoke_run {
+                None
+            } else {
+                viewer_ui::view_settings::default_path()
+            }
+        });
+    let mut view_warnings = Vec::new();
+    let mut restore_skybox = None;
+    if let Some(path) = view_settings_path.as_ref() {
+        let (value, warnings) = viewer_ui::view_settings::load(path);
+        view_warnings.extend(warnings);
+        if let Some(value) = value {
+            restore_skybox = ui.apply_view_settings(&value, &mut view_warnings);
+        }
+        eprintln!(
+            "view_settings_loaded warnings={} floor={:?} environment={} wireframe={} tab={:?} skybox={}",
+            view_warnings.len(),
+            ui.floor.map(|f| f.label()),
+            ui.environment.label(),
+            ui.wireframe,
+            ui.tab,
+            restore_skybox.is_some()
+        );
+    }
+    let mut smoke_view_change = false;
+    let mut args = argv.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--require-validation" => validation = true,
@@ -2177,6 +2559,37 @@ fn run() -> GpuResult<()> {
                     .ok_or("--environment-light needs a strength from 0 to 2")?;
             }
             "--lamp-off" => ui.lighting.enabled = false,
+            "--bindings" => {
+                bindings_arg = Some(PathBuf::from(
+                    args.next().ok_or("--bindings needs a file path")?,
+                ))
+            }
+            "--smoke-input" => smoke_input = true,
+            "--view-settings" => {
+                args.next();
+            }
+            "--smoke-view-change" => smoke_view_change = true,
+            "--channel" => {
+                ui.channel = args
+                    .next()
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .and_then(|i| ad_render_vulkan::lighting::Channel::ALL.get(i).copied())
+                    .ok_or("--channel needs a channel number from 0")?;
+            }
+            "--wireframe" => ui.wireframe = true,
+            "--no-shadows" => ui.shadows = false,
+            "--helpers" => {
+                ui.show_axes = true;
+                ui.show_bounds = true;
+            }
+            "--light-preset" => {
+                let preset = args
+                    .next()
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .and_then(|i| lamp::LightPreset::ALL.get(i).copied())
+                    .ok_or("--light-preset needs a preset number from 0")?;
+                preset.apply(&mut ui.lighting);
+            }
             "--lamp" => {
                 // AZIMUTH,ELEVATION[,R,G,B] in degrees and 0..1 colour.
                 let value = args
@@ -2284,6 +2697,32 @@ fn run() -> GpuResult<()> {
     };
     let smoke_good = smoke_gpu_fault.and(initial_path.clone());
     let event_loop = EventLoop::new()?;
+    // ADR-0043: smoke runs never read or write the owner's bindings file.
+    let bindings_path = bindings_arg.or_else(|| if smoke { None } else { input::default_path() });
+    if let Some(path) = bindings_path.as_ref() {
+        let (bindings, warnings) = input::load(path);
+        eprintln!(
+            "input_loaded warnings={} toggle_floor={} orbit={}",
+            warnings.len(),
+            bindings.describe(input::Action::ToggleFloor),
+            bindings.describe(input::Action::Orbit)
+        );
+        if !warnings.is_empty() {
+            ui.set_status(format!("Управление: {}", warnings.join("; ")), true);
+        }
+        ui.bindings = bindings;
+    }
+    if !view_warnings.is_empty() {
+        ui.set_status(
+            format!("Настройки вида: {}", view_warnings.join("; ")),
+            true,
+        );
+    }
+    let view_saved = ui.view_settings();
+    let (skybox_job, skybox_restore_on) = match restore_skybox {
+        Some((path, on)) if pending_skybox.is_none() => (Some(skybox::spawn(path)), Some(on)),
+        _ => (None, None),
+    };
     let mut app = App {
         renderer: None,
         window: None,
@@ -2304,6 +2743,15 @@ fn run() -> GpuResult<()> {
         current: None,
         camera: Camera::default(),
         mouse: None,
+        mouse_drag: None,
+        bindings_path,
+        view_settings_path,
+        view_saved,
+        view_pending: None,
+        skybox_restore_on,
+        smoke_view_change,
+        smoke_input,
+        input_smoke_done: false,
         cursor: None,
         modifiers: ModifiersState::default(),
         initial_path,
@@ -2326,9 +2774,10 @@ fn run() -> GpuResult<()> {
         last_view: (1, 1),
         model_preview: None,
         model_pending: false,
+        model_turning: None,
         smoke_place,
         place_smoke_done: false,
-        skybox_job: None,
+        skybox_job,
         pending_skybox,
         working_path: None,
         pending_path: None,

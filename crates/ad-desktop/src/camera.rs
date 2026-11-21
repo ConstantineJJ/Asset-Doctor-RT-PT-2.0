@@ -98,6 +98,32 @@ impl Camera {
         }
         Some([clip.x / clip.w * 0.5 + 0.5, clip.y / clip.w * 0.5 + 0.5])
     }
+    /// ADR-0042 helpers: a world segment on screen (0..1, y down), clipped
+    /// at the near plane; None when it is entirely behind the camera.
+    pub fn project_segment(
+        &self,
+        a: [f32; 3],
+        b: [f32; 3],
+        width: u32,
+        height: u32,
+    ) -> Option<([f32; 2], [f32; 2])> {
+        let m = glam::Mat4::from_cols_array_2d(&self.matrix(width, height));
+        let (mut p, mut q) = (
+            m * Vec3::from_array(a).extend(1.),
+            m * Vec3::from_array(b).extend(1.),
+        );
+        const NEAR: f32 = 1e-5;
+        if !p.is_finite() || !q.is_finite() || (p.w <= NEAR && q.w <= NEAR) {
+            return None;
+        }
+        if p.w <= NEAR {
+            p = q + (p - q) * ((q.w - NEAR) / (q.w - p.w));
+        } else if q.w <= NEAR {
+            q = p + (q - p) * ((p.w - NEAR) / (p.w - q.w));
+        }
+        let screen = |c: glam::Vec4| [c.x / c.w * 0.5 + 0.5, c.y / c.w * 0.5 + 0.5];
+        Some((screen(p), screen(q)))
+    }
     /// Unit direction from the model centre towards the eye.
     pub fn view_direction(&self) -> [f32; 3] {
         self.direction().to_array()
@@ -137,6 +163,23 @@ mod tests {
         // The near plane is distance / 500 in front of the eye.
         let near = (eye - camera.center).length() / 500.;
         assert!(depth(eye - toward_eye * (near * 1.0001)) > 0.99);
+    }
+    #[test]
+    fn segments_are_clipped_at_the_near_plane() {
+        let mut camera = Camera::default();
+        camera.fit(Bounds {
+            min: [-1.; 3],
+            max: [1.; 3],
+        });
+        let eye = Vec3::from_array(camera.eye(1200, 760));
+        let behind = (eye + (eye - camera.center)).to_array();
+        let (p, q) = camera
+            .project_segment([0.; 3], behind, 1200, 760)
+            .expect("front part stays");
+        assert!(p.iter().chain(q.iter()).all(|v| v.is_finite()));
+        assert_eq!(p, camera.project([0.; 3], 1200, 760).unwrap());
+        let further = (eye + (eye - camera.center) * 2.).to_array();
+        assert!(camera.project_segment(behind, further, 1200, 760).is_none());
     }
     #[test]
     fn projection_puts_up_at_the_top_and_hides_points_behind_the_eye() {

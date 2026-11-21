@@ -60,6 +60,9 @@ impl StagedScene<'_> {
     }
 }
 
+/// ADR-0041 drag preview: view-projection including the preview transform,
+/// the eye and the lamp direction in the previewed model's frame.
+pub type ModelPreview = ([[f32; 4]; 4], [f32; 3], [f32; 3]);
 /// One in-flight frame for the lifecycle experiment. No asset/document ownership.
 pub struct Renderer {
     swapchain: Option<Swapchain>,
@@ -74,6 +77,10 @@ pub struct Renderer {
     scene_fault: Option<SceneFault>,
     overlay: Option<Overlay>,
     frame: Option<FrameBinding>,
+    /// ADR-0044 lamp shadow map (created before the frame set that samples it).
+    shadow_map: Option<crate::shadow::ShadowMap>,
+    shadow: Option<crate::shadow::ShadowSettings>,
+    shadow_frames: u64,
     view_projection: [[f32; 4]; 4],
     /// ADR-0040 floor grid; None hides it.
     grid: Option<crate::grid::GridSettings>,
@@ -86,7 +93,11 @@ pub struct Renderer {
     environment_light_frames: u64,
     /// ADR-0041 drag preview: view-projection and eye used for the model only
     /// (floor and sky keep the camera's).
-    model_preview: Option<([[f32; 4]; 4], [f32; 3])>,
+    model_preview: Option<ModelPreview>,
+    /// ADR-0042 render channel and wireframe overlay.
+    channel: crate::lighting::Channel,
+    wireframe: bool,
+    wire_frames: u64,
     /// ADR-0040 owner panorama; replaced only after waiting for idle.
     skybox: Option<crate::sky::Skybox>,
     panorama_frames: u64,
@@ -134,6 +145,9 @@ impl Renderer {
             lighting: ViewLighting::default(),
             overlay: None,
             frame: None,
+            shadow_map: None,
+            shadow: None,
+            shadow_frames: 0,
             view_projection: [
                 [1., 0., 0., 0.],
                 [0., 1., 0., 0.],
@@ -149,6 +163,9 @@ impl Renderer {
             skybox: None,
             panorama_frames: 0,
             model_preview: None,
+            channel: crate::lighting::Channel::Lit,
+            wireframe: false,
+            wire_frames: 0,
             frames: 0,
             mesh_frames: 0,
             pbr_frames: 0,
@@ -181,7 +198,9 @@ impl Renderer {
             )?;
             result.presented = device.create_fence(&vk::FenceCreateInfo::default(), None)?;
         }
-        result.frame = Some(FrameBinding::new(result.gpu.clone())?);
+        let shadow_map = crate::shadow::ShadowMap::new(result.gpu.clone())?;
+        result.frame = Some(FrameBinding::new(result.gpu.clone(), &shadow_map)?);
+        result.shadow_map = Some(shadow_map);
         result.recreate(size)?;
         Ok(result)
     }
@@ -267,10 +286,43 @@ impl Renderer {
         Ok(())
     }
     /// ADR-0041: while the model gizmo is dragged, draw the model with this
-    /// view-projection and eye (already including the preview move/scale).
-    pub fn set_model_preview(&mut self, preview: Option<([[f32; 4]; 4], [f32; 3])>) {
-        self.model_preview =
-            preview.filter(|(m, e)| m.iter().flatten().chain(e.iter()).all(|v| v.is_finite()));
+    /// view-projection, eye and lamp direction (already including the preview
+    /// move, turn and scale, so the light stays put while the model turns).
+    pub fn set_model_preview(&mut self, preview: Option<ModelPreview>) {
+        self.model_preview = preview.filter(|(m, e, l)| {
+            m.iter()
+                .flatten()
+                .chain(e.iter())
+                .chain(l.iter())
+                .all(|v| v.is_finite())
+        });
+    }
+    /// ADR-0042: show a data channel instead of lit shading.
+    pub fn set_channel(&mut self, channel: crate::lighting::Channel) {
+        self.channel = channel;
+    }
+    /// ADR-0042: draw triangle edges over the model (when the GPU supports it).
+    pub fn set_wireframe(&mut self, on: bool) {
+        self.wireframe = on;
+    }
+    pub fn wireframe_supported(&self) -> bool {
+        self.gpu.wireframe
+    }
+    /// Frames with the wireframe overlay recorded (smoke evidence).
+    pub fn wire_frames(&self) -> u64 {
+        self.wire_frames
+    }
+    /// Shadows act only with a lit lamp.
+    fn active_shadow(&self) -> Option<crate::shadow::ShadowSettings> {
+        self.shadow.filter(|_| self.lighting.enabled)
+    }
+    /// ADR-0044: lamp shadows for the next frames; None turns them off.
+    pub fn set_shadow(&mut self, shadow: Option<crate::shadow::ShadowSettings>) {
+        self.shadow = shadow.filter(crate::shadow::ShadowSettings::valid);
+    }
+    /// Frames with a recorded shadow pass (smoke evidence).
+    pub fn shadow_frames(&self) -> u64 {
+        self.shadow_frames
     }
     pub fn has_skybox(&self) -> bool {
         self.skybox.is_some()
@@ -409,16 +461,30 @@ impl Renderer {
                         self.model_preview.map_or(self.eye, |p| p.1)[2],
                         self.lighting.exposure_ev,
                     ],
-                    lighting: [self.lighting.key, self.lighting.fill, 0., 0.],
+                    lighting: [
+                        self.lighting.key,
+                        self.lighting.fill,
+                        self.channel.index(),
+                        0.,
+                    ],
                     sky_zenith: sky_light[0],
                     sky_horizon: sky_light[1],
                     sky_ground: sky_light[2],
-                    light_direction: [
-                        self.lighting.direction[0],
-                        self.lighting.direction[1],
-                        self.lighting.direction[2],
-                        0.,
-                    ],
+                    light_direction: {
+                        let d = self.model_preview.map_or(self.lighting.direction, |p| p.2);
+                        [d[0], d[1], d[2], 0.]
+                    },
+                    light_view_projection: self
+                        .active_shadow()
+                        .map_or([[0.; 4]; 4], |s| s.light_view_projection),
+                    shadow: self.active_shadow().map_or([0.; 4], |s| {
+                        [
+                            s.strength,
+                            s.bias,
+                            1. / crate::shadow::SIZE as f32,
+                            s.normal_offset,
+                        ]
+                    }),
                     light_color: if self.lighting.enabled {
                         let [r, g, b] = self.lighting.color.map(crate::sky::srgb_to_linear);
                         [r, g, b, 1.]
@@ -442,6 +508,48 @@ impl Renderer {
                 &vk::CommandBufferBeginInfo::default()
                     .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             )?;
+            // ADR-0044: the lamp's depth map before the main pass.
+            if let (Some(shadow), Some(map), Some(scene)) = (
+                self.active_shadow(),
+                self.shadow_map.as_ref(),
+                self.scene.as_ref(),
+            ) {
+                map.begin(self.command);
+                device.cmd_bind_pipeline(
+                    self.command,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    map.pipeline,
+                );
+                let matrix = shadow.light_view_projection;
+                let bytes =
+                    std::slice::from_raw_parts((&matrix as *const [[f32; 4]; 4]).cast::<u8>(), 64);
+                device.cmd_push_constants(
+                    self.command,
+                    map.layout,
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    bytes,
+                );
+                device.cmd_bind_vertex_buffers(self.command, 0, &[scene.vertices.handle], &[0]);
+                device.cmd_bind_index_buffer(
+                    self.command,
+                    scene.indices.handle,
+                    0,
+                    vk::IndexType::UINT32,
+                );
+                for draw in &scene.draws {
+                    device.cmd_draw_indexed(
+                        self.command,
+                        draw.index_count,
+                        1,
+                        draw.index_start,
+                        0,
+                        0,
+                    );
+                }
+                device.cmd_end_render_pass(self.command);
+                self.shadow_frames += 1;
+            }
             let area = vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
                 extent: chain.extent,
@@ -608,65 +716,94 @@ impl Renderer {
                     0,
                     vk::IndexType::UINT32,
                 );
-                for draw in &scene.draws {
-                    let push = Push {
-                        base_color: draw.base_color,
-                        material: [
-                            draw.metallic_roughness[0],
-                            draw.metallic_roughness[1],
-                            draw.alpha_cutoff.unwrap_or(-1.),
-                            draw.normal_scale,
-                        ],
-                        view: [
-                            self.lighting.flags(
-                                self.sample_textures,
-                                self.sample_mr_maps,
-                                self.sample_normal_maps && draw.has_normal_map,
-                                self.sample_occlusion_maps && draw.has_occlusion_map,
-                                self.sample_emission && draw.has_emission,
-                                chain.encode_srgb,
-                            ),
-                            draw.occlusion_strength,
-                            0.,
-                            0.,
-                        ],
-                        emissive: [
-                            draw.emissive_factor[0],
-                            draw.emissive_factor[1],
-                            draw.emissive_factor[2],
-                            0.,
-                        ],
-                    };
-                    device.cmd_bind_descriptor_sets(
-                        self.command,
-                        vk::PipelineBindPoint::GRAPHICS,
-                        pipeline.layout,
-                        0,
-                        &[
-                            self.frame.as_ref().expect("Frame binding initialized").set,
-                            scene.textures.sets[draw.texture_slot],
-                        ],
-                        &[],
-                    );
-                    let bytes = std::slice::from_raw_parts(
-                        (&push as *const Push).cast::<u8>(),
-                        std::mem::size_of::<Push>(),
-                    );
-                    device.cmd_push_constants(
-                        self.command,
-                        pipeline.layout,
-                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                        0,
-                        bytes,
-                    );
-                    device.cmd_draw_indexed(
-                        self.command,
-                        draw.index_count,
-                        1,
-                        draw.index_start,
-                        0,
-                        0,
-                    );
+                // A data channel samples every material map, like PBR does.
+                let shading = if self.channel == crate::lighting::Channel::Lit {
+                    self.lighting
+                } else {
+                    crate::lighting::ViewLighting {
+                        mode: ShadingMode::DirectPbr,
+                        ..self.lighting
+                    }
+                };
+                let wire = self.wireframe && pipeline.wire != vk::Pipeline::null();
+                for pass in 0..1 + usize::from(wire) {
+                    if pass == 1 {
+                        device.cmd_bind_pipeline(
+                            self.command,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            pipeline.wire,
+                        );
+                        self.wire_frames += 1;
+                    }
+                    for draw in &scene.draws {
+                        let push = Push {
+                            base_color: draw.base_color,
+                            material: [
+                                draw.metallic_roughness[0],
+                                draw.metallic_roughness[1],
+                                draw.alpha_cutoff.unwrap_or(-1.),
+                                draw.normal_scale,
+                            ],
+                            view: [
+                                shading.flags(
+                                    self.sample_textures,
+                                    self.sample_mr_maps,
+                                    self.sample_normal_maps && draw.has_normal_map,
+                                    self.sample_occlusion_maps && draw.has_occlusion_map,
+                                    self.sample_emission && draw.has_emission,
+                                    chain.encode_srgb,
+                                ),
+                                draw.occlusion_strength,
+                                0.,
+                                0.,
+                            ],
+                            emissive: [
+                                draw.emissive_factor[0],
+                                draw.emissive_factor[1],
+                                draw.emissive_factor[2],
+                                0.,
+                            ],
+                        };
+                        // mesh.frag bit 128: wireframe line colour.
+                        let push = if pass == 1 {
+                            Push {
+                                view: [push.view[0] + 128., push.view[1], 0., 0.],
+                                ..push
+                            }
+                        } else {
+                            push
+                        };
+                        device.cmd_bind_descriptor_sets(
+                            self.command,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            pipeline.layout,
+                            0,
+                            &[
+                                self.frame.as_ref().expect("Frame binding initialized").set,
+                                scene.textures.sets[draw.texture_slot],
+                            ],
+                            &[],
+                        );
+                        let bytes = std::slice::from_raw_parts(
+                            (&push as *const Push).cast::<u8>(),
+                            std::mem::size_of::<Push>(),
+                        );
+                        device.cmd_push_constants(
+                            self.command,
+                            pipeline.layout,
+                            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                            0,
+                            bytes,
+                        );
+                        device.cmd_draw_indexed(
+                            self.command,
+                            draw.index_count,
+                            1,
+                            draw.index_start,
+                            0,
+                            0,
+                        );
+                    }
                 }
                 // ADR-0040: floor grid after the model, depth-tested only.
                 if let (Some(grid), Some(pipeline)) = (self.grid, chain.grid.as_ref()) {
@@ -686,6 +823,14 @@ impl Renderer {
                         vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                         0,
                         bytes,
+                    );
+                    device.cmd_bind_descriptor_sets(
+                        self.command,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        pipeline.layout,
+                        0,
+                        &[self.frame.as_ref().expect("Frame binding initialized").set],
+                        &[],
                     );
                     device.cmd_draw(self.command, 6, 1, 0, 0);
                     self.grid_frames += 1;

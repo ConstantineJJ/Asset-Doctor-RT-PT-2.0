@@ -1,11 +1,44 @@
 use crate::{imports::PreparedAsset, ui_model::SceneTree};
 use ad_render_vulkan::{
     SurfaceSize,
-    lighting::{ShadingMode, ViewLighting},
+    lighting::ViewLighting,
     ui::{UiFrame, ViewportRect},
 };
 use egui::{Color32, RichText};
 use winit::{event::WindowEvent, window::Window};
+
+#[path = "panels.rs"]
+mod panels;
+#[path = "view_settings.rs"]
+pub mod view_settings;
+
+/// Drop-down menus of the top bar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TopMenu {
+    Settings,
+    View,
+    Grid,
+    Light,
+    Lamp,
+    Exposure,
+    Scene,
+    Sky,
+    Model,
+}
+/// Tabs of the right block («Rigging» comes later).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Tab {
+    #[default]
+    Health,
+    Info,
+}
+/// Pages of «Здоровье».
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HealthPage {
+    #[default]
+    Analysis,
+    Repair,
+}
 
 #[derive(Default)]
 pub struct Actions {
@@ -35,25 +68,54 @@ pub struct Actions {
     pub lamp_drag: Option<[f32; 2]>,
     /// Lamp context menu: point the lamp from the camera.
     pub lamp_from_camera: bool,
+    /// Lamp handles: degrees of azimuth and elevation to turn this frame.
+    pub lamp_turn: Option<[f32; 2]>,
     /// ADR-0041 model gizmo: handle dragged by (dx, dy) in viewport units
     /// (0..1 of its width/height), released this frame, or reset requested.
     pub model_drag: Option<(crate::model_gizmo::Handle, [f32; 2])>,
     pub model_drag_end: bool,
     pub model_reset: bool,
+    /// ADR-0041 numeric fields: preview of the edited placement, and the
+    /// placement to publish (one edit) when a field is released or a button
+    /// is pressed.
+    pub place_preview: Option<ad_document::Placement>,
+    pub place: Option<ad_document::Placement>,
 }
 /// ADR-0041 model gizmo for this frame: viewport positions (0..1, y down) of
-/// the bottom centre and of the X/Y/Z arrow tips (None behind the camera).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+/// the bottom centre, the X/Y/Z arrow tips, the X and Y rotation rings and
+/// their knobs (None behind the camera).
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModelGizmo {
     pub pivot: [f32; 2],
     pub ends: [Option<[f32; 2]>; 3],
+    pub rings: [[Option<[f32; 2]>; crate::model_gizmo::RING_POINTS]; 2],
+    pub knobs: [Option<[f32; 2]>; 2],
+}
+impl Default for ModelGizmo {
+    fn default() -> Self {
+        Self {
+            pivot: [0.; 2],
+            ends: [None; 3],
+            rings: [[None; crate::model_gizmo::RING_POINTS]; 2],
+            knobs: [None; 2],
+        }
+    }
 }
 /// ADR-0040 lamp gizmo for this frame: viewport positions (0..1, y down) of
-/// the lamp and the model centre, set by the application from the camera.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+/// the lamp and the model centre, set by the application from the camera,
+/// with the guides of its azimuth and elevation handles.
+#[derive(Clone, Default)]
 pub struct LampGizmo {
     pub lamp: [f32; 2],
     pub center: [f32; 2],
+    pub guides: Option<std::sync::Arc<crate::lamp::Guides>>,
+}
+/// Lamp parts the pointer can hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LampPart {
+    Icon,
+    Azimuth,
+    Elevation,
 }
 /// Repair history as shown by the UI; filled by the application on demand.
 #[derive(Default)]
@@ -169,6 +231,8 @@ pub struct ViewerUi {
     /// ADR-0040 skybox: loaded file name, shown or not, yaw in degrees and the
     /// colours it lights the model with.
     pub skybox_name: Option<String>,
+    /// File of the shown skybox (view settings load it again next run).
+    pub skybox_path: Option<std::path::PathBuf>,
     pub skybox_on: bool,
     pub skybox_yaw: f32,
     pub skybox_light: Option<[[f32; 3]; 3]>,
@@ -182,14 +246,48 @@ pub struct ViewerUi {
     /// choice, and the current placement shown in Сводка.
     pub model_gizmo: Option<ModelGizmo>,
     pub model_gizmo_on: bool,
+    /// ADR-0042 render channel, wireframe and helpers (view only).
+    pub channel: ad_render_vulkan::lighting::Channel,
+    /// ADR-0043 input bindings, the slot being captured, a pending conflict
+    /// (action, slot, chord, owner), and a change the app should save.
+    pub bindings: crate::input::Bindings,
+    pub input_capture: Option<(crate::input::Action, usize)>,
+    pub input_conflict: Option<(
+        crate::input::Action,
+        usize,
+        crate::input::Chord,
+        crate::input::Conflict,
+    )>,
+    pub bindings_changed: bool,
+    pub show_controls: bool,
+    pub wireframe: bool,
+    pub wireframe_supported: bool,
+    pub show_axes: bool,
+    /// ADR-0044 lamp shadows on the model and the floor.
+    pub shadows: bool,
+    pub shadow_strength: f32,
+    pub show_bounds: bool,
+    pub helper_overlay: Option<crate::helpers::Overlay>,
     pub placement: ad_document::Placement,
+    /// Numeric fields being edited (None: they follow the model).
+    placement_draft: Option<ad_document::Placement>,
     /// Theme G brings back after hiding the floor.
     last_floor: ad_render_vulkan::grid::FloorTheme,
     pub normal_maps: bool,
     pub ao_maps: bool,
     pub emission: bool,
-    show_diagnostics: bool,
     pub lighting: ViewLighting,
+    /// Owner layout (2026-11-21): open top menu, its button, all menu
+    /// buttons of this frame and their width, right tab and health page.
+    menu: Option<TopMenu>,
+    menu_anchor: egui::Rect,
+    menu_buttons: Vec<egui::Rect>,
+    menu_group_width: f32,
+    pub tab: Tab,
+    health_page: HealthPage,
+    carousel: crate::diagnostic_ui::Carousel,
+    /// Lamp part under the pointer or held in the last frame.
+    lamp_hot: Option<LampPart>,
     help: bool,
     pub tree: SceneTree,
     scene: egui::Rect,
@@ -237,7 +335,17 @@ pub struct ViewerUi {
     #[cfg(test)]
     emission_rect: egui::Rect,
     #[cfg(test)]
-    diagnostics_rect: egui::Rect,
+    menu_rects: Vec<(TopMenu, egui::Rect)>,
+    #[cfg(test)]
+    tab_rects: Vec<(Tab, egui::Rect)>,
+    #[cfg(test)]
+    page_rects: Vec<(HealthPage, egui::Rect)>,
+    #[cfg(test)]
+    tree_rect: egui::Rect,
+    #[cfg(test)]
+    lamp_switch_rect: egui::Rect,
+    #[cfg(test)]
+    lamp_handle_rects: Vec<(LampPart, egui::Rect)>,
 }
 impl Default for ViewerUi {
     fn default() -> Self {
@@ -262,6 +370,7 @@ impl Default for ViewerUi {
             environment_light: false,
             environment_strength: 1.,
             skybox_name: None,
+            skybox_path: None,
             skybox_on: false,
             skybox_yaw: 0.,
             skybox_light: None,
@@ -270,12 +379,33 @@ impl Default for ViewerUi {
             lamp_kelvin: 6500.,
             model_gizmo: None,
             model_gizmo_on: true,
+            channel: ad_render_vulkan::lighting::Channel::Lit,
+            bindings: crate::input::Bindings::default(),
+            input_capture: None,
+            input_conflict: None,
+            bindings_changed: false,
+            show_controls: false,
+            wireframe: false,
+            wireframe_supported: true,
+            show_axes: false,
+            shadows: true,
+            shadow_strength: 0.7,
+            show_bounds: false,
+            helper_overlay: None,
             placement: ad_document::Placement::IDENTITY,
+            placement_draft: None,
             normal_maps: true,
             ao_maps: true,
             emission: true,
-            show_diagnostics: false,
             lighting: ViewLighting::default(),
+            menu: None,
+            menu_anchor: egui::Rect::NOTHING,
+            menu_buttons: Vec::new(),
+            menu_group_width: 0.,
+            tab: Tab::Health,
+            health_page: HealthPage::Analysis,
+            carousel: Default::default(),
+            lamp_hot: None,
             help: false,
             tree: SceneTree::default(),
             scene: egui::Rect::NOTHING,
@@ -322,7 +452,17 @@ impl Default for ViewerUi {
             #[cfg(test)]
             emission_rect: egui::Rect::NOTHING,
             #[cfg(test)]
-            diagnostics_rect: egui::Rect::NOTHING,
+            menu_rects: Vec::new(),
+            #[cfg(test)]
+            tab_rects: Vec::new(),
+            #[cfg(test)]
+            page_rects: Vec::new(),
+            #[cfg(test)]
+            tree_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            lamp_switch_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            lamp_handle_rects: Vec::new(),
         }
     }
 }
@@ -358,8 +498,256 @@ impl ViewerUi {
             .as_mut()
             .is_some_and(|input| input.on_window_event(window, event).consumed)
     }
+    /// ADR-0041 numeric placement: where the imported bottom centre moved
+    /// (X/Y/Z), turn about Y and X in degrees and uniform scale, all about
+    /// that point. Dragging or typing previews; releasing the field (or
+    /// leaving it, or Enter) publishes one edit. «На пол» / «В центр» move
+    /// the model's bottom to Y = 0 / its bottom centre above the origin.
+    fn placement_fields_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        bounds: ad_document::Bounds,
+        source: ad_document::Bounds,
+        actions: &mut Actions,
+    ) {
+        use crate::model_gizmo::Fields;
+        use ad_document::Placement;
+        let draft = self.placement_draft.unwrap_or(self.placement);
+        let mut fields = Fields::of(draft, source);
+        let before = fields;
+        let extent = (0..3)
+            .map(|a| source.max[a] - source.min[a])
+            .fold(0f32, f32::max)
+            .max(1e-6);
+        let (mut changed, mut commit) = (false, false);
+        let mut track = |r: egui::Response| {
+            changed |= r.changed();
+            commit |= r.drag_stopped() || r.lost_focus();
+        };
+        ui.horizontal(|ui| {
+            ui.label("Сдвиг");
+            for (axis, name) in ["X", "Y", "Z"].iter().enumerate() {
+                track(
+                    ui.add(
+                        egui::DragValue::new(&mut fields.offset[axis])
+                            .prefix(format!("{name} "))
+                            .speed(extent * 0.005)
+                            .range(-Placement::MAX_TRANSLATION..=Placement::MAX_TRANSLATION)
+                            .max_decimals(4),
+                    )
+                    .on_hover_text("Куда сдвинута нижняя точка центра модели от исходного положения, в единицах файла. Тяните или введите число и нажмите Enter; отпускание — одна правка."),
+                );
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Поворот");
+            track(
+                ui.add(
+                    egui::DragValue::new(&mut fields.yaw)
+                        .prefix("Y ")
+                        .suffix(" град.")
+                        .speed(0.5)
+                        .range(-180.0..=180.0)
+                        .max_decimals(2),
+                )
+                .on_hover_text(
+                    "Поворот вокруг вертикальной оси (по горизонтали) от нижней точки центра.",
+                ),
+            );
+            track(
+                ui.add(
+                    egui::DragValue::new(&mut fields.pitch)
+                        .prefix("X ")
+                        .suffix(" град.")
+                        .speed(0.5)
+                        .range(-89.9..=89.9)
+                        .max_decimals(2),
+                )
+                .on_hover_text(
+                    "Наклон вокруг горизонтальной оси X (по вертикали) от нижней точки центра.",
+                ),
+            );
+        });
+        let scale_speed = (fields.scale * 0.005).max(1e-6);
+        ui.horizontal(|ui| {
+            track(
+                ui.add(
+                    egui::DragValue::new(&mut fields.scale)
+                        .prefix("Масштаб x")
+                        .speed(scale_speed)
+                        .range(Placement::MIN_SCALE..=Placement::MAX_SCALE)
+                        .max_decimals(4),
+                )
+                .on_hover_text(
+                    "Равномерный масштаб относительно исходного размера, от нижней точки центра.",
+                ),
+            );
+            if ui
+                .button("На пол")
+                .on_hover_text("Поставить нижнюю точку модели на Y = 0")
+                .clicked()
+            {
+                actions.place = Some(crate::model_gizmo::on_floor(self.placement, bounds));
+            }
+            if ui
+                .button("В центр")
+                .on_hover_text("Нижнюю точку центра модели — над началом координат (X = Z = 0)")
+                .clicked()
+            {
+                actions.place = Some(crate::model_gizmo::centred(self.placement, bounds));
+            }
+        });
+        if changed && fields != before {
+            let target = fields.placement(draft, source);
+            if target.valid() {
+                self.placement_draft = Some(target);
+                actions.place_preview = Some(target);
+            }
+        }
+        if commit
+            && let Some(target) = self.placement_draft.take()
+            && target != self.placement
+            && target.valid()
+        {
+            actions.place = Some(target);
+        }
+        if actions.place.is_some() {
+            self.placement_draft = None;
+        }
+    }
+    fn controls_ui(&mut self, ui: &mut egui::Ui) {
+        use crate::input::Action;
+        if let Some((action, slot, chord, owner)) = self.input_conflict {
+            ui.colored_label(
+                Color32::from_rgb(240, 180, 80),
+                format!(
+                    "«{}» уже назначено на «{}». Переназначить на «{}»?",
+                    chord.name(),
+                    owner.action.label(),
+                    action.label()
+                ),
+            );
+            ui.horizontal(|ui| {
+                if ui.button("Заменить").clicked() {
+                    let _ = self.bindings.assign(action, slot, chord, true);
+                    self.bindings_changed = true;
+                    self.input_conflict = None;
+                }
+                if ui.button("Отмена").clicked() {
+                    self.input_conflict = None;
+                }
+            });
+            ui.separator();
+        }
+        if let Some((action, _)) = self.input_capture {
+            ui.colored_label(
+                Color32::from_rgb(120, 190, 255),
+                format!(
+                    "«{}»: нажмите клавишу (с Ctrl/Shift/Alt при желании) или кнопку мыши, включая боковые. Esc — отмена.",
+                    action.label()
+                ),
+            );
+        } else {
+            ui.weak(
+                "Нажмите на поле, затем клавишу или кнопку мыши. Правая кнопка по полю — очистить.",
+            );
+        }
+        egui::ScrollArea::vertical()
+            .max_height(380.)
+            .show(ui, |ui| {
+                egui::Grid::new("bindings_grid")
+                    .striped(true)
+                    .num_columns(4)
+                    .show(ui, |ui| {
+                        for action in Action::ALL {
+                            ui.label(action.label());
+                            let slots = self.bindings.slots(action);
+                            for (slot, chord) in slots.iter().enumerate() {
+                                let capturing = self.input_capture == Some((action, slot));
+                                let text = if capturing {
+                                    "Нажмите...".to_owned()
+                                } else {
+                                    chord.map_or("—".into(), |c| c.name())
+                                };
+                                let response = ui.add(
+                                    egui::Button::new(text)
+                                        .selected(capturing)
+                                        .min_size(egui::vec2(140., 0.)),
+                                );
+                                if response.clicked() {
+                                    self.input_capture = Some((action, slot));
+                                    self.input_conflict = None;
+                                }
+                                response.context_menu(|ui| {
+                                    if ui.button("Очистить").clicked() {
+                                        self.bindings.clear(action, slot);
+                                        self.bindings_changed = true;
+                                        ui.close();
+                                    }
+                                });
+                            }
+                            if ui
+                                .small_button("Сброс")
+                                .on_hover_text("Вернуть значения по умолчанию для этого действия")
+                                .clicked()
+                            {
+                                self.bindings.reset(action);
+                                self.bindings_changed = true;
+                            }
+                            ui.end_row();
+                        }
+                    });
+            });
+        ui.separator();
+        if ui
+            .checkbox(&mut self.bindings.invert_zoom, "Обратный зум колесом")
+            .changed()
+        {
+            self.bindings_changed = true;
+        }
+        if ui.button("Сбросить всё").clicked() {
+            self.bindings.reset_all();
+            self.bindings_changed = true;
+            self.input_capture = None;
+        }
+    }
+    /// ADR-0042 helpers: world axes (negative halves dimmer) and the model's
+    /// bounding box with its size, clipped to the viewport.
+    fn helpers_ui(root: &egui::Ui, scene: egui::Rect, overlay: &crate::helpers::Overlay) {
+        use crate::helpers::Kind;
+        let at = |p: [f32; 2]| {
+            egui::pos2(
+                scene.min.x + p[0] * scene.width(),
+                scene.min.y + p[1] * scene.height(),
+            )
+        };
+        let axis = [
+            Color32::from_rgb(232, 72, 72),
+            Color32::from_rgb(96, 204, 96),
+            Color32::from_rgb(80, 140, 240),
+        ];
+        let painter = root.painter().with_clip_rect(scene);
+        let stroke = |kind: Kind| match kind {
+            Kind::Axis(a) => egui::Stroke::new(1.5, axis[a]),
+            Kind::Back(a) => egui::Stroke::new(1., axis[a].gamma_multiply(0.45)),
+            Kind::Bounds => egui::Stroke::new(1., Color32::from_rgb(250, 214, 110)),
+        };
+        for (a, b, kind) in &overlay.lines {
+            painter.line_segment([at(*a), at(*b)], stroke(*kind));
+        }
+        for (p, text, kind) in &overlay.labels {
+            painter.text(
+                at(*p) + egui::vec2(4., -4.),
+                egui::Align2::LEFT_BOTTOM,
+                text,
+                egui::FontId::proportional(13.),
+                stroke(*kind).color,
+            );
+        }
+    }
     /// ADR-0041 model gizmo: X (red), Y (green), Z (blue) arrows from the
-    /// bottom centre move the model; the square at the centre scales it.
+    /// bottom centre move the model; the rings with their knobs turn it about
+    /// X and Y; the square at the centre scales it.
     fn model_gizmo_ui(
         &mut self,
         context: &egui::Context,
@@ -394,6 +782,20 @@ impl ViewerUi {
                 }
             }
         }
+        for (slot, axis) in crate::model_gizmo::RING_AXES.into_iter().enumerate() {
+            let color = colors[axis].gamma_multiply(0.8);
+            let ring = &gizmo.rings[slot];
+            for i in 0..ring.len() {
+                if let (Some(a), Some(b)) = (ring[i], ring[(i + 1) % ring.len()]) {
+                    painter.line_segment([at(a), at(b)], egui::Stroke::new(1.6, color));
+                }
+            }
+            if let Some(knob) = gizmo.knobs[slot].map(at)
+                && scene.shrink(10.).contains(knob)
+            {
+                handles.push((Handle::Rotate(axis), knob, colors[axis]));
+            }
+        }
         handles.push((Handle::Scale, pivot, Color32::from_rgb(235, 235, 235)));
         for (handle, position, color) in handles {
             let id = egui::Id::new(("model_gizmo", format!("{handle:?}")));
@@ -415,6 +817,12 @@ impl ViewerUi {
                             let r = if hot { 8. } else { 6. };
                             painter.circle_filled(rect.center(), r, color);
                             painter.circle_stroke(rect.center(), r, dark);
+                        }
+                        Handle::Rotate(_) => {
+                            let r = if hot { 8.5 } else { 7. };
+                            painter.circle_filled(rect.center(), r, Color32::from_rgb(24, 26, 32));
+                            painter.circle_stroke(rect.center(), r, egui::Stroke::new(2.5, color));
+                            painter.circle_filled(rect.center(), 2.5, color);
                         }
                         Handle::Scale => {
                             let half = if hot { 7. } else { 5.5 };
@@ -438,6 +846,8 @@ impl ViewerUi {
                         Handle::Axis(0) => "Тяните — сдвинуть модель по X. Отпускание — одна правка (Ctrl+Z отменит).",
                         Handle::Axis(1) => "Тяните — сдвинуть модель по Y. Отпускание — одна правка (Ctrl+Z отменит).",
                         Handle::Axis(_) => "Тяните — сдвинуть модель по Z. Отпускание — одна правка (Ctrl+Z отменит).",
+                        Handle::Rotate(0) => "Тяните вдоль красного кольца — наклонить модель вокруг горизонтальной оси X. Отпускание — одна правка (Ctrl+Z отменит).",
+                        Handle::Rotate(_) => "Тяните вдоль зелёного кольца — повернуть модель вокруг вертикальной оси Y. Отпускание — одна правка (Ctrl+Z отменит).",
                         Handle::Scale => "Тяните вверх — крупнее, вниз — мельче (от нижней точки центра). ПКМ — меню.",
                     };
                     let response = response.on_hover_text(hint);
@@ -479,8 +889,111 @@ impl ViewerUi {
             )
         };
         let (lamp, center) = (at(gizmo.lamp), at(gizmo.center));
+        let was = self.lamp_hot.take();
         if !self.scene.shrink(14.).contains(lamp) {
             return;
+        }
+        let scene = self.scene;
+        if let Some(guides) = gizmo.guides.as_deref() {
+            let painter = root.painter().with_clip_rect(scene);
+            let path = |points: &[Option<[f32; 2]>], closed: bool, color: Color32| {
+                let n = points.len();
+                let last = if closed { n } else { n - 1 };
+                for i in 0..last {
+                    if let (Some(a), Some(b)) = (points[i], points[(i + 1) % n]) {
+                        painter.line_segment([at(a), at(b)], egui::Stroke::new(1.5, color));
+                    }
+                }
+            };
+            let (azimuth_color, elevation_color) = (
+                Color32::from_rgb(90, 200, 235),
+                Color32::from_rgb(245, 160, 60),
+            );
+            match was {
+                Some(LampPart::Azimuth) => path(&guides.orbit, true, azimuth_color),
+                Some(LampPart::Elevation) => path(&guides.arc, false, elevation_color),
+                Some(LampPart::Icon) => {
+                    path(&guides.orbit, true, azimuth_color.gamma_multiply(0.45));
+                    path(&guides.arc, false, elevation_color.gamma_multiply(0.45));
+                }
+                None => {}
+            }
+            for (part, tangent, color, hint) in [
+                (
+                    LampPart::Azimuth,
+                    guides.azimuth,
+                    azimuth_color,
+                    "Тяните — вести лампу по горизонтали вокруг модели (азимут); высота не меняется.",
+                ),
+                (
+                    LampPart::Elevation,
+                    guides.elevation,
+                    elevation_color,
+                    "Тяните — поднять или опустить лампу (высота); азимут не меняется.",
+                ),
+            ] {
+                let Some(t) = tangent else {
+                    continue;
+                };
+                let t_px = egui::vec2(t[0] * scene.width(), t[1] * scene.height());
+                if !t_px.is_finite() || t_px.length() < 1e-4 {
+                    continue;
+                }
+                let dir = t_px.normalized();
+                let position = lamp + dir * 34.;
+                if !scene.shrink(12.).contains(position) {
+                    continue;
+                }
+                painter.line_segment(
+                    [lamp + dir * 13., position - dir * 9.],
+                    egui::Stroke::new(1.5, color.gamma_multiply(0.7)),
+                );
+                egui::Area::new(egui::Id::new(("lamp_handle", format!("{part:?}"))))
+                    .order(egui::Order::Middle)
+                    .fixed_pos(position - egui::vec2(11., 11.))
+                    .show(context, |ui| {
+                        let (rect, response) = ui.allocate_exact_size(
+                            egui::vec2(22., 22.),
+                            egui::Sense::click_and_drag(),
+                        );
+                        #[cfg(test)]
+                        {
+                            self.lamp_handle_rects.push((part, rect));
+                        }
+                        let hot = response.hovered() || response.dragged();
+                        if hot {
+                            self.lamp_hot = Some(part);
+                        }
+                        let size = if hot { 5.5 } else { 4.5 };
+                        let painter = ui.painter();
+                        painter.circle_filled(rect.center(), if hot { 4. } else { 3. }, color);
+                        crate::diagnostic_ui::triangle(
+                            painter,
+                            rect.center() + dir * 6.,
+                            size,
+                            dir,
+                            color,
+                        );
+                        crate::diagnostic_ui::triangle(
+                            painter,
+                            rect.center() - dir * 6.,
+                            size,
+                            -dir,
+                            color,
+                        );
+                        if response.dragged() {
+                            let d = response.drag_delta();
+                            let turn = crate::lamp::handle_turn([d.x, d.y], [t_px.x, t_px.y]);
+                            if turn != 0. {
+                                actions.lamp_turn = Some(match part {
+                                    LampPart::Azimuth => [turn, 0.],
+                                    _ => [0., turn],
+                                });
+                            }
+                        }
+                        response.on_hover_text(hint);
+                    });
+            }
         }
         let [r, g, b] = self.lighting.color.map(|c| (c.clamp(0., 1.) * 255.) as u8);
         let color = Color32::from_rgb(r.max(60), g.max(60), b.max(60));
@@ -499,6 +1012,9 @@ impl ViewerUi {
                     self.lamp_gizmo_rect = rect;
                 }
                 let hot = response.hovered() || response.dragged();
+                if hot && self.lamp_hot.is_none() {
+                    self.lamp_hot = Some(LampPart::Icon);
+                }
                 let radius = if hot { 8. } else { 6. };
                 let painter = ui.painter();
                 let dark = egui::Stroke::new(1.5, Color32::from_rgb(40, 36, 24));
@@ -522,7 +1038,7 @@ impl ViewerUi {
                     }
                 }
                 let response = response.on_hover_text(
-                    "Лампа. Тяните — повернуть свет вокруг модели; правая кнопка — меню.",
+                    "Лампа. Тяните — повернуть свет вокруг модели; голубые стрелки — только по горизонтали, оранжевые — только по высоте; правая кнопка — меню.",
                 );
                 response.context_menu(|ui| {
                     if ui.button("Сбросить положение").clicked() {
@@ -639,49 +1155,7 @@ impl ViewerUi {
         let output=context.run_ui(raw,|root| {
             let width=root.max_rect().width();
             let height=root.max_rect().height();
-            egui::Panel::top("tools").exact_size(48.).resizable(false).show(root,|ui| {
-                ui.horizontal_centered(|ui| {
-                    if width>=260. {ui.label(RichText::new("✚").size(23.).color(Color32::from_rgb(240,68,78)));}
-                    if width>850. {ui.strong("ASSET DOCTOR");ui.separator();}
-                    let open=ui.button("Открыть…").on_hover_text("Открыть статическую GLB-модель · Ctrl+O");
-                    #[cfg(test)]
-                    {self.open_rect=open.rect;}
-                    actions.open|=open.clicked();
-                    actions.fit|=ui.add_enabled(asset.is_some(),egui::Button::new("Вписать")).on_hover_text("Показать модель целиком · F").clicked();
-                    if width>=900. {
-                        let idle=!loading && self.edit.busy.is_none();
-                        let undo=ui.add_enabled(idle && self.edit.can_undo,egui::Button::new("Отменить правку")).on_hover_text("Вернуть индексы до последней правки · Ctrl+Z. Ревизия всё равно увеличится.");
-                        let redo=ui.add_enabled(idle && self.edit.can_redo,egui::Button::new("Вернуть правку")).on_hover_text("Повторить отменённую правку · Ctrl+Y");
-                        #[cfg(test)]
-                        {self.undo_rect=undo.rect;self.redo_rect=redo.rect;}
-                        actions.undo|=undo.clicked();
-                        actions.redo|=redo.clicked();
-                        let overwrite=ui.add_enabled(idle && self.edit.can_overwrite && self.edit.dirty,egui::Button::new("Сохранить")).on_hover_text("Перезаписать рабочий файл проверенной версией · Ctrl+S. Первый раз спрашивает подтверждение; если файл изменён другой программой, перезаписи не будет.");
-                        #[cfg(test)]
-                        {self.overwrite_rect=overwrite.rect;}
-                        actions.save|=overwrite.clicked();
-                        let save=ui.add_enabled(idle && self.edit.can_save,egui::Button::new("Сохранить копию…")).on_hover_text("Проверенная копия GLB в новый файл · Ctrl+Shift+S. Существующие файлы не перезаписываются; после сохранения можно сделать копию рабочим файлом.");
-                        #[cfg(test)]
-                        {self.save_rect=save.rect;}
-                        actions.save_copy|=save.clicked();
-                        let queue=ui.add_enabled(!loading,egui::Button::new("Очередь ремонтов…")).on_hover_text("Выполнить все доступные ремонты по очереди с проверкой после каждого шага.");
-                        #[cfg(test)]
-                        {self.queue_rect=queue.rect;}
-                        if queue.clicked() {self.show_queue=true;}
-                        if self.edit.dirty {ui.colored_label(Color32::from_rgb(255,190,120),"* не сохранено").on_hover_text("Есть правки, которых нет ни в исходном файле, ни в последней проверенной копии.");}
-                    }
-                    if width>=680. {
-                        ui.add_enabled_ui(width>=780.,|ui|{ui.toggle_value(&mut self.show_tree,"Дерево");});
-                        ui.toggle_value(&mut self.show_summary,"Сводка");
-                    }
-                    if width>=330. {self.help|=ui.button("Справка").clicked();}
-                    if width>=680. {
-                        let _diagnostics=ui.toggle_value(&mut self.show_diagnostics,"Диагностика");
-                        #[cfg(test)]
-                        {self.diagnostics_rect=_diagnostics.rect;}
-                    }
-                });
-            });
+            self.top_bar(root,width,loading,&mut actions);
             egui::Panel::bottom("status").exact_size(if self.error.is_some(){64.}else{32.}).resizable(false).show(root,|ui| {
                 if let Some(error)=&self.error {
                     ui.add(egui::Label::new(RichText::new(error).color(Color32::from_rgb(255,173,173))).truncate()).on_hover_text(error);
@@ -702,158 +1176,34 @@ impl ViewerUi {
                     if ui.available_width()>220. {ui.separator();ui.weak("Vulkan · геометрия и базовые цвета");}
                 });
             });
-            if self.show_tree && width>=780. {
-                egui::Panel::left("tree").default_size(230.).min_size(180.).max_size(360.).show(root,|ui| {
-                    ui.heading("Сцена");ui.weak("Узлы активной сцены");ui.separator();
-                    if self.tree.rows.is_empty() {ui.label("Модель не открыта");}
-                    egui::ScrollArea::vertical().show_rows(ui,24.,self.tree.rows.len(),|ui,range| {
-                        for index in range {
-                            let row=&self.tree.rows[index];
-                            ui.horizontal(|ui| {
-                                ui.add_space((row.depth.min(12)*12) as f32);
-                                let label=if row.label.is_empty(){"Без имени"}else{&row.label};
-                                ui.set_min_height(24.);
-                                let response=ui.add_sized([ui.available_width(),24.],egui::Button::selectable(self.tree.selected==Some(row.id),label).truncate());
-                                if response.on_hover_text(label).clicked() {self.tree.selected=Some(row.id);}
-                            });
-                        }
-                    });
-                });
-            }
             if self.show_summary && width>=680. {
-                egui::Panel::right("summary").default_size(260.).min_size(220.).max_size(380.).show(root,|ui| {
-                    egui::ScrollArea::vertical().show(ui,|ui| {
-                        ui.heading("Сводка");ui.separator();
-                        ui.checkbox(&mut self.textures,"Базовые текстуры").on_hover_text("Включить выборку встроенных PNG/JPEG. Исходные материалы не изменяются.");
-                    let floor_label=self.floor.map_or("Без поверхности",|t|t.label());
-                    egui::ComboBox::from_label("Пол").selected_text(floor_label).show_ui(ui,|ui|{
-                        for theme in ad_render_vulkan::grid::FloorTheme::ALL {
-                            if ui.selectable_label(self.floor==Some(theme),theme.label()).clicked() {self.floor=Some(theme);self.last_floor=theme;}
-                        }
-                        if ui.selectable_label(self.floor.is_none(),"Без поверхности").clicked() {self.floor=None;}
-                    }).response.on_hover_text("Пол на уровне нижней точки модели, шаг по её размеру; красная ось X, синяя Z. Только вид — в модель и файл не попадает. G — скрыть или вернуть пол.");
-                    if asset.is_some() {
-                        ui.horizontal(|ui|{
-                            ui.checkbox(&mut self.model_gizmo_on,"Гизмо модели").on_hover_text("Стрелки X/Y/Z сдвигают модель, квадрат масштабирует её равномерно от нижней точки центра. Каждое отпускание — одна правка: Ctrl+Z отменит, «Сохранить» запишет в файл.");
-                            if ui.add_enabled(!self.placement.is_identity(),egui::Button::new("Сбросить положение")).clicked() {actions.model_reset=true;}
-                        });
-                        let [x,y,z]=self.placement.translation;
-                        ui.weak(format!("Положение: сдвиг {x:.3}, {y:.3}, {z:.3}; масштаб x{:.3}",self.placement.scale));
-                    }
-                    egui::ComboBox::from_label("Окружение").selected_text(self.environment.label()).show_ui(ui,|ui|{
-                        for preset in ad_render_vulkan::sky::Environment::ALL {
-                            ui.selectable_value(&mut self.environment,preset,preset.label());
-                        }
-                    }).response.on_hover_text("Фон-небо за моделью. Только вид: лампы, экспозиция и подсветка не меняются, в модель и файл не попадает.");
-                    ui.horizontal(|ui|{
-                        if ui.button("Скайбокс...").on_hover_text("Выбрать свою панораму PNG/JPEG 2:1 (равнопромежуточную). Файл только читается; в модель и экспорт не попадает.").clicked() {actions.skybox_load=true;}
-                        if let Some(name)=self.skybox_name.clone() {
-                            ui.checkbox(&mut self.skybox_on,name).on_hover_text("Показать панораму вместо фона-неба. Свет окружения берёт её цвета.");
-                            if ui.button("Убрать").clicked() {actions.skybox_remove=true;}
-                        }
-                    });
-                    if self.skybox_name.is_some() && self.skybox_on {
-                        ui.add(egui::Slider::new(&mut self.skybox_yaw,0.0..=360.0).text("Поворот").suffix(" град."));
-                    }
-                    ui.horizontal(|ui|{
-                        ui.checkbox(&mut self.environment_light,"Свет окружения").on_hover_text("Режим PBR: модель дополнительно освещается цветами выбранного окружения (небо сверху, земля снизу). Лампы, экспозиция и подсветка остаются как есть. Это приближение, не HDR/IBL.");
-                        ui.add_enabled(self.environment_light,egui::Slider::new(&mut self.environment_strength,0.0..=ad_render_vulkan::sky::EnvironmentLight::MAX_STRENGTH).text("Сила"));
-                    });
-                        egui::ComboBox::from_id_salt("shading_mode").selected_text(match self.lighting.mode {ShadingMode::BaseColor=>"Базовый вид", ShadingMode::DirectPbr=>"PBR · направленный свет"}).show_ui(ui,|ui| {
-                            ui.selectable_value(&mut self.lighting.mode,ShadingMode::BaseColor,"Базовый вид");
-                            ui.selectable_value(&mut self.lighting.mode,ShadingMode::DirectPbr,"PBR · направленный свет");
-                        });
-                        if self.lighting.mode==ShadingMode::DirectPbr {
-                            let _maps=ui.checkbox(&mut self.mr_maps,"Карты металла/шероховатости").on_hover_text("Включить карты параметров материала. Не зависит от переключателя базовых текстур; исходник не изменяется.");
-                            #[cfg(test)]
-                            {self.mr_maps_rect=_maps.rect;}
-                            let _normal=ui.checkbox(&mut self.normal_maps,"Карты нормалей").on_hover_text("Детали поверхности из линейной RGB-карты. Источник и геометрия не изменяются.");
-                            #[cfg(test)]
-                            {self.normal_maps_rect=_normal.rect;}
-                            let _ao=ui.checkbox(&mut self.ao_maps,"Окклюзия · AO").on_hover_text("Затемнение заполняющего света из карты материала. Направленный свет не меняется.");
-                            #[cfg(test)]
-                            {self.ao_maps_rect=_ao.rect;}
-                            let _emission=ui.checkbox(&mut self.emission,"Свечение").on_hover_text("Собственный цвет поверхности из материала и карты. Без ореола и освещения соседних объектов.");
-                            #[cfg(test)]
-                            {self.emission_rect=_emission.rect;}
-                            ui.add(egui::Slider::new(&mut self.lighting.exposure_ev,-6.0..=6.0).text("Экспозиция · EV"));
-                            ui.add(egui::Slider::new(&mut self.lighting.key,0.0..=8.0).text("Основной свет"));
-                            ui.add(egui::Slider::new(&mut self.lighting.fill,0.0..=1.0).text("Заполнение"));
-                            let (mut azimuth,mut elevation)=crate::lamp::angles(self.lighting.direction);
-                            let turned=ui.add(egui::Slider::new(&mut azimuth,-180.0..=180.0).text("Лампа · азимут")).changed();
-                            let raised=ui.add(egui::Slider::new(&mut elevation,-crate::lamp::MAX_ELEVATION..=crate::lamp::MAX_ELEVATION).text("Лампа · высота")).changed();
-                            if turned||raised {self.lighting.direction=crate::lamp::from_angles(azimuth,elevation);}
-                            ui.horizontal(|ui|{
-                                ui.checkbox(&mut self.lighting.enabled,"Лампа включена").on_hover_text("Выключенная лампа не светит; остаются заполнение и свет окружения.");
-                                if ui.add(egui::Slider::new(&mut self.lamp_kelvin,1500.0..=10000.0).text("K")).on_hover_text("Цветовая температура лампы: меньше — теплее, больше — холоднее.").changed() {self.lighting.color=crate::lamp::kelvin_to_rgb(self.lamp_kelvin);}
-                            });
-                            ui.horizontal(|ui|{
-                                ui.label("Цвет лампы");
-                                ui.color_edit_button_rgb(&mut self.lighting.color);
-                                ui.checkbox(&mut self.lamp_icon,"Значок лампы").on_hover_text("Значок лампы во вьюпорте: тяните его, чтобы повернуть свет; правая кнопка — меню.");
-                            });
-                            let reset=ui.button("Сбросить освещение");
-                            #[cfg(test)]
-                            {self.reset_lighting_rect=reset.rect;}
-                            if reset.clicked() {self.lighting=ViewLighting{mode:ShadingMode::DirectPbr,..Default::default()};}
-                            ui.weak("Металл и шероховатость: параметры × карты. Заполнение приблизительное; без HDR-окружения и теней.");
-                        }
-                        if let Some(asset)=asset {
-                            ui.strong(asset.document().name());
-                            ui.label(format!("Исходный файл: {:.2} МиБ",asset.document().source().len() as f64/1048576.));
-                            ui.label(format!("Узлов в документе: {}",asset.document().nodes().len()));
-                            let textures=asset.document().texture_stats();
-                            ui.label(format!("Изображений материалов: {}",textures.images));
-                            ui.label(format!("RGBA с mip-уровнями: {:.2} МиБ",textures.mip_bytes as f64/1048576.));
-                            ui.add_space(12.);ui.strong("Отображаемая геометрия");
-                            ui.label(format!("Вершины: {}",asset.snapshot().positions.len()));
-                            ui.label(format!("Треугольники: {}",asset.snapshot().indices.len()/3));
-                            ui.label(format!("Примитивы с повторами: {}",asset.snapshot().draws.len()));
-                            ui.label(format!("Нормаль грани: {} вершин",asset.snapshot().fallback_normal_vertices)).on_hover_text("Авторская нормаль отсутствует, нулевая или преобразование вырождено. Источник не исправляется.");
-                            if asset.snapshot().fallback_tangent_vertices>0 {
-                                ui.label(format!("UV-основа нормалей: {} вершин",asset.snapshot().fallback_tangent_vertices)).on_hover_text("Нет пригодных авторских касательных. Используется основа по производным геометрии/UV; на сложных швах возможно отличие от MikkTSpace.");
-                            }
-                            ui.weak("С учётом экземпляров в сцене");
-                            let b=asset.snapshot().bounds;
-                            ui.add_space(12.);ui.strong("Габариты · метры");
-                            for (i,axis) in ["X","Y","Z"].into_iter().enumerate() {ui.label(format!("{axis}   {:.3}",b.max[i]-b.min[i]));}
-                            if let Some(id)=self.tree.selected && let Some(node)=asset.document().nodes().get(id.0) {
-                                ui.separator();ui.strong("Выбранный узел");
-                                if let Some(row)=self.tree.rows.iter().find(|row|row.id==id) {ui.label(&row.label);}
-                                ui.label(format!("Дочерние узлы: {}",node.children.len()));
-                                ui.label(format!("Ссылки на примитивы: {}",node.meshes.len()));
-                                ui.collapsing("Исходная локальная матрица",|ui| {
-                                    for r in 0..4 {ui.monospace(format!("{:.3}  {:.3}  {:.3}  {:.3}",node.local[0][r],node.local[1][r],node.local[2][r],node.local[3][r]));}
-                                });
-                            }
-                            ui.collapsing("Ограничения просмотра",|ui| {
-                                for note in asset.document().notes() {ui.weak(note);}
-                            });
-                        } else {ui.label("Откройте модель, чтобы увидеть её состав и размеры.");}
-                        ui.add_space(16.);ui.separator();ui.weak("Статические GLB: PNG/JPEG, цвета вершин, нормали, OPAQUE/MASK. PBR — предварительный режим. BLEND, скелеты и анимации пока не поддерживаются.");
-                    });
-                });
+                self.right_panel(root,asset,loading,&mut actions);
             }
             // Leave the central root area unclaimed by egui. A CentralPanel would
             // mark it as UI-owned and consume the viewport's mouse input.
             {
                 self.scene=root.available_rect_before_wrap();
+                if asset.is_some() && let Some(overlay)=self.helper_overlay.as_ref() {
+                    Self::helpers_ui(root,self.scene,overlay);
+                }
                 if asset.is_some() && self.model_gizmo_on && let Some(gizmo)=self.model_gizmo {
                     self.model_gizmo_ui(&context,root,gizmo,&mut actions);
                 }
-                if asset.is_some() && self.lamp_icon && let Some(gizmo)=self.lamp_gizmo {
+                if asset.is_some() && self.lamp_icon && let Some(gizmo)=self.lamp_gizmo.clone() {
                     self.lamp_gizmo_ui(&context,root,gizmo,&mut actions);
                 }
+                if !(asset.is_some() && self.lamp_icon && self.lamp_gizmo.is_some()) {
+                    self.lamp_hot=None;
+                }
+                self.tree_overlay(&context);
+                self.corner_overlay(&context,width,loading,&mut actions);
                 if asset.is_none() {
                     let center=self.scene.center();
                     root.painter().text(center-egui::vec2(0.,16.),egui::Align2::CENTER_CENTER,"Откройте модель",egui::FontId::proportional(24.),Color32::from_rgb(220,224,232));
                     root.painter().text(center+egui::vec2(0.,22.),egui::Align2::CENTER_CENTER,"Ctrl+O или перетащите GLB в окно",egui::FontId::proportional(14.),Color32::from_rgb(154,164,181));
                 }
             }
-            let (preview,_preview_rects)=crate::diagnostic_ui::show(&context,&mut self.show_diagnostics,asset,height,!loading && self.edit.busy.is_none());
-            #[cfg(test)]
-            {self.preview_rect=_preview_rects.first().map_or(egui::Rect::NOTHING,|r|r.1);self.preview_rects=_preview_rects;}
-            actions.preview=preview;
+            self.menu_popup(&context,height,asset,&mut actions);
             if let Some(info)=self.edit.preview.clone() {
                 let ready=!loading && self.edit.busy.is_none();
                 let code=crate::edits::repair_label(info.kind);
@@ -967,14 +1317,27 @@ impl ViewerUi {
                 });
                 self.history.open&=open;
             }
+            if self.show_controls {
+                let mut open = true;
+                egui::Window::new("Управление").id(egui::Id::new("input_bindings")).open(&mut open).resizable(true).default_size([560.,520.]).show(&context,|ui| {
+                    self.controls_ui(ui);
+                });
+                if !open {
+                    self.show_controls=false;
+                    self.input_capture=None;
+                    self.input_conflict=None;
+                }
+            }
             egui::Window::new("Справка").open(&mut self.help).resizable(true).show(&context,|ui| {
-                ui.label("Открыть: Ctrl+O или перетащить GLB в окно.");
-                ui.label("ЛКМ — вращение; ПКМ / средняя — перемещение; колесо — масштаб.");
-                ui.label("F — вписать модель; G — скрыть или вернуть пол; значок лампы во вьюпорте — тянуть, чтобы повернуть свет, правая кнопка — меню лампы; стрелки X/Y/Z — сдвинуть модель, квадрат — масштаб (каждое отпускание — одна правка, Ctrl+Z); Esc — отменить загрузку или подготовку правки; H — справка.");
-                ui.label("Ремонты G001–G005 и G012: «Диагностика», затем «Предпросмотр ремонта…» в строке замечания, затем «Применить»; все сразу — «Очередь ремонтов…». Ctrl+Z — отменить правку, Ctrl+Y — вернуть.");
+                ui.label(format!("Открыть: {} или перетащить GLB в окно.",self.bindings.describe(crate::input::Action::Open)));
+                ui.label(format!("{} — вращение; {} — перемещение; колесо — масштаб.",self.bindings.describe(crate::input::Action::Orbit),self.bindings.describe(crate::input::Action::Pan)));
+                ui.label(format!("{} — вписать модель; {} — скрыть или вернуть пол; значок лампы во вьюпорте — тянуть, чтобы повернуть свет (его голубые стрелки — только по горизонтали, оранжевые — только по высоте), правая кнопка — меню лампы; стрелки X/Y/Z — сдвинуть модель, кольца — повернуть вокруг Y и X, квадрат — масштаб (каждое отпускание — одна правка, {} отменит); {} — отменить загрузку или подготовку правки; {} — справка.", self.bindings.describe(crate::input::Action::Fit), self.bindings.describe(crate::input::Action::ToggleFloor), self.bindings.describe(crate::input::Action::Undo), self.bindings.describe(crate::input::Action::Cancel), self.bindings.describe(crate::input::Action::Help)));
+                ui.label("Все клавиши и кнопки мыши, включая боковые, можно переназначить: «Настройки», затем «Клавиши и мышь…».");
+                ui.label("Верхние меню «Вид», «Освещение», «Сцена» и «Модель» открываются треугольником; разделы внутри сворачиваются. Лампочка рядом включает и выключает лампу.");
+                ui.label("Ремонты G001–G005 и G012: вкладка «Здоровье», карточки в «Анализ и диагностика» (стрелки или свайп), затем «Предпросмотр ремонта…» и «Применить»; список и очередь — в «Ремонт». Undo и Redo — в правом нижнем углу вьюпорта (Ctrl+Z / Ctrl+Y).");
                 ui.label("«Сохранить» (Ctrl+S) перезаписывает рабочий файл после подтверждения и проверки; «Сохранить копию…» (Ctrl+Shift+S) пишет проверенный GLB в новый файл. При закрытии или открытии другой модели с несохранёнными правками программа спросит, что делать.");
                 ui.separator();ui.label("Выбор узла показывает сведения. Подсветка узлов появится позднее.");
-                ui.label("В Сводке: базовый вид или PBR с авторскими нормалями, металлом и шероховатостью. Экспозиция и свет меняют только просмотр.");
+                ui.label("Меню «Вид»: базовый вид или PBR с авторскими нормалями, металлом и шероховатостью. Экспозиция и свет меняют только просмотр. Сведения о модели — вкладка «Инфо».");
                 ui.label("Цвет, металл/шероховатость, нормали, окклюзия и свечение: встроенные PNG/JPEG до 8 бит/канал с независимыми переключателями. AO влияет только на заполняющий свет. Нормали используют авторские касательные либо приближённую UV-основу без MikkTSpace. Свечение не освещает соседние объекты; ореол, HDR-окружение и тени пока не отображаются. Обе стороны граней видимы.");
                 ui.collapsing("Лицензии встроенных шрифтов",|ui| {
                     egui::ScrollArea::vertical().max_height(280.).show(ui,|ui| {
@@ -990,6 +1353,7 @@ impl ViewerUi {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ad_render_vulkan::lighting::ShadingMode;
     fn raw(width: f32, height: f32) -> egui::RawInput {
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -1056,6 +1420,7 @@ mod tests {
             normal_maps: false,
             ao_maps: false,
             emission: false,
+            menu: Some(TopMenu::Light),
             ..Default::default()
         };
         let source = std::sync::Arc::<[u8]>::from(
@@ -1098,9 +1463,11 @@ mod tests {
                 stamp,
             },
         };
-        let (out, rect, _) = ui.layout(raw(1200., 1000.), Some(&asset), false);
-        out.drop_without_applying_deltas();
-        assert!(rect.width() > 100.);
+        for _ in 0..3 {
+            let (out, rect, _) = ui.layout(raw(1200., 1000.), Some(&asset), false);
+            out.drop_without_applying_deltas();
+            assert!(rect.width() > 100.);
+        }
         let position = ui.reset_lighting_rect.center();
         assert!(ui.reset_lighting_rect.is_positive());
         for pressed in [true, false] {
@@ -1139,10 +1506,13 @@ mod tests {
                 mode: ShadingMode::DirectPbr,
                 ..Default::default()
             },
+            menu: Some(TopMenu::View),
             ..Default::default()
         };
-        let (out, _, _) = ui.layout(raw(1200., 1000.), None, false);
-        out.drop_without_applying_deltas();
+        for _ in 0..3 {
+            let (out, _, _) = ui.layout(raw(1200., 1000.), None, false);
+            out.drop_without_applying_deltas();
+        }
         let position = ui.mr_maps_rect.center();
         for pressed in [true, false] {
             let mut input = raw(1200., 1000.);
@@ -1167,10 +1537,13 @@ mod tests {
                 mode: ShadingMode::DirectPbr,
                 ..Default::default()
             },
+            menu: Some(TopMenu::View),
             ..Default::default()
         };
-        let (out, _, _) = ui.layout(raw(1200., 1000.), None, false);
-        out.drop_without_applying_deltas();
+        for _ in 0..3 {
+            let (out, _, _) = ui.layout(raw(1200., 1000.), None, false);
+            out.drop_without_applying_deltas();
+        }
         let position = ui.normal_maps_rect.center();
         for pressed in [true, false] {
             let mut input = raw(1200., 1000.);
@@ -1195,10 +1568,13 @@ mod tests {
                 mode: ShadingMode::DirectPbr,
                 ..Default::default()
             },
+            menu: Some(TopMenu::View),
             ..Default::default()
         };
-        let (out, _, _) = ui.layout(raw(1200., 1000.), None, false);
-        out.drop_without_applying_deltas();
+        for _ in 0..3 {
+            let (out, _, _) = ui.layout(raw(1200., 1000.), None, false);
+            out.drop_without_applying_deltas();
+        }
         let position = ui.ao_maps_rect.center();
         for pressed in [true, false] {
             let mut input = raw(1200., 1000.);
@@ -1223,10 +1599,13 @@ mod tests {
                 mode: ShadingMode::DirectPbr,
                 ..Default::default()
             },
+            menu: Some(TopMenu::View),
             ..Default::default()
         };
-        let (out, _, _) = ui.layout(raw(1200., 1000.), None, false);
-        out.drop_without_applying_deltas();
+        for _ in 0..3 {
+            let (out, _, _) = ui.layout(raw(1200., 1000.), None, false);
+            out.drop_without_applying_deltas();
+        }
         let position = ui.emission_rect.center();
         for pressed in [true, false] {
             let mut input = raw(1200., 1000.);
@@ -1245,26 +1624,155 @@ mod tests {
         assert!(!ui.emission && ui.ao_maps && ui.normal_maps && ui.mr_maps && ui.textures);
     }
     #[test]
-    fn diagnostics_button_opens_the_read_only_report_window() {
+    fn tabs_fill_the_right_block_and_health_has_analysis_and_repair_pages() {
         let mut ui = ViewerUi::default();
+        assert_eq!(ui.tab, Tab::Health);
         let (out, _, _) = ui.layout(raw(1200., 1000.), None, false);
         out.drop_without_applying_deltas();
-        let pos = ui.diagnostics_rect.center();
-        for pressed in [true, false] {
-            let mut input = raw(1200., 1000.);
-            input.events = vec![
-                egui::Event::PointerMoved(pos),
-                egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: Default::default(),
-                },
-            ];
-            let (out, _, _) = ui.layout(input, None, false);
-            out.drop_without_applying_deltas();
+        let labels: Vec<_> = ui.tab_rects.iter().map(|(t, _)| *t).collect();
+        assert_eq!(labels, [Tab::Health, Tab::Info]);
+        let info = ui.tab_rects[1].1;
+        click(&mut ui, None, info, (1200., 1000.));
+        assert_eq!(ui.tab, Tab::Info);
+        let health = ui.tab_rects[0].1;
+        click(&mut ui, None, health, (1200., 1000.));
+        assert_eq!(ui.tab, Tab::Health);
+        let repair = ui
+            .page_rects
+            .iter()
+            .find(|(p, _)| *p == HealthPage::Repair)
+            .unwrap()
+            .1;
+        click(&mut ui, None, repair, (1200., 1000.));
+        assert_eq!(ui.health_page, HealthPage::Repair);
+        // The right block is about one and a half times the former 260 px.
+        let (out, rect, _) = ui.layout(raw(1200., 1000.), None, false);
+        out.drop_without_applying_deltas();
+        assert!(1200. - rect.right() >= 380., "{rect:?}");
+    }
+    #[test]
+    fn menus_open_with_their_triangle_button_and_close_outside() {
+        let mut ui = ViewerUi::default();
+        let size = (1900., 900.);
+        warm(&mut ui, None, size);
+        let mut menus = ui.menu_rects.clone();
+        menus.sort_by(|a, b| a.1.left().total_cmp(&b.1.left()));
+        let order: Vec<_> = menus.iter().map(|(m, _)| *m).collect();
+        assert_eq!(
+            order,
+            [
+                TopMenu::Settings,
+                TopMenu::View,
+                TopMenu::Grid,
+                TopMenu::Light,
+                TopMenu::Lamp,
+                TopMenu::Exposure,
+                TopMenu::Scene,
+                TopMenu::Sky,
+                TopMenu::Model
+            ]
+        );
+        let rect_of = |m: TopMenu| menus.iter().find(|(x, _)| *x == m).unwrap().1;
+        // The view group sits in the right part, ending at the viewport edge.
+        assert!(
+            rect_of(TopMenu::View).left() > ui.open_rect.right(),
+            "{menus:?}"
+        );
+        let end = ui.lamp_switch_rect.right();
+        assert!(
+            end <= ui.scene.right() && end > ui.scene.right() - 30.,
+            "{end} {:?}",
+            ui.scene
+        );
+        let view = rect_of(TopMenu::View);
+        click(&mut ui, None, view, size);
+        assert_eq!(ui.menu, Some(TopMenu::View));
+        // Another menu button switches menus.
+        let lamp = rect_of(TopMenu::Lamp);
+        click(&mut ui, None, lamp, size);
+        assert_eq!(ui.menu, Some(TopMenu::Lamp));
+        // A press in the viewport closes the menu.
+        let (out, rect, _) = ui.layout(raw(size.0, size.1), None, false);
+        out.drop_without_applying_deltas();
+        let empty = egui::Rect::from_center_size(
+            rect.right_bottom() - egui::vec2(300., 120.),
+            egui::vec2(2., 2.),
+        );
+        click(&mut ui, None, empty, size);
+        assert_eq!(ui.menu, None);
+        // Settings holds the controls window.
+        let settings = rect_of(TopMenu::Settings);
+        click(&mut ui, None, settings, size);
+        assert_eq!(ui.menu, Some(TopMenu::Settings));
+    }
+    /// Each menu shows all its items at once, also after switching menus.
+    #[test]
+    fn every_menu_unfolds_to_its_full_height_without_scrolling() {
+        let asset = fixture("Pbr_Factors.glb");
+        let mut ui = ViewerUi::default();
+        let size = (1900., 1000.);
+        warm(&mut ui, Some(&asset), size);
+        let mut rounds = [Vec::new(), Vec::new()];
+        for heights in &mut rounds {
+            for menu in [
+                TopMenu::Settings,
+                TopMenu::View,
+                TopMenu::Grid,
+                TopMenu::Light,
+                TopMenu::Lamp,
+                TopMenu::Exposure,
+                TopMenu::Scene,
+                TopMenu::Sky,
+                TopMenu::Model,
+            ] {
+                ui.menu = Some(menu);
+                warm(&mut ui, Some(&asset), size);
+                let area = ui
+                    .context
+                    .memory(|m| m.area_rect(egui::Id::new(("top_menu", menu))))
+                    .unwrap();
+                assert!(area.height() > 50., "{menu:?}: {area:?}");
+                heights.push((menu, area.height()));
+            }
         }
-        assert!(ui.show_diagnostics);
+        // Same height the second time round: no size left from another menu.
+        assert_eq!(rounds[0], rounds[1]);
+        // «Сцена» shows the whole floor list (about 18 points per radio).
+        let scene = rounds[0]
+            .iter()
+            .find(|(m, _)| *m == TopMenu::Scene)
+            .unwrap()
+            .1;
+        let floors = ad_render_vulkan::grid::FloorTheme::ALL.len() + 1;
+        assert!(scene > floors as f32 * 16., "{scene}");
+    }
+    #[test]
+    fn lamp_switch_toggles_the_lamp_and_tree_unfolds_from_its_button() {
+        let mut ui = ViewerUi::default();
+        assert!(ui.lighting.enabled && !ui.show_tree);
+        let (out, _, _) = ui.layout(raw(1200., 900.), None, false);
+        out.drop_without_applying_deltas();
+        let lamp = ui.lamp_switch_rect;
+        assert!(lamp.is_positive());
+        click(&mut ui, None, lamp, (1200., 900.));
+        assert!(!ui.lighting.enabled);
+        click(&mut ui, None, lamp, (1200., 900.));
+        assert!(ui.lighting.enabled);
+        let tree = ui.tree_rect;
+        assert!(
+            tree.is_positive() && tree.top() >= 48. && tree.left() < 40.,
+            "{tree:?}"
+        );
+        click(&mut ui, None, tree, (1200., 900.));
+        assert!(ui.show_tree);
+        // Undo/Redo sit in the viewport's bottom-right corner.
+        let (out, rect, _) = ui.layout(raw(1200., 900.), None, false);
+        out.drop_without_applying_deltas();
+        assert!(ui.redo_rect.right() <= rect.right() && ui.redo_rect.right() > rect.right() - 40.);
+        assert!(
+            ui.undo_rect.bottom() <= rect.bottom() && ui.undo_rect.bottom() > rect.bottom() - 40.
+        );
+        assert!(ui.undo_rect.right() <= ui.redo_rect.left());
     }
     #[test]
     fn open_button_emits_one_action_on_release() {
@@ -1313,6 +1821,208 @@ mod tests {
             last = actions;
         }
         last
+    }
+    /// Presses at `from`, moves by `by` in two steps and releases.
+    fn drag(
+        ui: &mut ViewerUi,
+        asset: Option<&PreparedAsset>,
+        from: egui::Pos2,
+        by: egui::Vec2,
+        size: (f32, f32),
+    ) -> Vec<Actions> {
+        let to = from + by;
+        let steps = [
+            vec![egui::Event::PointerMoved(from)],
+            vec![egui::Event::PointerButton {
+                pos: from,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }],
+            vec![egui::Event::PointerMoved(from + by * 0.5)],
+            vec![egui::Event::PointerMoved(to)],
+            vec![egui::Event::PointerButton {
+                pos: to,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        ];
+        steps
+            .into_iter()
+            .map(|events| {
+                let mut input = raw(size.0, size.1);
+                input.events = events;
+                let (out, _, actions) = ui.layout(input, asset, false);
+                out.drop_without_applying_deltas();
+                actions
+            })
+            .collect()
+    }
+    fn warm(ui: &mut ViewerUi, asset: Option<&PreparedAsset>, size: (f32, f32)) {
+        for _ in 0..3 {
+            let (out, _, _) = ui.layout(raw(size.0, size.1), asset, false);
+            out.drop_without_applying_deltas();
+        }
+    }
+    fn fixture(name: &str) -> PreparedAsset {
+        crate::imports::prepare(&crate::worker::Request {
+            ticket: 1,
+            input: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures")
+                .join(name),
+            cancel: ad_document::Cancellation::default(),
+        })
+        .unwrap()
+    }
+    #[test]
+    fn finding_cards_turn_with_arrows_keys_and_swipes() {
+        let asset = fixture("Geometry_Findings.glb");
+        let count = asset.diagnostics().as_ref().unwrap().findings.len();
+        assert!(count >= 3, "{count}");
+        let mut ui = ViewerUi::default();
+        let size = (1300., 1000.);
+        warm(&mut ui, Some(&asset), size);
+        assert_eq!(ui.carousel.index, 0);
+        let next = ui.carousel.next_rect;
+        click(&mut ui, Some(&asset), next, size);
+        assert_eq!(ui.carousel.index, 1);
+        let prev = ui.carousel.prev_rect;
+        // egui hit-tests with the last frame: hover once over the button that
+        // has just become enabled, as a real pointer does.
+        warm(&mut ui, Some(&asset), size);
+        click(&mut ui, Some(&asset), prev, size);
+        assert_eq!(ui.carousel.index, 0);
+        // Right arrow with the pointer over the panel.
+        let card = ui.carousel.card_rect;
+        assert!(card.is_positive());
+        for key in [
+            egui::Key::ArrowRight,
+            egui::Key::ArrowRight,
+            egui::Key::ArrowLeft,
+        ] {
+            let mut input = raw(size.0, size.1);
+            input.events = vec![
+                egui::Event::PointerMoved(card.center()),
+                egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                },
+            ];
+            let (out, _, _) = ui.layout(input, Some(&asset), false);
+            out.drop_without_applying_deltas();
+        }
+        assert_eq!(ui.carousel.index, 1);
+        // Swipe left on the card: next card; swipe right: back.
+        let card = ui.carousel.card_rect;
+        drag(
+            &mut ui,
+            Some(&asset),
+            card.center(),
+            egui::vec2(-120., 0.),
+            size,
+        );
+        assert_eq!(ui.carousel.index, 2);
+        let card = ui.carousel.card_rect;
+        drag(
+            &mut ui,
+            Some(&asset),
+            card.center(),
+            egui::vec2(120., 0.),
+            size,
+        );
+        assert_eq!(ui.carousel.index, 1);
+    }
+    #[test]
+    fn lamp_handles_turn_only_azimuth_or_only_elevation() {
+        let asset = fixture("Pbr_Factors.glb");
+        let mut ui = ViewerUi {
+            model_gizmo_on: false,
+            ..Default::default()
+        };
+        ui.lamp_gizmo = Some(LampGizmo {
+            lamp: [0.5, 0.45],
+            center: [0.5, 0.6],
+            guides: Some(std::sync::Arc::new(crate::lamp::Guides {
+                orbit: [None; crate::lamp::ORBIT_POINTS],
+                arc: [None; crate::lamp::ARC_POINTS],
+                azimuth: Some([0.01, 0.]),
+                elevation: Some([0., -0.01]),
+            })),
+        });
+        let size = (1400., 1000.);
+        warm(&mut ui, Some(&asset), size);
+        let parts: Vec<_> = ui.lamp_handle_rects.iter().map(|(p, _)| *p).collect();
+        assert_eq!(parts, [LampPart::Azimuth, LampPart::Elevation]);
+        for (part, by) in [
+            (LampPart::Azimuth, egui::vec2(40., 0.)),
+            (LampPart::Elevation, egui::vec2(0., -30.)),
+        ] {
+            let rect = ui
+                .lamp_handle_rects
+                .iter()
+                .find(|(p, _)| *p == part)
+                .unwrap()
+                .1;
+            let actions = drag(&mut ui, Some(&asset), rect.center(), by, size);
+            let total = actions
+                .iter()
+                .filter_map(|a| a.lamp_turn)
+                .fold([0., 0.], |t, d| [t[0] + d[0], t[1] + d[1]]);
+            assert!(
+                actions.iter().all(|a| a.lamp_drag.is_none()),
+                "{part:?}: free drag"
+            );
+            match part {
+                LampPart::Azimuth => assert!(total[0] > 1. && total[1] == 0., "{total:?}"),
+                _ => assert!(total[1] > 1. && total[0] == 0., "{total:?}"),
+            }
+        }
+    }
+    #[test]
+    fn rotation_knobs_report_ring_drags() {
+        use crate::model_gizmo::Handle;
+        let asset = fixture("Pbr_Factors.glb");
+        let mut ui = ViewerUi {
+            lamp_icon: false,
+            ..Default::default()
+        };
+        ui.model_gizmo = Some(ModelGizmo {
+            pivot: [0.5, 0.6],
+            ends: [Some([0.65, 0.6]), Some([0.5, 0.4]), None],
+            knobs: [Some([0.4, 0.75]), Some([0.6, 0.75])],
+            ..Default::default()
+        });
+        let size = (1400., 1000.);
+        warm(&mut ui, Some(&asset), size);
+        let handles: Vec<_> = ui.model_gizmo_rects.iter().map(|(h, _)| *h).collect();
+        assert!(
+            handles.ends_with(&[Handle::Rotate(0), Handle::Rotate(1), Handle::Scale]),
+            "{handles:?}"
+        );
+        let rect = ui
+            .model_gizmo_rects
+            .iter()
+            .find(|(h, _)| *h == Handle::Rotate(1))
+            .unwrap()
+            .1;
+        ui.model_gizmo_rects.clear();
+        let actions = drag(
+            &mut ui,
+            Some(&asset),
+            rect.center(),
+            egui::vec2(30., 0.),
+            size,
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a.model_drag, Some((Handle::Rotate(1), _))))
+        );
+        assert!(actions.iter().any(|a| a.model_drag_end));
     }
     fn preview_info() -> PreviewInfo {
         PreviewInfo {
@@ -1366,8 +2076,10 @@ mod tests {
     fn undo_and_redo_buttons_follow_history_state() {
         let mut ui = ViewerUi::default();
         ui.edit.can_undo = true;
-        let (out, _, _) = ui.layout(raw(1200., 760.), None, false);
-        out.drop_without_applying_deltas();
+        for _ in 0..3 {
+            let (out, _, _) = ui.layout(raw(1200., 760.), None, false);
+            out.drop_without_applying_deltas();
+        }
         let actions = {
             let rect = ui.undo_rect;
             click(&mut ui, None, rect, (1200., 760.))
@@ -1399,7 +2111,7 @@ mod tests {
         })
         .unwrap();
         let mut ui = ViewerUi {
-            show_diagnostics: true,
+            health_page: HealthPage::Repair,
             ..Default::default()
         };
         for _ in 0..3 {
@@ -1480,6 +2192,7 @@ mod tests {
         ui.model_gizmo = Some(ModelGizmo {
             pivot: [0.5, 0.6],
             ends: [Some([0.65, 0.6]), Some([0.5, 0.4]), None],
+            ..Default::default()
         });
         for _ in 0..2 {
             ui.model_gizmo_rects.clear();
@@ -1542,6 +2255,7 @@ mod tests {
         ui.lamp_gizmo = Some(LampGizmo {
             lamp: [0.7, 0.3],
             center: [0.5, 0.5],
+            ..Default::default()
         });
         // A new egui area is measured invisibly on its first frame.
         for _ in 0..2 {
@@ -1591,6 +2305,7 @@ mod tests {
             ui.lamp_gizmo = Some(LampGizmo {
                 lamp,
                 center: [0.5, 0.5],
+                ..Default::default()
             });
             let mut input = raw(1400., 1000.);
             input.events.push(egui::Event::PointerMoved(at));
@@ -1679,7 +2394,10 @@ mod tests {
             cancel: ad_document::Cancellation::default(),
         })
         .unwrap();
-        let mut ui = ViewerUi::default();
+        let mut ui = ViewerUi {
+            health_page: HealthPage::Repair,
+            ..Default::default()
+        };
         ui.edit.can_save = true;
         for _ in 0..3 {
             let (out, _, _) = ui.layout(raw(1300., 900.), Some(&asset), false);
@@ -1770,7 +2488,7 @@ mod tests {
         })
         .unwrap();
         let mut ui = ViewerUi {
-            show_diagnostics: true,
+            health_page: HealthPage::Repair,
             ..Default::default()
         };
         for _ in 0..3 {
@@ -1800,7 +2518,7 @@ mod tests {
         })
         .unwrap();
         let mut ui = ViewerUi {
-            show_diagnostics: true,
+            health_page: HealthPage::Repair,
             ..Default::default()
         };
         for _ in 0..4 {

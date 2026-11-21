@@ -202,6 +202,9 @@ pub struct GeometrySnapshot {
     pub indices: Vec<u32>,
     pub draws: Vec<DrawRange>,
     pub bounds: Bounds,
+    /// Bounds of the same geometry without the ADR-0041 placement (the
+    /// imported position); equal to `bounds` for the identity placement.
+    pub source_bounds: Bounds,
 }
 
 impl AssetDocument {
@@ -516,7 +519,13 @@ impl DocumentView<'_> {
                 min: [f32::INFINITY; 3],
                 max: [f32::NEG_INFINITY; 3],
             },
+            source_bounds: Bounds {
+                min: [f32::INFINITY; 3],
+                max: [f32::NEG_INFINITY; 3],
+            },
         };
+        let placement = self.placement();
+        let unplace = (!placement.is_identity()).then(|| placement.matrix().inverse());
         result.positions.try_reserve_exact(vertices).map_err(|_| {
             AssetError::new(ErrorCode::ResourceLimit, "Cannot allocate scene vertices")
         })?;
@@ -644,6 +653,13 @@ impl DocumentView<'_> {
                 for (axis, value) in position.into_iter().enumerate() {
                     result.bounds.min[axis] = result.bounds.min[axis].min(value);
                     result.bounds.max[axis] = result.bounds.max[axis].max(value);
+                }
+                let source = unplace.map_or(position, |m| {
+                    m.transform_point3(Vec3::from_array(position)).to_array()
+                });
+                for (axis, value) in source.into_iter().enumerate() {
+                    result.source_bounds.min[axis] = result.source_bounds.min[axis].min(value);
+                    result.source_bounds.max[axis] = result.source_bounds.max[axis].max(value);
                 }
                 result.indices.push(offset + index);
             }

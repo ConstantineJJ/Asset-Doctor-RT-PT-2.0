@@ -17,6 +17,10 @@ pub(crate) struct FrameData {
     /// ADR-0040 lamp: unit direction towards it (w unused) and linear colour.
     pub light_direction: [f32; 4],
     pub light_color: [f32; 4],
+    /// ADR-0044: world to lamp clip space, and shadow parameters
+    /// (strength 0 = off, depth bias, texel size, normal offset).
+    pub light_view_projection: [[f32; 4]; 4],
+    pub shadow: [f32; 4],
 }
 impl FrameData {
     fn bytes(&self) -> &[u8] {
@@ -35,11 +39,24 @@ pub(crate) struct FrameLayout {
 }
 impl FrameLayout {
     pub fn new(gpu: Arc<Gpu>) -> GpuResult<Self> {
-        let bindings = [vk::DescriptorSetLayoutBinding::default()
-            .binding(0)
-            .descriptor_count(1)
-            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)];
+        let bindings = [
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_count(1)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
+            // ADR-0044 shadow map and its sampler.
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_count(1)
+                .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(2)
+                .descriptor_count(1)
+                .descriptor_type(vk::DescriptorType::SAMPLER)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+        ];
         // SAFETY: Fixed valid layout, borrowed create info lives through call.
         let handle = unsafe {
             gpu.device.create_descriptor_set_layout(
@@ -68,7 +85,7 @@ pub(crate) struct FrameBinding {
     gpu: Arc<Gpu>,
 }
 impl FrameBinding {
-    pub fn new(gpu: Arc<Gpu>) -> GpuResult<Self> {
+    pub fn new(gpu: Arc<Gpu>, shadow: &crate::shadow::ShadowMap) -> GpuResult<Self> {
         let buffer = Buffer::upload(
             gpu.clone(),
             FrameData::default().bytes(),
@@ -83,10 +100,20 @@ impl FrameBinding {
         };
         // SAFETY: All successful allocations owned before next fallible call.
         unsafe {
-            let sizes = [vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::UNIFORM_BUFFER,
-                descriptor_count: 1,
-            }];
+            let sizes = [
+                vk::DescriptorPoolSize {
+                    ty: vk::DescriptorType::UNIFORM_BUFFER,
+                    descriptor_count: 1,
+                },
+                vk::DescriptorPoolSize {
+                    ty: vk::DescriptorType::SAMPLED_IMAGE,
+                    descriptor_count: 1,
+                },
+                vk::DescriptorPoolSize {
+                    ty: vk::DescriptorType::SAMPLER,
+                    descriptor_count: 1,
+                },
+            ];
             result.pool = result.gpu.device.create_descriptor_pool(
                 &vk::DescriptorPoolCreateInfo::default()
                     .max_sets(1)
@@ -104,12 +131,33 @@ impl FrameBinding {
                 offset: 0,
                 range: std::mem::size_of::<FrameData>() as u64,
             }];
+            let image = [vk::DescriptorImageInfo {
+                sampler: vk::Sampler::null(),
+                image_view: shadow.view,
+                image_layout: vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+            }];
+            let sampler = [vk::DescriptorImageInfo {
+                sampler: shadow.sampler,
+                ..Default::default()
+            }];
             result.gpu.device.update_descriptor_sets(
-                &[vk::WriteDescriptorSet::default()
-                    .dst_set(result.set)
-                    .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .buffer_info(&info)],
+                &[
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(result.set)
+                        .dst_binding(0)
+                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                        .buffer_info(&info),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(result.set)
+                        .dst_binding(1)
+                        .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                        .image_info(&image),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(result.set)
+                        .dst_binding(2)
+                        .descriptor_type(vk::DescriptorType::SAMPLER)
+                        .image_info(&sampler),
+                ],
                 &[],
             );
         }
@@ -135,7 +183,9 @@ mod tests {
     use super::*;
     #[test]
     fn std140_frame_offsets_and_data_bytes_match_glsl() {
-        assert_eq!(std::mem::size_of::<FrameData>(), 176);
+        assert_eq!(std::mem::size_of::<FrameData>(), 256);
+        assert_eq!(std::mem::offset_of!(FrameData, light_view_projection), 176);
+        assert_eq!(std::mem::offset_of!(FrameData, shadow), 240);
         assert_eq!(std::mem::offset_of!(FrameData, light_direction), 144);
         assert_eq!(std::mem::offset_of!(FrameData, light_color), 160);
         assert_eq!(std::mem::offset_of!(FrameData, sky_zenith), 96);

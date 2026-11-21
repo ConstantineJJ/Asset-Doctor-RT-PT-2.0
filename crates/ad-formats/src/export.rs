@@ -367,7 +367,13 @@ fn changed_admission(
     let bin = parsed.glb.bin.as_deref().ok_or_else(invalid)?;
     strict_chunks(document.source(), parsed.glb.json.len(), bin.len())?;
     let (meta, values) = metadata::parse(&parsed.glb.json, limits.metadata_values, cancel)?;
-    metadata::core_only(&meta, cancel)?;
+    if changed.is_empty() {
+        // ADR-0041 amendment: only root transforms change; every other
+        // member, including extras and extensions, is written back verbatim.
+        metadata::placement_only(&meta, cancel)?;
+    } else {
+        metadata::core_only(&meta, cancel)?;
+    }
     let mut items = values;
     let mut bin_len = bin.len();
     for binding in changed {
@@ -482,15 +488,21 @@ fn placed_roots(
                 scale,
             } => Transform::Decomposed {
                 translation: placement.apply(translation),
-                rotation,
+                rotation: placement.apply_rotation(rotation),
                 scale: scale.map(|v| v * placement.scale),
             },
         };
         let finite = match &placed {
             Transform::Matrix { matrix } => matrix.iter().flatten().all(|v| v.is_finite()),
             Transform::Decomposed {
-                translation, scale, ..
-            } => translation.iter().chain(scale).all(|v| v.is_finite()),
+                translation,
+                rotation,
+                scale,
+            } => translation
+                .iter()
+                .chain(scale)
+                .chain(rotation)
+                .all(|v| v.is_finite()),
         };
         if !finite {
             return Err(AssetError::new(
@@ -533,9 +545,15 @@ fn write_roots(meta: &mut Value, roots: &[(usize, gltf::scene::Transform)]) -> A
                 node.insert("matrix".into(), numbers(matrix.as_flattened()));
             }
             Transform::Decomposed {
-                translation, scale, ..
+                translation,
+                rotation,
+                scale,
             } => {
                 node.insert("translation".into(), numbers(translation));
+                // An unturned node keeps its own (possibly absent) rotation.
+                if *rotation != [0., 0., 0., 1.] || node.contains_key("rotation") {
+                    node.insert("rotation".into(), numbers(rotation));
+                }
                 node.insert("scale".into(), numbers(scale));
             }
         }

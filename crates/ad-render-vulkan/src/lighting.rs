@@ -5,6 +5,47 @@ pub enum ShadingMode {
     BaseColor,
     DirectPbr,
 }
+/// ADR-0042 render channel: what the viewport shows instead of lit shading.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Channel {
+    #[default]
+    Lit,
+    Normals,
+    Uv,
+    BaseColor,
+    Metallic,
+    Roughness,
+    Occlusion,
+    Emission,
+}
+impl Channel {
+    pub const ALL: [Self; 8] = [
+        Self::Lit,
+        Self::Normals,
+        Self::Uv,
+        Self::BaseColor,
+        Self::Metallic,
+        Self::Roughness,
+        Self::Occlusion,
+        Self::Emission,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Lit => "Освещение",
+            Self::Normals => "Нормали",
+            Self::Uv => "UV",
+            Self::BaseColor => "Базовый цвет",
+            Self::Metallic => "Металличность",
+            Self::Roughness => "Шероховатость",
+            Self::Occlusion => "Окклюзия · AO",
+            Self::Emission => "Свечение",
+        }
+    }
+    /// Index read by mesh.frag from the frame uniform.
+    pub(crate) fn index(self) -> f32 {
+        Self::ALL.iter().position(|c| *c == self).unwrap_or(0) as f32
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ViewLighting {
     pub mode: ShadingMode,
@@ -67,6 +108,16 @@ impl ViewLighting {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn channels_have_unique_labels_and_stable_indices() {
+        let labels: std::collections::BTreeSet<_> =
+            Channel::ALL.iter().map(|c| c.label()).collect();
+        assert_eq!(labels.len(), Channel::ALL.len());
+        for (i, c) in Channel::ALL.iter().enumerate() {
+            assert_eq!(c.index(), i as f32);
+        }
+        assert_eq!(Channel::default(), Channel::Lit);
+    }
     #[test]
     fn settings_refuse_nonfinite_and_out_of_range_values_and_pack_independent_flags() {
         let mut view = ViewLighting::default();

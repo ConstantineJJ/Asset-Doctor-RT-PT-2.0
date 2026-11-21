@@ -13,6 +13,8 @@ pub(crate) struct Push {
 }
 pub(crate) struct MeshPipeline {
     pub handle: vk::Pipeline,
+    /// Wireframe overlay; null when the GPU lacks line polygon mode.
+    pub wire: vk::Pipeline,
     pub layout: vk::PipelineLayout,
     texture_layout: TextureLayout,
     frame_layout: FrameLayout,
@@ -53,6 +55,7 @@ impl MeshPipeline {
         )?;
         let mut pipeline = Self {
             handle: vk::Pipeline::null(),
+            wire: vk::Pipeline::null(),
             layout: vk::PipelineLayout::null(),
             texture_layout: TextureLayout::new(gpu.clone())?,
             frame_layout: FrameLayout::new(gpu.clone())?,
@@ -204,13 +207,26 @@ impl MeshPipeline {
                 .depth_write_enable(true)
                 // Reversed-Z: nearer fragments have larger depth.
                 .depth_compare_op(vk::CompareOp::GREATER);
+            // Wireframe overlay: the same triangles as lines over the filled
+            // surface; equal depth passes and a slope bias pulls lines forward
+            // (towards larger depth with reversed-Z). No depth writes.
+            let wire_raster = vk::PipelineRasterizationStateCreateInfo::default()
+                .polygon_mode(vk::PolygonMode::LINE)
+                .cull_mode(vk::CullModeFlags::NONE)
+                .depth_bias_enable(true)
+                .depth_bias_slope_factor(1.0)
+                .line_width(1.0);
+            let wire_depth = vk::PipelineDepthStencilStateCreateInfo::default()
+                .depth_test_enable(true)
+                .depth_write_enable(false)
+                .depth_compare_op(vk::CompareOp::GREATER_OR_EQUAL);
             let attachments = [vk::PipelineColorBlendAttachmentState::default()
                 .color_write_mask(vk::ColorComponentFlags::RGBA)];
             let blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&attachments);
             let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
             let dynamic =
                 vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
-            let create = [vk::GraphicsPipelineCreateInfo::default()
+            let fill = vk::GraphicsPipelineCreateInfo::default()
                 .stages(&stages)
                 .vertex_input_state(&vertex)
                 .input_assembly_state(&assembly)
@@ -222,13 +238,25 @@ impl MeshPipeline {
                 .dynamic_state(&dynamic)
                 .layout(pipeline.layout)
                 .render_pass(pass)
-                .subpass(0)];
+                .subpass(0);
+            let wire = fill
+                .rasterization_state(&wire_raster)
+                .depth_stencil_state(&wire_depth);
+            let both = [fill, wire];
+            let create = if pipeline.gpu.wireframe {
+                &both[..]
+            } else {
+                &both[..1]
+            };
             match pipeline.gpu.device.create_graphics_pipelines(
                 vk::PipelineCache::null(),
-                &create,
+                create,
                 None,
             ) {
-                Ok(handles) => pipeline.handle = handles[0],
+                Ok(handles) => {
+                    pipeline.handle = handles[0];
+                    pipeline.wire = handles.get(1).copied().unwrap_or_default();
+                }
                 Err((handles, error)) => {
                     for handle in handles {
                         pipeline.gpu.device.destroy_pipeline(handle, None);
@@ -245,6 +273,7 @@ impl Drop for MeshPipeline {
         // SAFETY: Swapchain/Renderer waits for all using work before pipeline release.
         unsafe {
             self.gpu.device.destroy_pipeline(self.handle, None);
+            self.gpu.device.destroy_pipeline(self.wire, None);
             self.gpu.device.destroy_pipeline_layout(self.layout, None);
         }
     }

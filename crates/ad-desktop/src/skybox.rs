@@ -9,6 +9,8 @@ use std::{
 /// A decoded panorama ready for upload.
 pub struct Loaded {
     pub name: String,
+    /// The file it came from (kept in the view settings).
+    pub path: PathBuf,
     pub image: TextureImage,
     /// Display zenith/horizon/ground colours for the environment light.
     pub light: [[f32; 3]; 3],
@@ -30,6 +32,7 @@ pub fn load(path: &Path) -> Result<Loaded, String> {
     let ratio = image.width as f32 / image.height as f32;
     Ok(Loaded {
         name,
+        path: path.to_path_buf(),
         not_panorama: !(1.9..=2.1).contains(&ratio),
         image,
         light,

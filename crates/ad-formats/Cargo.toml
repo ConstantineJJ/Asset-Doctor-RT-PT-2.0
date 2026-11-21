@@ -9,7 +9,7 @@ ad-document = { path = "../ad-document", version = "=0.1.0" }
 gltf = { version = "=1.4.1", default-features = false, features = ["utils", "names", "extras"] }
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg"] }
 serde = "=1.0.229"
-serde_json = "=1.0.150"
+serde_json = { version = "=1.0.150", features = ["float_roundtrip"] }
 
 [lints]
 workspace = true

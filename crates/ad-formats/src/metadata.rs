@@ -342,6 +342,29 @@ fn check(value: &Value, kind: Kind, cancel: &Cancellation) -> AssetResult<()> {
     }
     Ok(())
 }
+/// ADR-0041 amendment: a placement-only export rewrites the root node
+/// transforms and keeps every other member verbatim, so extras, extensions
+/// and unknown fields are allowed. Animations and skins are refused: they can
+/// drive or depend on the root transforms.
+pub(crate) fn placement_only(value: &Value, cancel: &Cancellation) -> AssetResult<()> {
+    cancel.check()?;
+    let object = value.as_object().ok_or_else(unsupported)?;
+    for key in ["animations", "skins"] {
+        if object
+            .get(key)
+            .is_some_and(|v| !v.as_array().is_some_and(Vec::is_empty))
+        {
+            return Err(AssetError::new(
+                ErrorCode::Unsupported,
+                "Moving a model with animations or skins is not supported yet",
+            ));
+        }
+    }
+    if !object.get("nodes").is_some_and(Value::is_array) {
+        return Err(unsupported());
+    }
+    Ok(())
+}
 pub(crate) fn core_only(value: &Value, cancel: &Cancellation) -> AssetResult<()> {
     check(value, Kind::Root, cancel)
 }
