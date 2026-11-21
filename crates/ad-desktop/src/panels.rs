@@ -20,7 +20,7 @@ const VIEW_MENUS: [(TopMenu, &str, &str); 8] = [
     (TopMenu::Lamp, "Лампа", "Лампа"),
     (TopMenu::Exposure, "Экспозиция и сила света", "Экспозиция"),
     (TopMenu::Scene, "Сцена", "Сцена"),
-    (TopMenu::Sky, "Небо и скайбокс", "Небо"),
+    (TopMenu::Sky, "Окружение", "Окружение"),
     (TopMenu::Model, "Модель", "Модель"),
 ];
 
@@ -93,9 +93,6 @@ impl ViewerUi {
                         ui.colored_label(Color32::from_rgb(255, 190, 120), "* не сохранено")
                             .on_hover_text("Есть правки, которых нет ни в исходном файле, ни в последней проверенной копии.");
                     }
-                    if width >= 330. {
-                        self.help |= ui.button("Справка").clicked();
-                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if width >= 1400.
                             && ui
@@ -129,12 +126,46 @@ impl ViewerUi {
         let start = ui.available_rect_before_wrap().right();
         self.lamp_switch(ui);
         for (menu, label, brief) in VIEW_MENUS.into_iter().rev() {
+            if menu == TopMenu::Sky {
+                self.skybox_button(ui);
+            }
             let response = self.menu_button(ui, menu, if short { brief } else { label });
             if short && brief != label {
                 response.on_hover_text(label);
             }
         }
         self.menu_group_width = start - ui.available_rect_before_wrap().right();
+    }
+
+    /// «SkyBox» opens or closes the SkyBox window (and lists its folder the
+    /// first time).
+    fn skybox_button(&mut self, ui: &mut egui::Ui) {
+        let response = ui
+            .add(egui::Button::selectable(self.show_skybox, "SkyBox").min_size(egui::vec2(0., 28.)))
+            .on_hover_text("Выбор панорамы-фона с превью (PNG/JPEG/HDR), поворот и качество.");
+        #[cfg(test)]
+        {
+            self.skybox_button_rect = response.rect;
+        }
+        self.menu_buttons.push(response.rect);
+        if response.clicked() {
+            self.show_skybox = !self.show_skybox;
+            self.menu = None;
+            if self.show_skybox && self.skybox_library.folder.is_none() {
+                let folder = self
+                    .skybox_folder
+                    .clone()
+                    .or_else(|| {
+                        self.skybox_path
+                            .as_ref()
+                            .and_then(|p| p.parent().map(Into::into))
+                    })
+                    .or_else(crate::skybox_library::default_folder);
+                if let Some(folder) = folder {
+                    self.skybox_library.open(folder);
+                }
+            }
+        }
     }
 
     /// A top-bar button with a filled triangle that opens its menu.
@@ -253,7 +284,7 @@ impl ViewerUi {
                             TopMenu::Lamp => self.lamp_menu(ui, actions),
                             TopMenu::Exposure => self.exposure_menu(ui),
                             TopMenu::Scene => self.scene_menu(ui),
-                            TopMenu::Sky => self.sky_menu(ui, actions),
+                            TopMenu::Sky => self.sky_menu(ui),
                             TopMenu::Model => self.model_menu(ui, asset, actions),
                         }
                     });
@@ -287,6 +318,16 @@ impl ViewerUi {
         ui.weak("Клавиши и кнопки мыши, включая боковые: переназначение, конфликты, сброс.");
         if ui.button("Клавиши и мышь…").clicked() {
             self.show_controls = true;
+            self.menu = None;
+        }
+        ui.separator();
+        Self::heading(ui, "Справка");
+        if ui
+            .button("Справка…")
+            .on_hover_text("Клавиши, мышь и что где находится · H")
+            .clicked()
+        {
+            self.help = true;
             self.menu = None;
         }
     }
@@ -472,8 +513,8 @@ impl ViewerUi {
         ui.weak("Пол на уровне нижней точки модели в исходном положении. Только вид. G — скрыть или вернуть.");
     }
 
-    fn sky_menu(&mut self, ui: &mut egui::Ui, actions: &mut Actions) {
-        egui::ComboBox::from_label("Окружение")
+    fn sky_menu(&mut self, ui: &mut egui::Ui) {
+        egui::ComboBox::from_label("Погода и время суток")
             .selected_text(self.environment.label())
             .show_ui(ui, |ui| {
                 for preset in ad_render_vulkan::sky::Environment::ALL {
@@ -484,25 +525,165 @@ impl ViewerUi {
             .on_hover_text(
                 "Фон-небо за моделью. Только вид: лампы, экспозиция и подсветка не меняются.",
             );
-        ui.horizontal(|ui| {
-            if ui.button("Скайбокс...").on_hover_text("Выбрать свою панораму 2:1 (равнопромежуточную): PNG/JPEG или HDR (.hdr). HDR показывается с экспозицией. Файл только читается; в модель и экспорт не попадает.").clicked() {
-                actions.skybox_load = true;
-            }
-            if let Some(name) = self.skybox_name.clone() {
-                ui.checkbox(&mut self.skybox_on, name).on_hover_text("Показать панораму вместо фона-неба. Свет окружения берёт её цвета.");
-                if ui.button("Убрать").clicked() {
-                    actions.skybox_remove = true;
-                }
-            }
-        });
-        if self.skybox_name.is_some() && self.skybox_on {
-            ui.add(
-                egui::Slider::new(&mut self.skybox_yaw, 0.0..=360.0)
-                    .text("Поворот")
-                    .suffix(" град."),
-            );
+        if self.skybox_on && self.skybox_name.is_some() {
+            ui.weak("Сейчас показан SkyBox; небо видно, когда SkyBox скрыт.");
         }
-        self.skybox_quality_ui(ui, actions);
+    }
+
+    /// The SkyBox window: preview, the shown panorama and its settings, and
+    /// the panoramas of a folder with their previews.
+    pub(super) fn skybox_window(&mut self, context: &egui::Context, actions: &mut Actions) {
+        if !self.show_skybox {
+            return;
+        }
+        self.skybox_library.poll(context);
+        let mut open = true;
+        egui::Window::new("SkyBox")
+            .id(egui::Id::new("skybox_window"))
+            .open(&mut open)
+            .resizable(true)
+            .default_size([560., 620.])
+            .show(context, |ui| {
+                let width = ui.available_width();
+                // Large preview: the hovered panorama, else the shown one.
+                let shown = self
+                    .skybox_path
+                    .as_ref()
+                    .and_then(|p| self.skybox_library.entries.iter().position(|e| &e.path == p));
+                let preview = self.skybox_hover.or(shown);
+                let preview_size = egui::vec2(width, (width / 2.).min(280.));
+                match preview.and_then(|i| self.skybox_library.entries.get(i)) {
+                    Some(crate::skybox_library::Entry {
+                        thumb: crate::skybox_library::Thumb::Ready(texture),
+                        name,
+                        ..
+                    }) => {
+                        ui.add(egui::Image::new((texture.id(), preview_size)).corner_radius(6.));
+                        ui.weak(name);
+                    }
+                    _ => {
+                        let (rect, _) = ui.allocate_exact_size(preview_size, egui::Sense::hover());
+                        ui.painter().rect_filled(rect, 6., ui.visuals().extreme_bg_color);
+                        ui.painter().text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "Наведите на панораму, чтобы увидеть её здесь",
+                            egui::FontId::proportional(14.),
+                            ui.visuals().weak_text_color(),
+                        );
+                    }
+                }
+                ui.separator();
+                if let Some(name) = self.skybox_name.clone() {
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.skybox_on, format!("Показать: {name}"))
+                            .on_hover_text("Показать панораму вместо неба «Окружения». Со «Светом окружения» она освещает модель.");
+                        if ui.button("Убрать").clicked() {
+                            actions.skybox_remove = true;
+                        }
+                    });
+                    if self.skybox_on {
+                        ui.add(
+                            egui::Slider::new(&mut self.skybox_yaw, 0.0..=360.0)
+                                .text("Поворот")
+                                .suffix(" град."),
+                        );
+                    }
+                } else {
+                    ui.weak("SkyBox не выбран: показано небо «Окружения».");
+                }
+                self.skybox_quality_ui(ui, actions);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let folder = self
+                        .skybox_library
+                        .folder
+                        .as_ref()
+                        .map_or_else(|| "Папка не выбрана".to_string(), |f| f.display().to_string());
+                    if ui.button("Папка…").on_hover_text("Выбрать папку с панорамами: укажите любой файл в ней.").clicked() {
+                        actions.skybox_folder_choose = true;
+                    }
+                    if ui.add_enabled(self.skybox_library.folder.is_some(), egui::Button::new("Обновить")).clicked()
+                        && let Some(folder) = self.skybox_library.folder.clone()
+                    {
+                        self.skybox_library.open(folder);
+                    }
+                    actions.skybox_load |= ui
+                        .button("Другой файл…")
+                        .on_hover_text("Открыть одну панораму PNG/JPEG/HDR из любого места.")
+                        .clicked();
+                    ui.add(egui::Label::new(egui::RichText::new(folder).weak()).truncate());
+                });
+                if let Some(error) = &self.skybox_library.error {
+                    ui.colored_label(Color32::from_rgb(255, 190, 120), error);
+                }
+                let pending = self.skybox_library.pending();
+                if pending > 0 {
+                    ui.weak(format!("Готовятся превью: {pending}"));
+                }
+                self.skybox_hover = None;
+                let tile = egui::vec2(168., 84.);
+                let columns = ((ui.available_width() + 8.) / (tile.x + 8.)).floor().max(1.) as usize;
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    let entries = self.skybox_library.entries.len();
+                    for row in (0..entries).step_by(columns) {
+                        ui.horizontal(|ui| {
+                            for i in row..(row + columns).min(entries) {
+                                let entry = &self.skybox_library.entries[i];
+                                let current = self.skybox_path.as_ref() == Some(&entry.path);
+                                let response = ui
+                                    .vertical(|ui| {
+                                        ui.set_width(tile.x);
+                                        let (rect, response) = ui.allocate_exact_size(tile, egui::Sense::click());
+                                        match &entry.thumb {
+                                            crate::skybox_library::Thumb::Ready(texture) => {
+                                                egui::Image::new((texture.id(), tile))
+                                                    .corner_radius(4.)
+                                                    .paint_at(ui, rect);
+                                            }
+                                            crate::skybox_library::Thumb::Pending => {
+                                                ui.painter().rect_filled(rect, 4., ui.visuals().extreme_bg_color);
+                                            }
+                                            crate::skybox_library::Thumb::Failed(_) => {
+                                                ui.painter().rect_filled(rect, 4., Color32::from_rgb(70, 40, 40));
+                                            }
+                                        }
+                                        let stroke = if current {
+                                            egui::Stroke::new(2.5, Color32::from_rgb(255, 205, 80))
+                                        } else if response.hovered() {
+                                            egui::Stroke::new(1.5, ui.visuals().strong_text_color())
+                                        } else {
+                                            egui::Stroke::NONE
+                                        };
+                                        ui.painter().rect_stroke(rect, 4., stroke, egui::StrokeKind::Inside);
+                                        ui.add(egui::Label::new(egui::RichText::new(&entry.name).small()).truncate());
+                                        response
+                                    })
+                                    .inner;
+                                #[cfg(test)]
+                                {
+                                    self.skybox_tile_rects.push(response.rect);
+                                }
+                                let hint = match &entry.thumb {
+                                    crate::skybox_library::Thumb::Failed(error) => error.clone(),
+                                    _ => format!("{} · {:.1} МБ · нажмите, чтобы показать", entry.name, entry.bytes as f64 / 1048576.),
+                                };
+                                let response = response.on_hover_text(hint);
+                                if response.hovered() {
+                                    self.skybox_hover = Some(i);
+                                }
+                                if response.clicked() && !current {
+                                    actions.skybox_open = Some(entry.path.clone());
+                                }
+                            }
+                        });
+                    }
+                    if entries == 0 && self.skybox_library.folder.is_some() {
+                        ui.weak("В папке нет панорам PNG/JPEG/HDR.");
+                    }
+                });
+            });
+        self.show_skybox &= open;
     }
 
     /// SkyBox quality: widest level kept on the GPU; changing it prepares

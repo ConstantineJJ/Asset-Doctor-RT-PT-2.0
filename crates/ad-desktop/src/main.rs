@@ -13,6 +13,7 @@ mod native;
 mod queue;
 mod saving;
 mod skybox;
+mod skybox_library;
 mod ui_model;
 mod viewer_ui;
 mod worker;
@@ -138,6 +139,7 @@ struct App {
     /// ADR-0040 skybox: dialog requested, background decode, decoded image
     /// waiting for upload.
     pending_skybox_choose: bool,
+    pending_skybox_folder: bool,
     /// Viewport size of the last frame (lamp gizmo projection).
     last_view: (u32, u32),
     /// ADR-0041 gizmo drag preview, kept until its placement edit finishes.
@@ -1503,6 +1505,21 @@ impl App {
                 Err(error) => self.ui.set_status(error.to_string(), true),
             }
         }
+        // SkyBox window «Папка…»: any file in the folder picks the folder.
+        if std::mem::take(&mut self.pending_skybox_folder)
+            && let Some(window) = self.window.as_ref()
+        {
+            match native::choose_image(window) {
+                Ok(Some(path)) => {
+                    if let Some(folder) = path.parent().map(std::path::Path::to_path_buf) {
+                        self.ui.skybox_folder = Some(folder.clone());
+                        self.ui.skybox_library.open(folder);
+                    }
+                }
+                Ok(None) => (),
+                Err(error) => self.ui.set_status(error.to_string(), true),
+            }
+        }
         if let Some(job) = self.skybox_job.as_ref() {
             match job.try_recv() {
                 Ok(Ok(loaded)) => {
@@ -2024,6 +2041,13 @@ impl App {
         }
         if actions.skybox_load {
             self.pending_skybox_choose = true;
+        }
+        if let Some(path) = actions.skybox_open.clone() {
+            self.skybox_job = Some(skybox::spawn(path, self.skybox_width()));
+            self.ui.set_status("Загрузка скайбокса...", false);
+        }
+        if actions.skybox_folder_choose {
+            self.pending_skybox_folder = true;
         }
         // SkyBox quality changed: the shown panorama is prepared again.
         if let Some(path) = actions.skybox_reload.clone() {
@@ -2807,6 +2831,7 @@ fn run() -> GpuResult<()> {
         pending_save: false,
         pending_overwrite: false,
         pending_skybox_choose: false,
+        pending_skybox_folder: false,
         last_view: (1, 1),
         model_preview: None,
         model_pending: false,

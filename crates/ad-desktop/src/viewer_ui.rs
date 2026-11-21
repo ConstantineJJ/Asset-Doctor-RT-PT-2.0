@@ -66,6 +66,9 @@ pub struct Actions {
     pub skybox_remove: bool,
     /// SkyBox quality changed: prepare this panorama again.
     pub skybox_reload: Option<std::path::PathBuf>,
+    /// SkyBox window: show this panorama; choose the library folder.
+    pub skybox_open: Option<std::path::PathBuf>,
+    pub skybox_folder_choose: bool,
     /// ADR-0040 lamp gizmo dragged by (dx, dy) logical points this frame.
     pub lamp_drag: Option<[f32; 2]>,
     /// Lamp context menu: point the lamp from the camera.
@@ -237,6 +240,12 @@ pub struct ViewerUi {
     pub skybox_path: Option<std::path::PathBuf>,
     /// ADR-0047: widest SkyBox level kept on the GPU (2048, 4096 or 8192).
     pub skybox_width: u32,
+    /// SkyBox window: open, its folder (kept in the view settings), the
+    /// panoramas there and the one under the pointer.
+    pub show_skybox: bool,
+    pub skybox_folder: Option<std::path::PathBuf>,
+    pub skybox_library: crate::skybox_library::Library,
+    skybox_hover: Option<usize>,
     pub skybox_on: bool,
     pub skybox_yaw: f32,
     pub skybox_light: Option<[[f32; 3]; 3]>,
@@ -350,6 +359,10 @@ pub struct ViewerUi {
     lamp_switch_rect: egui::Rect,
     #[cfg(test)]
     lamp_handle_rects: Vec<(LampPart, egui::Rect)>,
+    #[cfg(test)]
+    skybox_button_rect: egui::Rect,
+    #[cfg(test)]
+    skybox_tile_rects: Vec<egui::Rect>,
 }
 impl Default for ViewerUi {
     fn default() -> Self {
@@ -376,6 +389,10 @@ impl Default for ViewerUi {
             skybox_name: None,
             skybox_path: None,
             skybox_width: ad_render_vulkan::ibl::DEFAULT_WIDTH,
+            show_skybox: false,
+            skybox_folder: None,
+            skybox_library: Default::default(),
+            skybox_hover: None,
             skybox_on: false,
             skybox_yaw: 0.,
             skybox_light: None,
@@ -468,6 +485,10 @@ impl Default for ViewerUi {
             lamp_switch_rect: egui::Rect::NOTHING,
             #[cfg(test)]
             lamp_handle_rects: Vec::new(),
+            #[cfg(test)]
+            skybox_button_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            skybox_tile_rects: Vec::new(),
         }
     }
 }
@@ -1209,6 +1230,9 @@ impl ViewerUi {
                 }
             }
             self.menu_popup(&context,height,asset,&mut actions);
+            #[cfg(test)]
+            self.skybox_tile_rects.clear();
+            self.skybox_window(&context,&mut actions);
             if let Some(info)=self.edit.preview.clone() {
                 let ready=!loading && self.edit.busy.is_none();
                 let code=crate::edits::repair_label(info.kind);
@@ -1710,6 +1734,44 @@ mod tests {
         click(&mut ui, None, settings, size);
         assert_eq!(ui.menu, Some(TopMenu::Settings));
     }
+    #[test]
+    fn skybox_window_lists_the_folder_and_a_preview_click_opens_the_panorama() {
+        let dir = std::env::temp_dir().join(format!("ad-sky-window-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut hdr = b"#?RADIANCE
+FORMAT=32-bit_rle_rgbe
+
+-Y 8 +X 16
+"
+        .to_vec();
+        for _ in 0..8 * 16 {
+            hdr.extend([128, 160, 255, 129]);
+        }
+        for name in ["one.hdr", "two.hdr"] {
+            std::fs::write(dir.join(name), &hdr).unwrap();
+        }
+        let mut ui = ViewerUi {
+            skybox_folder: Some(dir.clone()),
+            ..Default::default()
+        };
+        let size = (1900., 1000.);
+        warm(&mut ui, None, size);
+        let button = ui.skybox_button_rect;
+        assert!(button.is_positive());
+        click(&mut ui, None, button, size);
+        assert!(ui.show_skybox);
+        assert_eq!(ui.skybox_library.entries.len(), 2);
+        warm(&mut ui, None, size);
+        assert_eq!(ui.skybox_tile_rects.len(), 2);
+        let tile = ui.skybox_tile_rects[1];
+        warm(&mut ui, None, size);
+        let actions = click(&mut ui, None, tile, size);
+        assert_eq!(actions.skybox_open, Some(dir.join("two.hdr")));
+        // Help moved to the settings menu: no top-bar «Справка».
+        ui.menu = Some(TopMenu::Settings);
+        warm(&mut ui, None, size);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
     /// Each menu shows all its items at once, also after switching menus.
     #[test]
     fn every_menu_unfolds_to_its_full_height_without_scrolling() {
@@ -1736,7 +1798,7 @@ mod tests {
                     .context
                     .memory(|m| m.area_rect(egui::Id::new(("top_menu", menu))))
                     .unwrap();
-                assert!(area.height() > 50., "{menu:?}: {area:?}");
+                assert!(area.height() > 30., "{menu:?}: {area:?}");
                 heights.push((menu, area.height()));
             }
         }

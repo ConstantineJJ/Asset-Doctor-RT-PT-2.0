@@ -79,6 +79,7 @@ impl ViewerUi {
             "floor": self.floor.map(|f| index_of(&FloorTheme::ALL, f)),
             "last_floor": index_of(&FloorTheme::ALL, self.last_floor),
             "skybox_width": self.skybox_width,
+            "skybox_folder": self.skybox_folder.as_ref().map(|p| p.to_string_lossy()),
             "skybox": self.skybox_path.as_ref().map(|p| json!({
                 "path": p.to_string_lossy(),
                 "on": self.skybox_on,
@@ -261,6 +262,13 @@ impl ViewerUi {
                 _ => bad.push("skybox_width".into()),
             },
         }
+        match value.get("skybox_folder") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(path)) if !path.is_empty() => {
+                self.skybox_folder = Some(PathBuf::from(path));
+            }
+            Some(_) => bad.push("skybox_folder".into()),
+        }
         let mut skybox = None;
         match value.get("skybox") {
             None | Some(Value::Null) => {}
@@ -327,6 +335,7 @@ mod tests {
             skybox_on: false,
             skybox_yaw: 90.,
             skybox_width: 8192,
+            skybox_folder: Some(PathBuf::from("C:/panoramas")),
             ..Default::default()
         };
         ui.health_page = HealthPage::Repair;
