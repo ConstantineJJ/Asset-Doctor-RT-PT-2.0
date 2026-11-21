@@ -78,6 +78,7 @@ impl ViewerUi {
             "environment_strength": self.environment_strength,
             "floor": self.floor.map(|f| index_of(&FloorTheme::ALL, f)),
             "last_floor": index_of(&FloorTheme::ALL, self.last_floor),
+            "skybox_width": self.skybox_width,
             "skybox": self.skybox_path.as_ref().map(|p| json!({
                 "path": p.to_string_lossy(),
                 "on": self.skybox_on,
@@ -253,6 +254,13 @@ impl ViewerUi {
         if let Some(i) = choice(value, "last_floor", FloorTheme::ALL.len(), &mut bad) {
             self.last_floor = FloorTheme::ALL[i];
         }
+        match value.get("skybox_width") {
+            None => {}
+            Some(n) => match n.as_u64().map(|n| n as u32) {
+                Some(w) if ad_render_vulkan::ibl::WIDTHS.contains(&w) => self.skybox_width = w,
+                _ => bad.push("skybox_width".into()),
+            },
+        }
         let mut skybox = None;
         match value.get("skybox") {
             None | Some(Value::Null) => {}
@@ -318,6 +326,7 @@ mod tests {
             skybox_path: Some(PathBuf::from("C:/panoramas/sky.png")),
             skybox_on: false,
             skybox_yaw: 90.,
+            skybox_width: 8192,
             ..Default::default()
         };
         ui.health_page = HealthPage::Repair;

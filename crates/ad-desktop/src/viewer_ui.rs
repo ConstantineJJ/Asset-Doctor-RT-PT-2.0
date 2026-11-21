@@ -64,6 +64,8 @@ pub struct Actions {
     /// ADR-0040 skybox: choose a panorama file / remove the loaded one.
     pub skybox_load: bool,
     pub skybox_remove: bool,
+    /// SkyBox quality changed: prepare this panorama again.
+    pub skybox_reload: Option<std::path::PathBuf>,
     /// ADR-0040 lamp gizmo dragged by (dx, dy) logical points this frame.
     pub lamp_drag: Option<[f32; 2]>,
     /// Lamp context menu: point the lamp from the camera.
@@ -233,6 +235,8 @@ pub struct ViewerUi {
     pub skybox_name: Option<String>,
     /// File of the shown skybox (view settings load it again next run).
     pub skybox_path: Option<std::path::PathBuf>,
+    /// ADR-0047: widest SkyBox level kept on the GPU (2048, 4096 or 8192).
+    pub skybox_width: u32,
     pub skybox_on: bool,
     pub skybox_yaw: f32,
     pub skybox_light: Option<[[f32; 3]; 3]>,
@@ -371,6 +375,7 @@ impl Default for ViewerUi {
             environment_strength: 1.,
             skybox_name: None,
             skybox_path: None,
+            skybox_width: ad_render_vulkan::ibl::DEFAULT_WIDTH,
             skybox_on: false,
             skybox_yaw: 0.,
             skybox_light: None,

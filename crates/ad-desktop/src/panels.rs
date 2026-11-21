@@ -502,6 +502,26 @@ impl ViewerUi {
                     .suffix(" град."),
             );
         }
+        self.skybox_quality_ui(ui, actions);
+    }
+
+    /// SkyBox quality: widest level kept on the GPU; changing it prepares
+    /// the shown panorama again.
+    fn skybox_quality_ui(&mut self, ui: &mut egui::Ui, actions: &mut Actions) {
+        let before = self.skybox_width;
+        ui.horizontal(|ui| {
+            ui.label("Качество SkyBox");
+            for (width, label) in ad_render_vulkan::ibl::WIDTHS.into_iter().zip(["2K", "4K", "8K"]) {
+                ui.radio_value(&mut self.skybox_width, width, label);
+            }
+        })
+        .response
+        .on_hover_text("Ширина панорамы на видеокарте. 4K — чёткий фон при умеренной памяти (около 90 МБ видеопамяти); 8K — самый чёткий, около 360 МБ видеопамяти и до 0,7 ГБ памяти во время подготовки. Освещение от этого почти не меняется.");
+        if self.skybox_width != before
+            && let Some(path) = self.skybox_path.clone()
+        {
+            actions.skybox_reload = Some(path);
+        }
     }
 
     fn model_menu(

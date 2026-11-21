@@ -207,7 +207,7 @@ impl Renderer {
         let shadow_map = crate::shadow::ShadowMap::new(result.gpu.clone())?;
         let fallback = crate::sky::Skybox::new(
             result.gpu.clone(),
-            &crate::ibl::build(2, 1, vec![[0.; 3]; 2])?,
+            &crate::ibl::build(2, 1, vec![[0.; 3]; 2], 2)?,
         )?;
         result.frame = Some(FrameBinding::new(
             result.gpu.clone(),
@@ -314,6 +314,19 @@ impl Renderer {
             self.skybox = Some(skybox);
         }
         Ok(())
+    }
+    /// Largest 2D image side the GPU accepts (SkyBox quality limit).
+    pub fn max_image_side(&self) -> u32 {
+        // SAFETY: plain property query on the live physical device.
+        unsafe {
+            self.gpu
+                .surface
+                .context
+                .instance
+                .get_physical_device_properties(self.gpu.physical)
+                .limits
+                .max_image_dimension2_d
+        }
     }
     /// ADR-0047: the shown panorama lights PBR shading when the environment
     /// light is on: (panorama, yaw, strength).

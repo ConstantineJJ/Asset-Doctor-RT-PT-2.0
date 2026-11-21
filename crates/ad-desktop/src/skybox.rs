@@ -60,7 +60,7 @@ fn linear_reduced(image: &TextureImage, max_width: u32) -> (u32, u32, Vec<[f32; 
 
 /// Reads and decodes one PNG/JPEG or Radiance HDR panorama and prepares its
 /// image based lighting (ADR-0047).
-pub fn load(path: &Path) -> Result<Loaded, String> {
+pub fn load(path: &Path, max_width: u32) -> Result<Loaded, String> {
     let name = path.file_name().map_or_else(
         || path.display().to_string(),
         |n| n.to_string_lossy().into(),
@@ -68,7 +68,7 @@ pub fn load(path: &Path) -> Result<Loaded, String> {
     let started = std::time::Instant::now();
     let bytes = std::fs::read(path).map_err(|e| format!("Не удалось прочитать {name}: {e}"))?;
     let cancel = Cancellation::default();
-    let max = ad_render_vulkan::ibl::MAX_WIDTH;
+    let max = max_width.clamp(8, ad_render_vulkan::ibl::MAX_WIDTH);
     let (source, (width, height, rgb)) = if ad_formats::is_hdr(&bytes) {
         let image = ad_formats::decode_hdr_file(&bytes, max, &cancel)
             .map_err(|e| format!("Скайбокс {name} не загружен: {}", e.message))?;
@@ -80,7 +80,7 @@ pub fn load(path: &Path) -> Result<Loaded, String> {
             .map_err(|e| format!("Скайбокс {name} не загружен: {}", e.message))?;
         ((image.width, image.height), linear_reduced(&image, max))
     };
-    let map = ad_render_vulkan::ibl::build(width, height, rgb)
+    let map = ad_render_vulkan::ibl::build(width, height, rgb, max)
         .map_err(|e| format!("Скайбокс {name}: {e}"))?;
     let ratio = source.0 as f32 / source.1 as f32;
     Ok(Loaded {
@@ -96,10 +96,10 @@ pub fn load(path: &Path) -> Result<Loaded, String> {
 }
 
 /// Decodes on a background thread; the receiver yields exactly one result.
-pub fn spawn(path: PathBuf) -> Receiver<Result<Loaded, String>> {
+pub fn spawn(path: PathBuf, max_width: u32) -> Receiver<Result<Loaded, String>> {
     let (send, receive) = channel();
     std::thread::spawn(move || {
-        let _ = send.send(load(&path));
+        let _ = send.send(load(&path, max_width));
     });
     receive
 }
@@ -133,7 +133,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let good = dir.join("sky.png");
         std::fs::write(&good, png(64, 32)).unwrap();
-        let loaded = spawn(good.clone()).recv().unwrap().unwrap();
+        let loaded = spawn(good.clone(), 4096).recv().unwrap().unwrap();
         assert_eq!(loaded.name, "sky.png");
         assert_eq!((loaded.width, loaded.height), (64, 32));
         assert!(!loaded.not_panorama && !loaded.map.hdr);
@@ -141,14 +141,14 @@ mod tests {
         assert!(loaded.light[0][2] > loaded.light[2][2], "blue sky above");
         let square = dir.join("square.png");
         std::fs::write(&square, png(32, 32)).unwrap();
-        assert!(load(&square).unwrap().not_panorama);
+        assert!(load(&square, 4096).unwrap().not_panorama);
         let text = dir.join("notes.png");
         std::fs::write(&text, b"not an image").unwrap();
-        let Err(error) = load(&text) else {
+        let Err(error) = load(&text, 4096) else {
             panic!("text is not an image");
         };
         assert!(error.contains("notes.png"), "{error}");
-        assert!(load(&dir.join("missing.png")).is_err());
+        assert!(load(&dir.join("missing.png"), 4096).is_err());
         // The source file is only read.
         assert_eq!(std::fs::read(&good).unwrap(), png(64, 32));
         // A Radiance HDR panorama with a sun far above 1.
@@ -164,7 +164,7 @@ mod tests {
             }
         }
         std::fs::write(&hdr, &bytes).unwrap();
-        let loaded = load(&hdr).unwrap();
+        let loaded = load(&hdr, 4096).unwrap();
         assert!(loaded.map.hdr && !loaded.not_panorama);
         assert_eq!((loaded.width, loaded.height), (32, 16));
         assert_eq!(std::fs::read(&hdr).unwrap(), bytes);

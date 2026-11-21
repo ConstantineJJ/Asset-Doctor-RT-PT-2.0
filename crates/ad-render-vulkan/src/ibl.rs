@@ -11,8 +11,11 @@
 //! u = atan(x, -z) / 2π + 0.5, v = acos(y) / π.
 use std::f32::consts::PI;
 
-/// Widest panorama level kept on the GPU.
-pub const MAX_WIDTH: u32 = 2048;
+/// SkyBox quality choices (widest level kept on the GPU) and the default.
+pub const WIDTHS: [u32; 3] = [2048, 4096, 8192];
+pub const DEFAULT_WIDTH: u32 = 4096;
+/// Never wider than this.
+pub const MAX_WIDTH: u32 = 8192;
 /// Levels at most this wide are GGX-prefiltered.
 const PREFILTER_WIDTH: usize = 256;
 /// Importance samples per prefiltered texel.
@@ -176,6 +179,8 @@ fn prefilter(chain: &[Level], n: [f32; 3], roughness: f32) -> [f32; 3] {
     let base = &chain[0];
     let texel = 4. * PI / (base.w * base.h) as f32;
     let last = (chain.len() - 1) as f32;
+    // Level 0 may already be released (large panoramas): sample from 1 up.
+    let first = if base.px.is_empty() { 1. } else { 0. };
     let (mut sum, mut weight) = ([0f32; 3], 0f32);
     for i in 0..SAMPLES {
         let (x1, x2) = (i as f32 / SAMPLES as f32, radical_inverse(i));
@@ -201,7 +206,7 @@ fn prefilter(chain: &[Level], n: [f32; 3], roughness: f32) -> [f32; 3] {
         let d = a2 / (PI * (nh * nh * (a2 - 1.) + 1.).powi(2));
         let pdf = d / 4.;
         let solid = 1. / (SAMPLES as f32 * pdf + 1e-6);
-        let lod = (0.5 * (solid / texel).log2() + 1.).clamp(0., last);
+        let lod = (0.5 * (solid / texel).log2() + 1.).clamp(first, last.max(first));
         let c = chain[lod.round() as usize].sample(l);
         for k in 0..3 {
             sum[k] += c[k] * nl;
@@ -209,7 +214,7 @@ fn prefilter(chain: &[Level], n: [f32; 3], roughness: f32) -> [f32; 3] {
         weight += nl;
     }
     if weight <= 0. {
-        return chain[0].sample(n);
+        return chain[first as usize].sample(n);
     }
     sum.map(|v| v / weight)
 }
@@ -244,8 +249,14 @@ fn srgb(c: f32) -> f32 {
 }
 
 /// Builds the environment from a linear RGB panorama (row-major, top row
-/// first). Values are clamped to 0..65504; non-finite values become 0.
-pub fn build(width: u32, height: u32, rgb: Vec<[f32; 3]>) -> Result<EnvironmentMap, String> {
+/// first), at most `max_width` texels wide (power-of-two reduction). Values
+/// are clamped to 0..65504; non-finite values become 0.
+pub fn build(
+    width: u32,
+    height: u32,
+    rgb: Vec<[f32; 3]>,
+    max_width: u32,
+) -> Result<EnvironmentMap, String> {
     let (w, h) = (width as usize, height as usize);
     if w == 0 || h == 0 || rgb.len() != w * h {
         return Err("Панорама пуста или повреждена".into());
@@ -266,7 +277,7 @@ pub fn build(width: u32, height: u32, rgb: Vec<[f32; 3]>) -> Result<EnvironmentM
             })
             .collect(),
     };
-    while base.w > MAX_WIDTH as usize {
+    while base.w > max_width.clamp(8, MAX_WIDTH) as usize {
         base = base.half();
     }
     let hdr = base.px.iter().any(|c| c.iter().any(|v| *v > 1.001));
@@ -277,7 +288,18 @@ pub fn build(width: u32, height: u32, rgb: Vec<[f32; 3]>) -> Result<EnvironmentM
     }
     let last = (chain.len() - 1).max(1) as f32;
     let mut levels = Vec::with_capacity(chain.len());
-    for (k, level) in chain.iter().enumerate() {
+    // Level 0 is stored at once; for wide panoramas its f32 copy is released
+    // (prefiltering reads the coarser levels).
+    let half_texels = |px: &[[f32; 3]]| -> Vec<[u16; 4]> {
+        px.iter()
+            .map(|c| [half(c[0]), half(c[1]), half(c[2]), 0x3c00])
+            .collect()
+    };
+    if chain.len() > 1 && chain[0].w > PREFILTER_WIDTH * 4 {
+        levels.push(half_texels(&chain[0].px));
+        chain[0].px = Vec::new();
+    }
+    for (k, level) in chain.iter().enumerate().skip(levels.len()) {
         let filtered = if k > 0 && level.w <= PREFILTER_WIDTH {
             let roughness = k as f32 / last;
             let mut px = Vec::with_capacity(level.w * level.h);
@@ -294,12 +316,7 @@ pub fn build(width: u32, height: u32, rgb: Vec<[f32; 3]>) -> Result<EnvironmentM
         } else {
             level.px.clone()
         };
-        levels.push(
-            filtered
-                .iter()
-                .map(|c| [half(c[0]), half(c[1]), half(c[2]), 0x3c00])
-                .collect(),
-        );
+        levels.push(half_texels(&filtered));
     }
     // Irradiance from the first level at most 64 wide.
     let small = chain
@@ -397,7 +414,7 @@ mod tests {
     #[test]
     fn uniform_sky_gives_uniform_irradiance_and_unchanged_reflections() {
         let (w, h) = (64, 32);
-        let map = build(w, h, vec![[0.5, 1.0, 2.0]; (w * h) as usize]).unwrap();
+        let map = build(w, h, vec![[0.5, 1.0, 2.0]; (w * h) as usize], MAX_WIDTH).unwrap();
         assert!(map.hdr);
         for n in [
             [0., 1., 0.],
@@ -436,7 +453,7 @@ mod tests {
                 rgb[y * w + x] = [500.; 3];
             }
         }
-        let map = build(w as u32, h as u32, rgb).unwrap();
+        let map = build(w as u32, h as u32, rgb, MAX_WIDTH).unwrap();
         assert!(map.hdr);
         let up = irradiance(&map.sh, [0., 1., 0.]);
         let down = irradiance(&map.sh, [0., -1., 0.]);
@@ -462,13 +479,44 @@ mod tests {
             at(4, aside),
             at(1, aside)
         );
-        assert!(build(0, 0, Vec::new()).is_err());
-        assert!(build(2, 2, vec![[1.; 3]; 3]).is_err());
+        assert!(build(0, 0, Vec::new(), MAX_WIDTH).is_err());
+        assert!(build(2, 2, vec![[1.; 3]; 3], MAX_WIDTH).is_err());
+    }
+    #[test]
+    fn wide_panoramas_release_level_zero_but_keep_every_level() {
+        // 2048 wide: level 0 is stored first and its f32 copy released; the
+        // prefiltered levels still match a build that keeps it.
+        let (w, h) = (2048usize, 1024usize);
+        let rgb: Vec<[f32; 3]> = (0..w * h)
+            .map(|i| {
+                if (i / w) < h / 2 {
+                    [1., 0.8, 0.6]
+                } else {
+                    [0.1; 3]
+                }
+            })
+            .collect();
+        let map = build(w as u32, h as u32, rgb, 4096).unwrap();
+        assert_eq!(map.levels.len(), 9);
+        let mut size = (w, h);
+        for level in &map.levels {
+            assert_eq!(level.len(), size.0 * size.1);
+            size = ((size.0 / 2).max(1), (size.1 / 2).max(1));
+        }
+        assert_eq!(map.levels[0][0], [half(1.), half(0.8), half(0.6), 0x3c00]);
+        let up = irradiance(&map.sh, [0., 1., 0.]);
+        assert!(up[0] > 2.5 && up[0] < 3.3, "{up:?}");
     }
     #[test]
     fn wide_panoramas_are_reduced_to_the_gpu_width() {
-        let map = build(4096, 8, vec![[f32::NAN, f32::INFINITY, 0.25]; 4096 * 8]).unwrap();
-        assert_eq!((map.width, map.height), (MAX_WIDTH, 4));
+        let map = build(
+            4096,
+            8,
+            vec![[f32::NAN, f32::INFINITY, 0.25]; 4096 * 8],
+            2048,
+        )
+        .unwrap();
+        assert_eq!((map.width, map.height), (2048, 4));
         assert_eq!(
             map.levels[0][0],
             [0, 0, half(0.25), 0x3c00],

@@ -1496,7 +1496,7 @@ impl App {
         {
             match native::choose_image(window) {
                 Ok(Some(path)) => {
-                    self.skybox_job = Some(skybox::spawn(path));
+                    self.skybox_job = Some(skybox::spawn(path, self.skybox_width()));
                     self.ui.set_status("Загрузка скайбокса...", false);
                 }
                 Ok(None) => (),
@@ -1632,6 +1632,14 @@ impl App {
             }
             A::Orbit | A::Pan => (),
         }
+    }
+    /// SkyBox width: the chosen quality within what the GPU accepts.
+    fn skybox_width(&self) -> u32 {
+        let limit = self
+            .renderer
+            .as_ref()
+            .map_or(u32::MAX, |r| r.max_image_side());
+        self.ui.skybox_width.min(limit)
     }
     /// Writes the view settings once a change has settled for a second
     /// (`now`: at exit, at once). A failure is a warning and is not retried
@@ -2016,6 +2024,12 @@ impl App {
         }
         if actions.skybox_load {
             self.pending_skybox_choose = true;
+        }
+        // SkyBox quality changed: the shown panorama is prepared again.
+        if let Some(path) = actions.skybox_reload.clone() {
+            self.skybox_restore_on = Some(self.ui.skybox_on);
+            self.skybox_job = Some(skybox::spawn(path, self.skybox_width()));
+            self.ui.set_status("Загрузка скайбокса...", false);
         }
         if actions.skybox_remove {
             self.ui.skybox_name = None;
@@ -2628,7 +2642,14 @@ fn run() -> GpuResult<()> {
                 let path = args
                     .next()
                     .ok_or("--skybox needs a PNG/JPEG panorama path")?;
-                pending_skybox = Some(skybox::load(std::path::Path::new(&path))?);
+                pending_skybox = Some(skybox::load(std::path::Path::new(&path), ui.skybox_width)?);
+            }
+            "--skybox-width" => {
+                ui.skybox_width = args
+                    .next()
+                    .and_then(|n| n.parse::<u32>().ok())
+                    .filter(|w| ad_render_vulkan::ibl::WIDTHS.contains(w))
+                    .ok_or("--skybox-width needs 2048, 4096 or 8192")?;
             }
             "--environment" => {
                 ui.environment = args
@@ -2733,7 +2754,9 @@ fn run() -> GpuResult<()> {
     }
     let view_saved = ui.view_settings();
     let (skybox_job, skybox_restore_on) = match restore_skybox {
-        Some((path, on)) if pending_skybox.is_none() => (Some(skybox::spawn(path)), Some(on)),
+        Some((path, on)) if pending_skybox.is_none() => {
+            (Some(skybox::spawn(path, ui.skybox_width)), Some(on))
+        }
         _ => (None, None),
     };
     let mut app = App {
