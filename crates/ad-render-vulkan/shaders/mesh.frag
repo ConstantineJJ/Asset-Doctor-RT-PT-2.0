@@ -19,7 +19,10 @@ layout(set=1,binding=7) uniform sampler occlusion_sampler;
 layout(set=1,binding=8) uniform texture2D emissive_image;
 layout(set=1,binding=9) uniform sampler emissive_sampler;
 layout(location=0) out vec4 color;
-layout(set=0,binding=0,std140) uniform Frame { mat4 view_projection; vec4 eye_exposure; vec4 lighting; vec4 sky_zenith; vec4 sky_horizon; vec4 sky_ground; vec4 light_direction; vec4 light_color; mat4 light_view_projection; vec4 shadow; } frame;
+layout(set=0,binding=0,std140) uniform Frame { mat4 view_projection; vec4 eye_exposure; vec4 lighting; vec4 sky_zenith; vec4 sky_horizon; vec4 sky_ground; vec4 light_direction; vec4 light_color; mat4 light_view_projection; vec4 shadow; vec4 ibl; vec4 sh[9]; } frame;
+// ADR-0047 environment panorama (linear RGBA16F, prefiltered levels).
+layout(set=0,binding=3) uniform texture2D environment_image;
+layout(set=0,binding=4) uniform sampler environment_sampler;
 layout(set=0,binding=1) uniform texture2D shadow_map;
 layout(set=0,binding=2) uniform sampler shadow_sampler;
 // ADR-0044: lit fraction from the lamp's depth map (3x3 PCF), 1 outside it.
@@ -98,6 +101,41 @@ vec3 environment_light(vec3 base,vec3 n,vec3 v,float metal,float rough,vec3 f0) 
     vec3 reflected=mix(sky_color(reflect(-v,n).y),irradiance,rough);
     return ((vec3(1.0)-fresnel)*(1.0-metal)*base*irradiance+fresnel*reflected)*frame.sky_zenith.w;
 }
+// ADR-0047 image based lighting from the shown panorama: irradiance from
+// nine SH coefficients, reflections from the GGX-prefiltered level chosen by
+// roughness, split-sum with the analytic environment BRDF (Karis). Lookups
+// turn by the panorama yaw exactly like the sky pass.
+vec3 environment_direction(vec3 d) {
+    float c=cos(frame.ibl.z);
+    float s=sin(frame.ibl.z);
+    return vec3(c*d.x-s*d.z,d.y,s*d.x+c*d.z);
+}
+vec3 sh_irradiance(vec3 n) {
+    float x=n.x;
+    float y=n.y;
+    float z=n.z;
+    vec3 e=frame.sh[0].rgb*0.282095
+        +frame.sh[1].rgb*(0.488603*y)+frame.sh[2].rgb*(0.488603*z)+frame.sh[3].rgb*(0.488603*x)
+        +frame.sh[4].rgb*(1.092548*x*y)+frame.sh[5].rgb*(1.092548*y*z)
+        +frame.sh[6].rgb*(0.315392*(3.0*z*z-1.0))+frame.sh[7].rgb*(1.092548*x*z)
+        +frame.sh[8].rgb*(0.546274*(x*x-y*y));
+    return max(e,vec3(0.0));
+}
+vec3 image_light(vec3 base,vec3 n,vec3 v,float metal,float rough,vec3 f0,float occlusion) {
+    float nv=clamp(dot(n,v),0.0,1.0);
+    vec4 c0=vec4(-1.0,-0.0275,-0.572,0.022);
+    vec4 c1=vec4(1.0,0.0425,1.04,-0.04);
+    vec4 r=rough*c0+c1;
+    float a004=min(r.x*r.x,exp2(-9.28*nv))*r.x+r.y;
+    vec2 ab=vec2(-1.04,1.04)*a004+r.zw;
+    vec3 specular_weight=f0*ab.x+ab.y;
+    vec3 d=environment_direction(reflect(-v,n));
+    vec2 uv=vec2(atan(d.x,-d.z)/(2.0*PI)+0.5,acos(clamp(d.y,-1.0,1.0))/PI);
+    vec3 prefiltered=textureLod(sampler2D(environment_image,environment_sampler),uv,rough*frame.ibl.y).rgb;
+    vec3 irradiance=sh_irradiance(environment_direction(n));
+    vec3 diffuse=(vec3(1.0)-specular_weight)*(1.0-metal)*base*irradiance/PI;
+    return (diffuse+prefiltered*specular_weight)*occlusion*frame.ibl.x;
+}
 vec3 direct_pbr(vec3 base,vec3 n,vec2 mr,vec3 v,float occlusion,vec3 emission,float lit) {
     vec3 l=frame.light_direction.xyz;
     vec3 h=unit_or(v+l,n);
@@ -119,6 +157,7 @@ vec3 direct_pbr(vec3 base,vec3 n,vec2 mr,vec3 v,float occlusion,vec3 emission,fl
     // Inspection fill is an explicit approximation; no environment is sampled.
     vec3 radiance=(diffuse+specular)*nl*frame.lighting.x*frame.light_color.rgb*lit+((1.0-metal)*base+f0)*frame.lighting.y*occlusion;
     if (frame.sky_zenith.w>0.0) {radiance+=environment_light(base,n,v,metal,rough,f0)*occlusion;}
+    if (frame.ibl.x>0.0) {radiance+=image_light(base,n,v,metal,rough,f0,occlusion);}
     vec3 exposed=max((radiance+emission)*exp2(frame.eye_exposure.w),vec3(0.0));
     return exposed/(vec3(1.0)+exposed);
 }

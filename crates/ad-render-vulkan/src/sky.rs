@@ -6,7 +6,7 @@ use crate::{
     pipeline::Shader,
     textures::{GpuImage, Sampler},
 };
-use ad_document::{Filter, Mipmap, TextureEncoding, TextureImage, TextureSampler, Wrap};
+use ad_document::{Filter, Mipmap, TextureImage, TextureSampler, Wrap};
 use ash::vk;
 use std::sync::Arc;
 
@@ -53,7 +53,7 @@ impl Environment {
 }
 
 /// sRGB display value to linear.
-pub(crate) fn srgb_to_linear(c: f32) -> f32 {
+pub fn srgb_to_linear(c: f32) -> f32 {
     linear(c)
 }
 fn linear(c: f32) -> f32 {
@@ -193,12 +193,13 @@ impl SkyPush {
             ground: v(g, 1.),
         })
     }
-    /// Push for the panorama pass: decode flag and yaw only.
-    pub fn panorama(sky: SkySettings, yaw: f32, decode: bool) -> Self {
+    /// Push for the panorama pass: decode flag, HDR flag with the exposure
+    /// (EV) it is shown at, and yaw.
+    pub fn panorama(sky: SkySettings, yaw: f32, decode: bool, hdr: bool, exposure_ev: f32) -> Self {
         Self {
             inverse_view_projection: sky.inverse_view_projection,
             zenith: [0., 0., 0., if decode { 1. } else { 0. }],
-            horizon: [0.; 4],
+            horizon: [if hdr { 1. } else { 0. }, exposure_ev, 0., 0.],
             ground: [0., 0., 0., yaw],
         }
     }
@@ -227,37 +228,44 @@ fn panorama_layout(gpu: &Gpu) -> GpuResult<vk::DescriptorSetLayout> {
     })
 }
 
-/// The owner's panorama on the GPU with its descriptor set. Replaced only
-/// after the renderer waited for idle; never part of the document.
+/// The owner's panorama on the GPU (ADR-0047: linear RGBA16F with its
+/// prefiltered levels) with its descriptor set, the irradiance coefficients
+/// and the HDR flag. Replaced only after the renderer waited for idle; never
+/// part of the document.
 pub(crate) struct Skybox {
     pub set: vk::DescriptorSet,
+    pub sh: [[f32; 3]; 9],
+    pub max_lod: f32,
+    pub hdr: bool,
     layout: vk::DescriptorSetLayout,
     pool: vk::DescriptorPool,
-    _sampler: Sampler,
-    _image: GpuImage,
+    pub(crate) sampler: Sampler,
+    pub(crate) image: GpuImage,
     gpu: Arc<Gpu>,
 }
 impl Skybox {
-    pub fn new(gpu: Arc<Gpu>, image: &TextureImage) -> GpuResult<Self> {
-        // Display values stay as they are (UNORM), like the preset colours.
-        let image = GpuImage::upload(gpu.clone(), image, TextureEncoding::Linear)?;
+    pub fn new(gpu: Arc<Gpu>, map: &crate::ibl::EnvironmentMap) -> GpuResult<Self> {
+        let image = GpuImage::upload_levels(gpu.clone(), map.width, map.height, &map.levels)?;
         let sampler = Sampler::new(
             gpu.clone(),
             TextureSampler {
                 min: Filter::Linear,
                 mag: Filter::Linear,
-                mipmap: Mipmap::None,
+                mipmap: Mipmap::Linear,
                 u: Wrap::Repeat,
                 v: Wrap::ClampToEdge,
             },
-            1,
+            map.levels.len() as u32,
         )?;
         let mut skybox = Self {
             set: vk::DescriptorSet::null(),
+            sh: map.sh,
+            max_lod: map.max_lod(),
+            hdr: map.hdr,
             layout: vk::DescriptorSetLayout::null(),
             pool: vk::DescriptorPool::null(),
-            _sampler: sampler,
-            _image: image,
+            sampler,
+            image,
             gpu,
         };
         skybox.layout = panorama_layout(&skybox.gpu)?;
@@ -287,11 +295,11 @@ impl Skybox {
             )?[0];
             let image = [vk::DescriptorImageInfo {
                 sampler: vk::Sampler::null(),
-                image_view: skybox._image.view,
+                image_view: skybox.image.view,
                 image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             }];
             let sampler = [vk::DescriptorImageInfo {
-                sampler: skybox._sampler.handle,
+                sampler: skybox.sampler.handle,
                 ..Default::default()
             }];
             skybox.gpu.device.update_descriptor_sets(
@@ -472,8 +480,14 @@ mod tests {
             environment,
             panorama: None,
         };
-        let pano = SkyPush::panorama(sky(Environment::Day), 1.5, true);
+        let pano = SkyPush::panorama(sky(Environment::Day), 1.5, true, false, 2.);
         assert_eq!((pano.zenith[3], pano.ground[3]), (1., 1.5));
+        assert_eq!(pano.horizon[..2], [0., 2.], "LDR panorama: no exposure");
+        let hdr = SkyPush::panorama(sky(Environment::Day), 0., false, true, -1.5);
+        assert_eq!(
+            (hdr.zenith[3], hdr.horizon[0], hdr.horizon[1]),
+            (0., 1., -1.5)
+        );
         assert!(SkyPush::new(sky(Environment::DarkStudio), false).is_none());
         let day = SkyPush::new(sky(Environment::Day), false).unwrap();
         assert_eq!(day.zenith[..3], Environment::Day.colors().unwrap()[0]);

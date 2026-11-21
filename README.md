@@ -42,8 +42,10 @@ written from scratch in Rust with a Vulkan renderer. Engineering prototype.
   colour, temperature, hide); also in «Освещение» and the lamp switch,
 - **Окружение** (Небо и скайбокс): sky background — dark studio, day, sunset, night,
   overcast, light studio; optional «Свет окружения» lights the model from the
-  sky in PBR; «Скайбокс...» shows your own 2:1 PNG/JPEG panorama (read
-  only, with yaw); view only, lamps and exposure stay as they are, at the model's lowest point with the step scaled to the model and
+  sky in PBR; «Скайбокс...» shows your own 2:1 PNG/JPEG or Radiance HDR
+  (`.hdr`) panorama (read only, with yaw; HDR at the current exposure), and
+  with «Свет окружения» the panorama lights the model (image based lighting:
+  diffuse from spherical harmonics, reflections by roughness); view only, lamps and exposure stay as they are, at the model's lowest point with the step scaled to the model and
   red X / blue Z axes; **G** hides it or brings back the last theme. View only.
 - **Здоровье → Анализ и диагностика**: geometry and UV checks G001–G012 (zero-area and duplicate
   triangles, unused vertices, missing/zero normals, boundary and non-manifold

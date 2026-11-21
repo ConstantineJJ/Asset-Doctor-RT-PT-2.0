@@ -387,6 +387,159 @@ impl GpuImage {
         Ok(result)
     }
 }
+impl GpuImage {
+    /// ADR-0047: an RGBA16F image with all its levels prepared on the CPU
+    /// (level 0 first, each half the previous size, floor, at least 1).
+    pub(crate) fn upload_levels(
+        gpu: Arc<Gpu>,
+        width: u32,
+        height: u32,
+        levels: &[Vec<[u16; 4]>],
+    ) -> GpuResult<Self> {
+        if width == 0 || height == 0 || levels.is_empty() || levels.len() > 16 {
+            return Err("Environment map has no valid levels".into());
+        }
+        let mut bytes = Vec::new();
+        let mut copies = Vec::with_capacity(levels.len());
+        let (mut w, mut h) = (width, height);
+        for (level, texels) in levels.iter().enumerate() {
+            if texels.len() != (w * h) as usize {
+                return Err("Environment map level size mismatch".into());
+            }
+            copies.push(
+                vk::BufferImageCopy::default()
+                    .buffer_offset(bytes.len() as u64)
+                    .image_subresource(
+                        vk::ImageSubresourceLayers::default()
+                            .aspect_mask(vk::ImageAspectFlags::COLOR)
+                            .mip_level(level as u32)
+                            .layer_count(1),
+                    )
+                    .image_extent(vk::Extent3D {
+                        width: w,
+                        height: h,
+                        depth: 1,
+                    }),
+            );
+            for texel in texels {
+                for channel in texel {
+                    bytes.extend(channel.to_le_bytes());
+                }
+            }
+            w = (w / 2).max(1);
+            h = (h / 2).max(1);
+        }
+        let staging = Buffer::upload(gpu.clone(), &bytes, vk::BufferUsageFlags::TRANSFER_SRC)?;
+        let mut result = Self {
+            image: vk::Image::null(),
+            memory: vk::DeviceMemory::null(),
+            view: vk::ImageView::null(),
+            mips: levels.len() as u32,
+            gpu,
+        };
+        let device = &result.gpu.device;
+        let format = vk::Format::R16G16B16A16_SFLOAT;
+        // SAFETY: Checked level sizes; every created handle is owned before the
+        // next fallible call; the upload guard retires the copy.
+        unsafe {
+            result.image = device.create_image(
+                &vk::ImageCreateInfo::default()
+                    .image_type(vk::ImageType::TYPE_2D)
+                    .format(format)
+                    .extent(vk::Extent3D {
+                        width,
+                        height,
+                        depth: 1,
+                    })
+                    .mip_levels(result.mips)
+                    .array_layers(1)
+                    .samples(vk::SampleCountFlags::TYPE_1)
+                    .tiling(vk::ImageTiling::OPTIMAL)
+                    .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED)
+                    .sharing_mode(vk::SharingMode::EXCLUSIVE),
+                None,
+            )?;
+            let req = device.get_image_memory_requirements(result.image);
+            result.memory = device.allocate_memory(
+                &vk::MemoryAllocateInfo::default()
+                    .allocation_size(req.size)
+                    .memory_type_index(memory_type(
+                        &result.gpu,
+                        req.memory_type_bits,
+                        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                    )?),
+                None,
+            )?;
+            device.bind_image_memory(result.image, result.memory, 0)?;
+            let range = vk::ImageSubresourceRange::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .level_count(result.mips)
+                .layer_count(1);
+            result.view = device.create_image_view(
+                &vk::ImageViewCreateInfo::default()
+                    .image(result.image)
+                    .view_type(vk::ImageViewType::TYPE_2D)
+                    .format(format)
+                    .subresource_range(range),
+                None,
+            )?;
+            let mut upload = Upload::new(result.gpu.clone())?;
+            let command = device.allocate_command_buffers(
+                &vk::CommandBufferAllocateInfo::default()
+                    .command_pool(upload.pool)
+                    .level(vk::CommandBufferLevel::PRIMARY)
+                    .command_buffer_count(1),
+            )?[0];
+            device.begin_command_buffer(
+                command,
+                &vk::CommandBufferBeginInfo::default()
+                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+            )?;
+            barrier(
+                device,
+                command,
+                result.image,
+                range,
+                (
+                    vk::ImageLayout::UNDEFINED,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                ),
+                (vk::AccessFlags::empty(), vk::AccessFlags::TRANSFER_WRITE),
+                (
+                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    vk::PipelineStageFlags::TRANSFER,
+                ),
+            );
+            device.cmd_copy_buffer_to_image(
+                command,
+                staging.handle,
+                result.image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &copies,
+            );
+            barrier(
+                device,
+                command,
+                result.image,
+                range,
+                (
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                ),
+                (
+                    vk::AccessFlags::TRANSFER_WRITE,
+                    vk::AccessFlags::SHADER_READ,
+                ),
+                (
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::PipelineStageFlags::FRAGMENT_SHADER,
+                ),
+            );
+            upload.submit(command)?;
+        }
+        Ok(result)
+    }
+}
 impl Drop for GpuImage {
     fn drop(&mut self) {
         // SAFETY: Candidate upload guard or scene renderer retires all using work.

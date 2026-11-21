@@ -207,6 +207,7 @@ impl App {
             let grid_frames = renderer.grid_frames();
             let sky_frames = renderer.sky_frames();
             let environment_light_frames = renderer.environment_light_frames();
+            let ibl_frames = renderer.ibl_frames();
             let panorama_frames = renderer.panorama_frames();
             let wire_frames = renderer.wire_frames();
             let shadow_frames = renderer.shadow_frames();
@@ -320,7 +321,7 @@ impl App {
                         self.ui.lighting.color, self.ui.lamp_icon, self.ui.lighting.enabled
                     );
                     eprintln!(
-                        "environment_smoke environment={} sky_frames={sky_frames} panorama_frames={panorama_frames} light={} light_frames={environment_light_frames}",
+                        "environment_smoke environment={} sky_frames={sky_frames} panorama_frames={panorama_frames} light={} light_frames={environment_light_frames} ibl_frames={ibl_frames}",
                         self.ui.environment.label(),
                         self.ui.environment_light
                     );
@@ -1530,17 +1531,25 @@ impl App {
             return;
         };
         if let Some(loaded) = self.pending_skybox.take() {
-            match renderer.set_skybox_image(Some(&loaded.image)) {
+            match renderer.set_environment_map(Some(&loaded.map)) {
                 Ok(()) => {
                     eprintln!(
                         "skybox_loaded name={} size={}x{}",
-                        loaded.name, loaded.image.width, loaded.image.height
+                        loaded.name, loaded.width, loaded.height
+                    );
+                    eprintln!(
+                        "environment_map hdr={} levels={} gpu_size={}x{} prepare_ms={}",
+                        loaded.map.hdr,
+                        loaded.map.levels.len(),
+                        loaded.map.width,
+                        loaded.map.height,
+                        loaded.prepare_ms
                     );
                     if loaded.not_panorama {
                         self.ui.set_status(
                             format!(
                                 "Скайбокс {}: не 2:1 ({}x{}), картинка будет растянута",
-                                loaded.name, loaded.image.width, loaded.image.height
+                                loaded.name, loaded.width, loaded.height
                             ),
                             true,
                         );
@@ -2014,7 +2023,7 @@ impl App {
             self.ui.skybox_light = None;
             self.ui.skybox_on = false;
             if let Some(renderer) = self.renderer.as_mut() {
-                renderer.set_skybox_image(None)?;
+                renderer.set_environment_map(None)?;
             }
         }
         // Open native dialogs only after the acquired image has been submitted.
@@ -2215,7 +2224,11 @@ impl App {
                 || !self.failed_replacement_preserved
                 || (self.smoke_gpu_fault.is_some() && !self.gpu_fault_preserved)
                 || (self.smoke_edit && !self.edit_smoke_done)
-                || (self.smoke_queue && !self.queue_smoke_done))
+                || (self.smoke_queue && !self.queue_smoke_done)
+                // A skybox restored from the view settings loads in the
+                // background; the smoke waits for it.
+                || self.skybox_job.is_some()
+                || self.pending_skybox.is_some())
         {
             if self.started.elapsed() > Duration::from_secs(20) {
                 return Err("Import smoke timed out".into());

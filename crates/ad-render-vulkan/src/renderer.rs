@@ -101,6 +101,10 @@ pub struct Renderer {
     /// ADR-0040 owner panorama; replaced only after waiting for idle.
     skybox: Option<crate::sky::Skybox>,
     panorama_frames: u64,
+    /// ADR-0047: black environment the frame set points at without a
+    /// panorama, and frames lit by the panorama (smoke evidence).
+    environment_fallback: Option<crate::sky::Skybox>,
+    ibl_frames: u64,
     sample_textures: bool,
     sample_mr_maps: bool,
     sample_normal_maps: bool,
@@ -162,6 +166,8 @@ impl Renderer {
             environment_light_frames: 0,
             skybox: None,
             panorama_frames: 0,
+            environment_fallback: None,
+            ibl_frames: 0,
             model_preview: None,
             channel: crate::lighting::Channel::Lit,
             wireframe: false,
@@ -199,7 +205,16 @@ impl Renderer {
             result.presented = device.create_fence(&vk::FenceCreateInfo::default(), None)?;
         }
         let shadow_map = crate::shadow::ShadowMap::new(result.gpu.clone())?;
-        result.frame = Some(FrameBinding::new(result.gpu.clone(), &shadow_map)?);
+        let fallback = crate::sky::Skybox::new(
+            result.gpu.clone(),
+            &crate::ibl::build(2, 1, vec![[0.; 3]; 2])?,
+        )?;
+        result.frame = Some(FrameBinding::new(
+            result.gpu.clone(),
+            &shadow_map,
+            &fallback,
+        )?);
+        result.environment_fallback = Some(fallback);
         result.shadow_map = Some(shadow_map);
         result.recreate(size)?;
         Ok(result)
@@ -274,16 +289,43 @@ impl Renderer {
     pub fn environment_light_frames(&self) -> u64 {
         self.environment_light_frames
     }
-    /// ADR-0040: uploads the owner's panorama (or removes it with None). Waits
-    /// for idle first; on failure the previous panorama is already gone and
-    /// the preset sky is drawn.
-    pub fn set_skybox_image(&mut self, image: Option<&ad_document::TextureImage>) -> GpuResult<()> {
+    /// ADR-0040/0047: uploads the owner's panorama with its lighting data (or
+    /// removes it with None). Waits for idle first and points the frame set at
+    /// the black fallback before the old panorama goes; on failure the preset
+    /// sky is drawn and nothing is lit by a panorama.
+    pub fn set_environment_map(
+        &mut self,
+        map: Option<&crate::ibl::EnvironmentMap>,
+    ) -> GpuResult<()> {
         self.wait_idle()?;
+        let frame = self.frame.as_ref().expect("Frame binding initialized");
+        let fallback = self
+            .environment_fallback
+            .as_ref()
+            .expect("Environment fallback initialized");
+        // SAFETY: waited for idle; the fallback outlives every frame.
+        unsafe { frame.bind_environment(fallback) };
         self.skybox = None;
-        if let Some(image) = image {
-            self.skybox = Some(crate::sky::Skybox::new(self.gpu.clone(), image)?);
+        if let Some(map) = map {
+            let skybox = crate::sky::Skybox::new(self.gpu.clone(), map)?;
+            // SAFETY: still idle; the skybox is kept until the next replacement,
+            // which rebinds the fallback first.
+            unsafe { frame.bind_environment(&skybox) };
+            self.skybox = Some(skybox);
         }
         Ok(())
+    }
+    /// ADR-0047: the shown panorama lights PBR shading when the environment
+    /// light is on: (panorama, yaw, strength).
+    fn active_ibl(&self) -> Option<(&crate::sky::Skybox, f32, f32)> {
+        let light = self.environment_light?;
+        let yaw = self.sky.and_then(|sky| sky.panorama)?;
+        let skybox = self.skybox.as_ref()?;
+        (self.lighting.mode == ShadingMode::DirectPbr).then_some((skybox, yaw, light.strength))
+    }
+    /// Frames lit by the panorama (smoke evidence).
+    pub fn ibl_frames(&self) -> u64 {
+        self.ibl_frames
     }
     /// ADR-0041: while the model gizmo is dragged, draw the model with this
     /// view-projection, eye and lamp direction (already including the preview
@@ -449,7 +491,17 @@ impl Renderer {
                     .expect("UI painter initialized")
                     .update(frame, self.pool)?;
             }
-            let sky_light = crate::sky::EnvironmentLight::frame_colors(self.environment_light);
+            // ADR-0047: the panorama replaces the hemisphere approximation.
+            let ibl = self.active_ibl().map(|(skybox, yaw, strength)| {
+                let mut sh = [[0.; 4]; 9];
+                for (row, c) in sh.iter_mut().zip(skybox.sh) {
+                    *row = [c[0], c[1], c[2], 0.];
+                }
+                ([strength, skybox.max_lod, yaw, 1.], sh)
+            });
+            let sky_light = crate::sky::EnvironmentLight::frame_colors(
+                self.environment_light.filter(|_| ibl.is_none()),
+            );
             self.frame
                 .as_ref()
                 .expect("Frame binding initialized")
@@ -485,6 +537,8 @@ impl Renderer {
                             s.normal_offset,
                         ]
                     }),
+                    ibl: ibl.map_or([0.; 4], |i| i.0),
+                    sh: ibl.map_or([[0.; 4]; 9], |i| i.1),
                     light_color: if self.lighting.enabled {
                         let [r, g, b] = self.lighting.color.map(crate::sky::srgb_to_linear);
                         [r, g, b, 1.]
@@ -633,7 +687,13 @@ impl Renderer {
                 if let (Some((settings, yaw)), Some(skybox), Some(sky)) =
                     (panorama, self.skybox.as_ref(), chain.sky_panorama.as_ref())
                 {
-                    let push = crate::sky::SkyPush::panorama(settings, yaw, !chain.encode_srgb);
+                    let push = crate::sky::SkyPush::panorama(
+                        settings,
+                        yaw,
+                        !chain.encode_srgb,
+                        skybox.hdr,
+                        self.lighting.exposure_ev,
+                    );
                     device.cmd_bind_pipeline(
                         self.command,
                         vk::PipelineBindPoint::GRAPHICS,
@@ -922,6 +982,9 @@ impl Renderer {
                             self.pbr_frames += 1;
                             if self.environment_light.is_some() {
                                 self.environment_light_frames += 1;
+                            }
+                            if self.active_ibl().is_some() {
+                                self.ibl_frames += 1;
                             }
                             if self.sample_emission
                                 && self.scene.as_ref().is_some_and(|scene| scene.has_emission)

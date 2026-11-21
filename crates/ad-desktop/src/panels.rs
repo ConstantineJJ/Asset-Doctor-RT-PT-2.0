@@ -377,7 +377,7 @@ impl ViewerUi {
             ui.weak("Действует в режиме PBR (меню «Вид»).");
         }
         ui.add_enabled_ui(pbr, |ui| {
-            ui.checkbox(&mut self.environment_light, "Свет окружения").on_hover_text("Модель дополнительно освещается цветами выбранного окружения (небо сверху, земля снизу). Это приближение, не HDR/IBL.");
+            ui.checkbox(&mut self.environment_light, "Свет окружения").on_hover_text("С показанной панорамой (скайбокс PNG/JPEG или HDR) модель освещается ею целиком: рассеянный свет и отражения с учётом шероховатости (IBL). Без панорамы — приближение цветами выбранного окружения (небо сверху, земля снизу).");
             ui.add_enabled(self.environment_light, egui::Slider::new(&mut self.environment_strength, 0.0..=ad_render_vulkan::sky::EnvironmentLight::MAX_STRENGTH).text("Сила"));
         });
         ui.separator();
@@ -485,7 +485,7 @@ impl ViewerUi {
                 "Фон-небо за моделью. Только вид: лампы, экспозиция и подсветка не меняются.",
             );
         ui.horizontal(|ui| {
-            if ui.button("Скайбокс...").on_hover_text("Выбрать свою панораму PNG/JPEG 2:1 (равнопромежуточную). Файл только читается; в модель и экспорт не попадает.").clicked() {
+            if ui.button("Скайбокс...").on_hover_text("Выбрать свою панораму 2:1 (равнопромежуточную): PNG/JPEG или HDR (.hdr). HDR показывается с экспозицией. Файл только читается; в модель и экспорт не попадает.").clicked() {
                 actions.skybox_load = true;
             }
             if let Some(name) = self.skybox_name.clone() {
@@ -733,7 +733,7 @@ impl ViewerUi {
         });
         ui.add_space(16.);
         ui.separator();
-        ui.weak("Металл и шероховатость: параметры × карты. Заполнение приблизительное; без HDR-окружения.");
+        ui.weak("Металл и шероховатость: параметры × карты. Заполнение приблизительное. Свет окружения от панорамы (IBL) — в меню «Освещение» при показанном скайбоксе.");
         ui.weak("Статические GLB: PNG/JPEG, цвета вершин, нормали, OPAQUE/MASK. PBR — предварительный режим. BLEND, скелеты и анимации пока не поддерживаются.");
     }
 
