@@ -44,6 +44,31 @@ impl Delta {
     }
 }
 
+/// Preview that turns the `current` placement into `target` (numeric
+/// fields): scale about the world origin, then move.
+pub fn between(current: Placement, target: Placement) -> Delta {
+    let factor = target.scale / current.scale;
+    Delta {
+        pivot: [0.; 3],
+        factor,
+        offset: [0, 1, 2].map(|a| target.translation[a] - factor * current.translation[a]),
+    }
+}
+/// «На пол»: moves the model so its lowest point is at Y = 0.
+pub fn on_floor(current: Placement, bounds: Bounds) -> Placement {
+    let mut p = current;
+    p.translation[1] -= bounds.min[1];
+    p
+}
+/// «В центр»: moves the model so its bottom centre is above the origin.
+pub fn centred(current: Placement, bounds: Bounds) -> Placement {
+    let mut p = current;
+    let c = pivot(bounds);
+    p.translation[0] -= c[0];
+    p.translation[2] -= c[2];
+    p
+}
+
 /// Bottom centre of the bounds: X/Z centre, lowest Y.
 pub fn pivot(bounds: Bounds) -> [f32; 3] {
     [
@@ -143,6 +168,36 @@ mod tests {
             .matrix()
             .transform_point3(Vec3::from_array(pivot(cube())));
         assert_eq!(fixed.to_array(), pivot(cube()), "bottom centre stays put");
+    }
+    #[test]
+    fn numeric_targets_preview_exactly_and_floor_and_centre_move_the_model() {
+        let current = Placement::IDENTITY.then([0.; 3], 1.5, [2., -1., 0.5]);
+        let target = Placement {
+            scale: 3.,
+            translation: [-4., 2., 7.],
+        };
+        let d = between(current, target);
+        let got = d.placement(current);
+        assert!((got.scale - target.scale).abs() < 1e-6);
+        for a in 0..3 {
+            assert!((got.translation[a] - target.translation[a]).abs() < 1e-5);
+        }
+        assert!(between(current, current).is_noop());
+        // Current bounds are already placed (post-placement).
+        let bounds = Bounds {
+            min: [1., -2., 3.],
+            max: [5., 4., 7.],
+        };
+        let grounded = on_floor(current, bounds);
+        let low = grounded.apply(current.unapply(bounds.min));
+        assert!(low[1].abs() < 1e-5, "{low:?}");
+        let centred = centred(current, bounds);
+        let c = centred.apply(current.unapply(pivot(bounds)));
+        assert!(
+            c[0].abs() < 1e-5 && c[2].abs() < 1e-5 && (c[1] + 2.).abs() < 1e-5,
+            "{c:?}"
+        );
+        assert_eq!(centred.scale, current.scale);
     }
     #[test]
     fn dragging_an_arrow_moves_along_its_axis_with_the_pointer() {

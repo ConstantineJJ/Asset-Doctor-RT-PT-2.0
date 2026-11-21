@@ -23,7 +23,9 @@ written from scratch in Rust with a Vulkan renderer. Engineering prototype.
   saved to `%LOCALAPPDATA%\AssetDoctorRTPT\input-bindings.json`,
 - **Гизмо модели**: X/Y/Z arrows move the model, the centre square scales it
   uniformly from the bottom centre; each release is one edit (Ctrl+Z undoes it,
-  «Сохранить» writes the new root node transforms; primitives stay byte-exact),
+  «Сохранить» writes the new root node transforms; primitives stay byte-exact);
+  Сводка has numeric «Сдвиг X/Y/Z» and «Масштаб» fields plus «На пол» and
+  «В центр»,
 - **Лампа**: a sun icon in the viewport — drag it to turn the light around the
   model, right click for its menu (reset, from above, from the camera, on/off,
   colour, temperature, hide); also in Сводка,

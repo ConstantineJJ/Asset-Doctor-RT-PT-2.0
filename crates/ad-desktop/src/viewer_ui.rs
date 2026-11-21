@@ -40,6 +40,11 @@ pub struct Actions {
     pub model_drag: Option<(crate::model_gizmo::Handle, [f32; 2])>,
     pub model_drag_end: bool,
     pub model_reset: bool,
+    /// ADR-0041 numeric fields: preview of the edited placement, and the
+    /// placement to publish (one edit) when a field is released or a button
+    /// is pressed.
+    pub place_preview: Option<ad_document::Placement>,
+    pub place: Option<ad_document::Placement>,
 }
 /// ADR-0041 model gizmo for this frame: viewport positions (0..1, y down) of
 /// the bottom centre and of the X/Y/Z arrow tips (None behind the camera).
@@ -202,6 +207,8 @@ pub struct ViewerUi {
     pub show_bounds: bool,
     pub helper_overlay: Option<crate::helpers::Overlay>,
     pub placement: ad_document::Placement,
+    /// Numeric fields being edited (None: they follow the model).
+    placement_draft: Option<ad_document::Placement>,
     /// Theme G brings back after hiding the floor.
     last_floor: ad_render_vulkan::grid::FloorTheme,
     pub normal_maps: bool,
@@ -301,6 +308,7 @@ impl Default for ViewerUi {
             show_bounds: false,
             helper_overlay: None,
             placement: ad_document::Placement::IDENTITY,
+            placement_draft: None,
             normal_maps: true,
             ao_maps: true,
             emission: true,
@@ -387,6 +395,83 @@ impl ViewerUi {
         self.input
             .as_mut()
             .is_some_and(|input| input.on_window_event(window, event).consumed)
+    }
+    /// ADR-0041 numeric placement: offset X/Y/Z from the imported position
+    /// and uniform scale. Dragging or typing previews; releasing the field
+    /// (or leaving it) publishes one edit. «На пол» / «В центр» move the
+    /// model's bottom to Y = 0 / its bottom centre above the origin.
+    fn placement_fields_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        bounds: ad_document::Bounds,
+        actions: &mut Actions,
+    ) {
+        use ad_document::Placement;
+        let mut draft = self.placement_draft.unwrap_or(self.placement);
+        let extent = (0..3)
+            .map(|a| bounds.max[a] - bounds.min[a])
+            .fold(0f32, f32::max)
+            .max(1e-6);
+        let (mut changed, mut commit) = (false, false);
+        let mut track = |r: egui::Response| {
+            changed |= r.changed();
+            commit |= r.drag_stopped() || r.lost_focus();
+        };
+        ui.horizontal(|ui| {
+            ui.label("Сдвиг");
+            for (axis, name) in ["X", "Y", "Z"].iter().enumerate() {
+                track(
+                    ui.add(
+                        egui::DragValue::new(&mut draft.translation[axis])
+                            .prefix(format!("{name} "))
+                            .speed(extent * 0.005)
+                            .range(-Placement::MAX_TRANSLATION..=Placement::MAX_TRANSLATION)
+                            .max_decimals(4),
+                    )
+                    .on_hover_text("Смещение от исходного положения, в единицах файла. Тяните или введите число; отпускание — одна правка."),
+                );
+            }
+        });
+        let scale_speed = (draft.scale * 0.005).max(1e-6);
+        ui.horizontal(|ui| {
+            track(
+                ui.add(
+                    egui::DragValue::new(&mut draft.scale)
+                        .prefix("Масштаб x")
+                        .speed(scale_speed)
+                        .range(Placement::MIN_SCALE..=Placement::MAX_SCALE)
+                        .max_decimals(4),
+                )
+                .on_hover_text("Равномерный масштаб относительно исходного размера."),
+            );
+            if ui
+                .button("На пол")
+                .on_hover_text("Поставить нижнюю точку модели на Y = 0")
+                .clicked()
+            {
+                actions.place = Some(crate::model_gizmo::on_floor(self.placement, bounds));
+            }
+            if ui
+                .button("В центр")
+                .on_hover_text("Нижнюю точку центра модели — над началом координат (X = Z = 0)")
+                .clicked()
+            {
+                actions.place = Some(crate::model_gizmo::centred(self.placement, bounds));
+            }
+        });
+        if changed {
+            self.placement_draft = Some(draft);
+            actions.place_preview = Some(draft);
+        }
+        if commit && self.placement_draft.is_some() {
+            self.placement_draft = None;
+            if draft != self.placement && draft.valid() {
+                actions.place = Some(draft);
+            }
+        }
+        if actions.place.is_some() {
+            self.placement_draft = None;
+        }
     }
     /// ADR-0043 «Управление»: two chords per action; click a slot, then
     /// press a key or mouse button (Esc cancels, right click on a slot clears).
@@ -899,8 +984,7 @@ impl ViewerUi {
                             ui.checkbox(&mut self.model_gizmo_on,"Гизмо модели").on_hover_text("Стрелки X/Y/Z сдвигают модель, квадрат масштабирует её равномерно от нижней точки центра. Каждое отпускание — одна правка: Ctrl+Z отменит, «Сохранить» запишет в файл.");
                             if ui.add_enabled(!self.placement.is_identity(),egui::Button::new("Сбросить положение")).clicked() {actions.model_reset=true;}
                         });
-                        let [x,y,z]=self.placement.translation;
-                        ui.weak(format!("Положение: сдвиг {x:.3}, {y:.3}, {z:.3}; масштаб x{:.3}",self.placement.scale));
+                        if let Some(asset)=asset {self.placement_fields_ui(ui,asset.snapshot().bounds,&mut actions);}
                     }
                     egui::ComboBox::from_label("Окружение").selected_text(self.environment.label()).show_ui(ui,|ui|{
                         for preset in ad_render_vulkan::sky::Environment::ALL {

@@ -830,8 +830,18 @@ impl App {
                 placement.scale, placement.translation
             );
             self.edit_mesh = Some(MeshId(0));
-            self.edit_queue =
-                VecDeque::from([EditKind::Place(placement), EditKind::Undo, EditKind::Redo]);
+            // Then «В центр» + «На пол» on the placed bounds, as the buttons do.
+            let placed = ad_document::Bounds {
+                min: placement.apply(bounds.min),
+                max: placement.apply(bounds.max),
+            };
+            let grounded = model_gizmo::on_floor(model_gizmo::centred(placement, placed), placed);
+            self.edit_queue = VecDeque::from([
+                EditKind::Place(placement),
+                EditKind::Undo,
+                EditKind::Redo,
+                EditKind::Place(grounded),
+            ]);
         }
         if self.edit_mesh.is_none() {
             let mesh = self
@@ -896,6 +906,13 @@ impl App {
         )?;
         ad_formats::compare_reimported(document, &reimported, &cancel)?;
         let placement = document.placement();
+        let b = asset.snapshot().bounds;
+        eprintln!(
+            "place_grounded min_y={:.5} centre_x={:.5} centre_z={:.5}",
+            b.min[1],
+            (b.min[0] + b.max[0]) * 0.5,
+            (b.min[2] + b.max[2]) * 0.5
+        );
         eprintln!(
             "place_export_verified revision={} scale={} translation={:?} bytes={} source_bytes={}",
             document.revision(),
@@ -1654,6 +1671,26 @@ impl App {
                     }
                 }
                 _ => self.model_preview = None,
+            }
+        }
+        // Numeric fields: preview while editing, one edit on release.
+        if let Some(target) = actions.place_preview
+            && !self.model_pending
+        {
+            self.model_preview = Some(model_gizmo::between(current, target));
+        }
+        if let Some(target) = actions.place
+            && !self.model_pending
+        {
+            if target == current || !target.valid() {
+                self.model_preview = None;
+            } else if self.request_edit(EditKind::Place(target)) {
+                self.model_pending = true;
+                self.model_preview = Some(model_gizmo::between(current, target));
+            } else {
+                self.model_preview = None;
+                self.ui
+                    .set_status("Положение не изменено: идёт другая работа", true);
             }
         }
         if actions.model_reset
