@@ -86,6 +86,7 @@ impl ViewerUi {
                 "yaw": self.skybox_yaw,
             })),
             "model_gizmo": self.model_gizmo_on,
+            "log_to_file": self.log_to_file,
             "layout": {
                 "right_block": self.show_summary,
                 "tab": if self.tab == Tab::Info { "info" } else { "health" },
@@ -283,6 +284,7 @@ impl ViewerUi {
             },
         }
         flag(value, "model_gizmo", &mut self.model_gizmo_on, &mut bad);
+        flag(value, "log_to_file", &mut self.log_to_file, &mut bad);
         if let Some(layout) = value.get("layout") {
             flag(layout, "right_block", &mut self.show_summary, &mut bad);
             flag(layout, "tree", &mut self.show_tree, &mut bad);

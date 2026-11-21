@@ -66,6 +66,8 @@ pub struct Actions {
     pub skybox_remove: bool,
     /// SkyBox quality changed: prepare this panorama again.
     pub skybox_reload: Option<std::path::PathBuf>,
+    /// Fixed camera view chosen in the viewport corner.
+    pub camera_view: Option<crate::camera::View>,
     /// SkyBox window: show this panorama; choose the library folder.
     pub skybox_open: Option<std::path::PathBuf>,
     pub skybox_folder_choose: bool,
@@ -246,6 +248,13 @@ pub struct ViewerUi {
     pub skybox_folder: Option<std::path::PathBuf>,
     pub skybox_library: crate::skybox_library::Library,
     skybox_hover: Option<usize>,
+    /// Program log window, its file switch (view settings) and the warnings
+    /// already seen (the bug turns amber for new ones).
+    pub show_log: bool,
+    pub log_to_file: bool,
+    log_seen_warnings: u64,
+    log_filter: String,
+    log_only_warnings: bool,
     pub skybox_on: bool,
     pub skybox_yaw: f32,
     pub skybox_light: Option<[[f32; 3]; 3]>,
@@ -362,6 +371,10 @@ pub struct ViewerUi {
     #[cfg(test)]
     skybox_button_rect: egui::Rect,
     #[cfg(test)]
+    bug_rect: egui::Rect,
+    #[cfg(test)]
+    view_rects: Vec<(crate::camera::View, egui::Rect)>,
+    #[cfg(test)]
     skybox_tile_rects: Vec<egui::Rect>,
 }
 impl Default for ViewerUi {
@@ -393,6 +406,11 @@ impl Default for ViewerUi {
             skybox_folder: None,
             skybox_library: Default::default(),
             skybox_hover: None,
+            show_log: false,
+            log_to_file: false,
+            log_seen_warnings: 0,
+            log_filter: String::new(),
+            log_only_warnings: false,
             skybox_on: false,
             skybox_yaw: 0.,
             skybox_light: None,
@@ -488,6 +506,10 @@ impl Default for ViewerUi {
             #[cfg(test)]
             skybox_button_rect: egui::Rect::NOTHING,
             #[cfg(test)]
+            bug_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            view_rects: Vec::new(),
+            #[cfg(test)]
             skybox_tile_rects: Vec::new(),
         }
     }
@@ -508,6 +530,11 @@ impl ViewerUi {
     pub fn set_status(&mut self, text: impl Into<String>, warning: bool) {
         self.status = text.into();
         self.status_warning = warning;
+        crate::log::push(format!(
+            "status{}: {}",
+            if warning { " warning" } else { "" },
+            self.status
+        ));
     }
     pub fn attach(&mut self, window: &Window) {
         self.input = Some(egui_winit::State::new(
@@ -1199,7 +1226,10 @@ impl ViewerUi {
                     }
                     else if self.status_warning {ui.add(egui::Label::new(RichText::new(&self.status).color(Color32::from_rgb(255,190,120))).truncate()).on_hover_text(&self.status);}
                     else {ui.label(&self.status);}
-                    if ui.available_width()>220. {ui.separator();ui.weak("Vulkan · геометрия и базовые цвета");}
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui| {
+                        self.bug_button(ui);
+                        if ui.available_width()>220. {ui.weak("Vulkan · геометрия и базовые цвета");ui.separator();}
+                    });
                 });
             });
             if self.show_summary && width>=680. {
@@ -1233,6 +1263,7 @@ impl ViewerUi {
             #[cfg(test)]
             self.skybox_tile_rects.clear();
             self.skybox_window(&context,&mut actions);
+            self.log_window(&context);
             if let Some(info)=self.edit.preview.clone() {
                 let ready=!loading && self.edit.busy.is_none();
                 let code=crate::edits::repair_label(info.kind);
@@ -1771,6 +1802,32 @@ FORMAT=32-bit_rle_rgbe
         ui.menu = Some(TopMenu::Settings);
         warm(&mut ui, None, size);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+    #[test]
+    fn view_buttons_choose_camera_views_and_the_bug_opens_the_log() {
+        let mut ui = ViewerUi::default();
+        let size = (1600., 900.);
+        warm(&mut ui, None, size);
+        let views: Vec<_> = ui.view_rects.iter().map(|(v, _)| *v).collect();
+        assert_eq!(views, crate::camera::View::ALL);
+        // The view buttons sit left of Undo/Redo in the bottom-right corner.
+        let top = ui.view_rects[4].1;
+        assert!(
+            top.right() < ui.undo_rect.left()
+                && (top.center().y - ui.undo_rect.center().y).abs() < 2.
+        );
+        let actions = click(&mut ui, None, top, size);
+        assert_eq!(actions.camera_view, Some(crate::camera::View::Top));
+        assert!(ui.undo_rect.width() < 50., "Undo is an icon now");
+        let bug = ui.bug_rect;
+        assert!(
+            bug.is_positive() && bug.right() > size.0 - 40. && bug.bottom() > size.1 - 40.,
+            "{bug:?}"
+        );
+        click(&mut ui, None, bug, size);
+        assert!(ui.show_log);
+        crate::log::push("test line for the log window");
+        warm(&mut ui, None, size);
     }
     /// Each menu shows all its items at once, also after switching menus.
     #[test]

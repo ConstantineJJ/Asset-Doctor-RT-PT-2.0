@@ -1,12 +1,73 @@
 use ad_document::Bounds;
 use glam::{Vec3, camera::rh};
 
+/// Fixed camera views: six sides (orthographic) and three quarters
+/// (perspective, the starting view).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum View {
+    Front,
+    Back,
+    Left,
+    Right,
+    Top,
+    Bottom,
+    ThreeQuarter,
+}
+impl View {
+    pub const ALL: [Self; 7] = [
+        Self::Front,
+        Self::Back,
+        Self::Left,
+        Self::Right,
+        Self::Top,
+        Self::Bottom,
+        Self::ThreeQuarter,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Front => "Front",
+            Self::Back => "Back",
+            Self::Left => "Left",
+            Self::Right => "Right",
+            Self::Top => "Top",
+            Self::Bottom => "Bottom",
+            Self::ThreeQuarter => "3/4",
+        }
+    }
+    pub fn hint(self) -> &'static str {
+        match self {
+            Self::Front => "Спереди (+Z), ортографическая",
+            Self::Back => "Сзади (-Z), ортографическая",
+            Self::Left => "Слева (-X), ортографическая",
+            Self::Right => "Справа (+X), ортографическая",
+            Self::Top => "Сверху (+Y), ортографическая",
+            Self::Bottom => "Снизу (-Y), ортографическая",
+            Self::ThreeQuarter => "Три четверти, перспектива (как при открытии)",
+        }
+    }
+    /// (yaw, pitch, orthographic).
+    fn angles(self) -> (f32, f32, bool) {
+        use std::f32::consts::{FRAC_PI_2, PI};
+        match self {
+            Self::Front => (0., 0., true),
+            Self::Back => (PI, 0., true),
+            Self::Left => (-FRAC_PI_2, 0., true),
+            Self::Right => (FRAC_PI_2, 0., true),
+            Self::Top => (0., FRAC_PI_2, true),
+            Self::Bottom => (0., -FRAC_PI_2, true),
+            Self::ThreeQuarter => (0.7, 0.35, false),
+        }
+    }
+}
+
 pub struct Camera {
     center: Vec3,
     radius: f32,
     distance: f32,
     yaw: f32,
     pitch: f32,
+    /// Orthographic projection (fixed side views); orbiting turns it off.
+    ortho: bool,
 }
 impl Default for Camera {
     fn default() -> Self {
@@ -16,6 +77,7 @@ impl Default for Camera {
             distance: 4.0,
             yaw: 0.7,
             pitch: 0.35,
+            ortho: false,
         }
     }
 }
@@ -30,8 +92,27 @@ impl Camera {
         self.distance = self.radius * 3.2;
     }
     pub fn orbit(&mut self, dx: f32, dy: f32) {
+        self.ortho = false;
         self.yaw = (self.yaw - dx * 0.005) % std::f32::consts::TAU;
         self.pitch = (self.pitch + dy * 0.005).clamp(-1.5, 1.5);
+    }
+    /// A fixed view around the current centre and zoom.
+    pub fn set_view(&mut self, view: View) {
+        let (yaw, pitch, ortho) = view.angles();
+        self.yaw = yaw;
+        self.pitch = pitch;
+        self.ortho = ortho;
+    }
+    pub fn is_ortho(&self) -> bool {
+        self.ortho
+    }
+    /// Up vector of the view; straight up or down looks with -Z / +Z up.
+    fn up(&self) -> Vec3 {
+        if self.pitch.cos() > 1e-3 {
+            Vec3::Y
+        } else {
+            -Vec3::new(self.yaw.sin(), 0., self.yaw.cos()) * self.pitch.signum()
+        }
     }
     fn direction(&self) -> Vec3 {
         Vec3::new(
@@ -42,7 +123,11 @@ impl Camera {
     }
     pub fn pan(&mut self, dx: f32, dy: f32, height: f32) {
         let right = Vec3::new(self.yaw.cos(), 0., -self.yaw.sin());
-        let up = self.direction().cross(right);
+        let up = if self.pitch.cos() > 1e-3 {
+            self.direction().cross(right)
+        } else {
+            self.up()
+        };
         self.center += (-right * dx + up * dy) * (self.distance * 0.828 / height.max(1.0));
     }
     pub fn zoom(&mut self, steps: f32) {
@@ -59,7 +144,22 @@ impl Camera {
         let far = (distance + self.radius * 4.0)
             .max(self.radius * 10.0)
             .max(near * 100.0);
-        let projection = rh::proj::vulkan::perspective(45f32.to_radians(), aspect, near, far);
+        let projection = if self.ortho {
+            // Same size at the centre as the perspective view would show.
+            let half_h = distance * 22.5f32.to_radians().tan();
+            let half_w = half_h * aspect;
+            let depth = (eye - self.center).length();
+            rh::proj::vulkan::orthographic(
+                -half_w,
+                half_w,
+                -half_h,
+                half_h,
+                (depth - self.radius * 4.).max(near),
+                depth + self.radius * 4.,
+            )
+        } else {
+            rh::proj::vulkan::perspective(45f32.to_radians(), aspect, near, far)
+        };
         // Reversed-Z (z' = w - z): near → 1, far → 0. With the D32 float depth
         // buffer this spreads precision evenly over distance, so close layers
         // (decals) do not z-fight when zoomed out. The renderer clears depth to
@@ -70,7 +170,7 @@ impl Camera {
             [0., 0., -1., 0.],
             [0., 0., 1., 1.],
         ]);
-        (reverse * projection * rh::view::look_at_mat4(eye, self.center, Vec3::Y))
+        (reverse * projection * rh::view::look_at_mat4(eye, self.center, self.up()))
             .to_cols_array_2d()
     }
     /// ADR-0040 lamp gizmo: screen position (0..1, y down) of the point
@@ -130,7 +230,14 @@ impl Camera {
     }
     pub fn eye(&self, width: u32, height: u32) -> [f32; 3] {
         let aspect = width.max(1) as f32 / height.max(1) as f32;
-        (self.center + self.direction() * (self.distance / aspect.clamp(0.05, 1.0))).to_array()
+        let distance = self.distance / aspect.clamp(0.05, 1.0);
+        // Orthographic views stand back far enough to see the whole model.
+        let distance = if self.ortho {
+            distance.max(self.radius * 4.)
+        } else {
+            distance
+        };
+        (self.center + self.direction() * distance).to_array()
     }
 }
 #[cfg(test)]
@@ -241,5 +348,61 @@ mod tests {
             assert!(moved.iter().flatten().all(|v| v.is_finite()));
             assert!(camera.matrix(0, 0).iter().flatten().all(|v| v.is_finite()));
         }
+    }
+    #[test]
+    fn fixed_views_look_along_their_axes_and_orbit_leaves_orthographic() {
+        let mut camera = Camera::default();
+        camera.fit(Bounds {
+            min: [-1., 0., -1.],
+            max: [1., 2., 1.],
+        });
+        let (w, h) = (1200, 800);
+        let centre = [0., 1., 0.];
+        for (view, axis) in [
+            (View::Front, [0., 0., 1.]),
+            (View::Back, [0., 0., -1.]),
+            (View::Left, [-1., 0., 0.]),
+            (View::Right, [1., 0., 0.]),
+            (View::Top, [0., 1., 0.]),
+            (View::Bottom, [0., -1., 0.]),
+        ] {
+            camera.set_view(view);
+            assert!(camera.is_ortho());
+            let eye = Vec3::from_array(camera.eye(w, h));
+            let toward = (eye - Vec3::from_array(centre)).normalize();
+            assert!(
+                toward.dot(Vec3::from_array(axis)) > 0.999,
+                "{view:?}: {toward}"
+            );
+            // The centre is in the middle of the screen and parallel lines stay
+            // parallel: a step along the view axis does not move on screen.
+            let c = camera.project(centre, w, h).unwrap();
+            assert!(
+                (c[0] - 0.5).abs() < 1e-4 && (c[1] - 0.5).abs() < 1e-4,
+                "{view:?} {c:?}"
+            );
+            let nearer = Vec3::from_array(centre) + Vec3::from_array(axis) * 0.5;
+            let n = camera.project(nearer.to_array(), w, h).unwrap();
+            assert!(
+                (n[0] - c[0]).abs() < 1e-4 && (n[1] - c[1]).abs() < 1e-4,
+                "{view:?}"
+            );
+            // The model's corners are visible (inside the screen and depth range).
+            let m = glam::Mat4::from_cols_array_2d(&camera.matrix(w, h));
+            for corner in [[-1., 0., -1.], [1., 2., 1.], [1., 0., -1.]] {
+                let clip = m * Vec3::from_array(corner).extend(1.);
+                let ndc = clip.truncate() / clip.w;
+                assert!(ndc.x.abs() <= 1. && ndc.y.abs() <= 1., "{view:?} {ndc}");
+                assert!((0. ..=1.).contains(&ndc.z), "{view:?} depth {ndc}");
+            }
+        }
+        // Top view: front (+Z) is at the bottom of the screen.
+        camera.set_view(View::Top);
+        let front = camera.project([0., 1., 1.], w, h).unwrap();
+        assert!(front[1] > 0.5, "{front:?}");
+        camera.orbit(10., 0.);
+        assert!(!camera.is_ortho());
+        camera.set_view(View::ThreeQuarter);
+        assert!(!camera.is_ortho());
     }
 }

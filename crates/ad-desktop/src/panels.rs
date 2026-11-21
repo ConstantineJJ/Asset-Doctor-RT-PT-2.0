@@ -938,6 +938,125 @@ impl ViewerUi {
         ui.weak("Статические GLB: PNG/JPEG, цвета вершин, нормали, OPAQUE/MASK. PBR — предварительный режим. BLEND, скелеты и анимации пока не поддерживаются.");
     }
 
+    /// A bug in the bottom-right corner opens the program log; amber when
+    /// new warnings came since the log was last open.
+    pub(super) fn bug_button(&mut self, ui: &mut egui::Ui) {
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(26., 22.), egui::Sense::click());
+        #[cfg(test)]
+        {
+            self.bug_rect = rect;
+        }
+        let (_, warnings) = crate::log::counts();
+        let fresh = warnings > self.log_seen_warnings;
+        let color = if fresh {
+            Color32::from_rgb(255, 190, 90)
+        } else if response.hovered() || self.show_log {
+            ui.visuals().strong_text_color()
+        } else {
+            ui.visuals().weak_text_color()
+        };
+        let painter = ui.painter();
+        let c = rect.center() + egui::vec2(0., 1.);
+        let stroke = egui::Stroke::new(1.3, color);
+        for dy in [-3.5f32, 0., 3.5] {
+            painter.line_segment(
+                [c + egui::vec2(-3., dy), c + egui::vec2(-8., dy - 2.)],
+                stroke,
+            );
+            painter.line_segment(
+                [c + egui::vec2(3., dy), c + egui::vec2(8., dy - 2.)],
+                stroke,
+            );
+        }
+        painter.add(egui::Shape::ellipse_filled(
+            c + egui::vec2(0., 1.),
+            egui::vec2(4.5, 6.),
+            color,
+        ));
+        painter.circle_filled(c + egui::vec2(0., -6.), 2.8, color);
+        painter.line_segment(
+            [c + egui::vec2(-1.5, -8.), c + egui::vec2(-4., -10.5)],
+            stroke,
+        );
+        painter.line_segment(
+            [c + egui::vec2(1.5, -8.), c + egui::vec2(4., -10.5)],
+            stroke,
+        );
+        let response = response.on_hover_text(if fresh {
+            "Журнал работы программы: есть новые предупреждения"
+        } else {
+            "Журнал работы программы"
+        });
+        if response.clicked() {
+            self.show_log = !self.show_log;
+        }
+    }
+
+    /// The program log: every diagnostic line and status message, with a
+    /// filter, copy, clear and writing to a file.
+    pub(super) fn log_window(&mut self, context: &egui::Context) {
+        if !self.show_log {
+            return;
+        }
+        let (lines, total, warnings) = crate::log::snapshot();
+        self.log_seen_warnings = warnings;
+        let mut open = true;
+        egui::Window::new("Log")
+            .id(egui::Id::new("program_log"))
+            .open(&mut open)
+            .resizable(true)
+            .default_size([760., 420.])
+            .show(context, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(format!("Строк: {total} · предупреждений: {warnings}"));
+                    ui.separator();
+                    ui.add(egui::TextEdit::singleline(&mut self.log_filter).hint_text("Фильтр").desired_width(180.));
+                    ui.checkbox(&mut self.log_only_warnings, "Только предупреждения");
+                });
+                ui.horizontal(|ui| {
+                    let before = self.log_to_file;
+                    ui.checkbox(&mut self.log_to_file, "Писать в файл")
+                        .on_hover_text("Каждый запуск — новый файл в %LOCALAPPDATA%\\AssetDoctorRTPT\\logs. Включение запоминается.");
+                    if self.log_to_file != before {
+                        let target = self.log_to_file.then(crate::log::default_folder).flatten();
+                        if let Err(error) = crate::log::write_to(target) {
+                            self.log_to_file = false;
+                            self.set_status(format!("Журнал не пишется в файл: {error}"), true);
+                        }
+                    }
+                    if let Some(path) = crate::log::file() {
+                        ui.add(egui::Label::new(egui::RichText::new(path.display().to_string()).weak()).truncate());
+                    }
+                });
+                let filter = self.log_filter.to_lowercase();
+                let shown: Vec<&crate::log::Line> = lines
+                    .iter()
+                    .filter(|l| !self.log_only_warnings || l.warning)
+                    .filter(|l| filter.is_empty() || l.text.to_lowercase().contains(&filter))
+                    .collect();
+                ui.horizontal(|ui| {
+                    if ui.button("Копировать").on_hover_text("Показанные строки — в буфер обмена").clicked() {
+                        let text: Vec<String> = shown.iter().map(|l| format!("{:10.3} {}", l.at, l.text)).collect();
+                        ui.ctx().copy_text(text.join("\n"));
+                    }
+                    if ui.button("Очистить").on_hover_text("Убрать строки из окна (файл не меняется)").clicked() {
+                        crate::log::clear();
+                    }
+                });
+                ui.separator();
+                egui::ScrollArea::both()
+                    .auto_shrink([false, false])
+                    .stick_to_bottom(true)
+                    .show_rows(ui, 16., shown.len(), |ui, range| {
+                        for line in &shown[range] {
+                            let text = egui::RichText::new(format!("{:9.3}  {}", line.at, line.text)).monospace().size(12.);
+                            ui.label(if line.warning { text.color(Color32::from_rgb(255, 190, 120)) } else { text });
+                        }
+                    });
+            });
+        self.show_log &= open;
+    }
+
     /// «Дерево» in the viewport's top-left corner; the tree unfolds below it.
     pub(super) fn tree_overlay(&mut self, context: &egui::Context) {
         let scene = self.scene;
@@ -1038,12 +1157,27 @@ impl ViewerUi {
             .fixed_pos(scene.right_bottom() - egui::vec2(10., 10.))
             .show(context, |ui| {
                 ui.horizontal(|ui| {
-                    let undo = history_button(ui, idle && self.edit.can_undo, "Undo", false)
-                        .on_hover_text(
-                            "Отменить последнюю правку · Ctrl+Z. Ревизия всё равно увеличится.",
-                        );
-                    let redo = history_button(ui, idle && self.edit.can_redo, "Redo", true)
-                        .on_hover_text("Повторить отменённую правку · Ctrl+Y");
+                    #[cfg(test)]
+                    self.view_rects.clear();
+                    for view in crate::camera::View::ALL {
+                        let response = ui
+                            .add(
+                                egui::Button::new(egui::RichText::new(view.label()).size(13.))
+                                    .min_size(egui::vec2(0., 32.)),
+                            )
+                            .on_hover_text(view.hint());
+                        #[cfg(test)]
+                        self.view_rects.push((view, response.rect));
+                        if response.clicked() {
+                            actions.camera_view = Some(view);
+                        }
+                    }
+                    ui.add_space(8.);
+                    let undo = history_button(ui, idle && self.edit.can_undo, false).on_hover_text(
+                        "Undo: отменить последнюю правку · Ctrl+Z. Ревизия всё равно увеличится.",
+                    );
+                    let redo = history_button(ui, idle && self.edit.can_redo, true)
+                        .on_hover_text("Redo: повторить отменённую правку · Ctrl+Y");
                     #[cfg(test)]
                     {
                         self.undo_rect = undo.rect;
@@ -1071,11 +1205,12 @@ impl ViewerUi {
     }
 }
 
-/// A button with a half-circle arrow: left for Undo, right (mirrored) for Redo.
-fn history_button(ui: &mut egui::Ui, enabled: bool, label: &str, redo: bool) -> egui::Response {
+/// An icon button with a half-circle arrow: left for Undo, right (mirrored)
+/// for Redo.
+fn history_button(ui: &mut egui::Ui, enabled: bool, redo: bool) -> egui::Response {
     let response = ui.add_enabled(
         enabled,
-        egui::Button::new("").min_size(egui::vec2(88., 32.)),
+        egui::Button::new("").min_size(egui::vec2(40., 32.)),
     );
     let color = if enabled {
         ui.visuals().strong_text_color()
@@ -1083,22 +1218,9 @@ fn history_button(ui: &mut egui::Ui, enabled: bool, label: &str, redo: bool) -> 
         ui.visuals().weak_text_color()
     };
     let painter = ui.painter();
-    let rect = response.rect;
-    let (icon, text, align) = if redo {
-        (
-            egui::pos2(rect.right() - 18., rect.center().y + 2.),
-            rect.left_center() + egui::vec2(12., 0.),
-            egui::Align2::LEFT_CENTER,
-        )
-    } else {
-        (
-            egui::pos2(rect.left() + 18., rect.center().y + 2.),
-            rect.right_center() - egui::vec2(12., 0.),
-            egui::Align2::RIGHT_CENTER,
-        )
-    };
+    let icon = response.rect.center() + egui::vec2(0., 2.);
     let flip = if redo { -1. } else { 1. };
-    let r = 6.5;
+    let r = 7.;
     // Upper half circle from the far side to the near side, ending in a
     // head that points down: ↶ for Undo, ↷ for Redo.
     let points: Vec<egui::Pos2> = (0..=14)
@@ -1110,6 +1232,5 @@ fn history_button(ui: &mut egui::Ui, enabled: bool, label: &str, redo: bool) -> 
     let end = *points.last().expect("arc points");
     painter.add(egui::Shape::line(points, egui::Stroke::new(2., color)));
     triangle(painter, end + egui::vec2(0., 2.), 4.5, DOWN, color);
-    painter.text(text, align, label, egui::FontId::proportional(14.5), color);
     response
 }

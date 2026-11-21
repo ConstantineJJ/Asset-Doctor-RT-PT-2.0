@@ -1,5 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+/// Every diagnostic line also goes to the program log (crate::log).
+macro_rules! eprintln {
+    ($($arg:tt)*) => {{
+        let line = format!($($arg)*);
+        std::eprintln!("{line}");
+        crate::log::push(line);
+    }};
+}
+
 mod camera;
 mod diagnostic_ui;
 mod edits;
@@ -8,6 +17,7 @@ mod history;
 mod imports;
 mod input;
 mod lamp;
+mod log;
 mod model_gizmo;
 mod native;
 mod queue;
@@ -109,6 +119,8 @@ struct App {
     /// A skybox restored from the settings keeps its saved «on» flag.
     skybox_restore_on: Option<bool>,
     smoke_view_change: bool,
+    /// --camera-view: applied once a model is shown.
+    initial_view: Option<camera::View>,
     smoke_input: bool,
     input_smoke_done: bool,
     cursor: Option<(f64, f64)>,
@@ -1874,6 +1886,12 @@ impl App {
             return Ok(());
         }
         self.refresh_edit_ui();
+        if self.current.is_some()
+            && let Some(view) = self.initial_view.take()
+        {
+            self.camera.set_view(view);
+            eprintln!("camera_view view={view:?} ortho={}", self.camera.is_ortho());
+        }
         if self.smoke_view_change && self.current.is_some() {
             self.smoke_view_change = false;
             self.ui.show_axes = !self.ui.show_axes;
@@ -2045,6 +2063,10 @@ impl App {
         if let Some(path) = actions.skybox_open.clone() {
             self.skybox_job = Some(skybox::spawn(path, self.skybox_width()));
             self.ui.set_status("Загрузка скайбокса...", false);
+        }
+        if let Some(view) = actions.camera_view {
+            self.camera.set_view(view);
+            eprintln!("camera_view view={view:?} ortho={}", self.camera.is_ortho());
         }
         if actions.skybox_folder_choose {
             self.pending_skybox_folder = true;
@@ -2562,6 +2584,7 @@ fn run() -> GpuResult<()> {
         );
     }
     let mut smoke_view_change = false;
+    let mut initial_view = None;
     let mut args = argv.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -2668,6 +2691,17 @@ fn run() -> GpuResult<()> {
                     .ok_or("--skybox needs a PNG/JPEG panorama path")?;
                 pending_skybox = Some(skybox::load(std::path::Path::new(&path), ui.skybox_width)?);
             }
+            "--camera-view" => {
+                let name = args.next().ok_or("--camera-view needs a view name")?;
+                initial_view = Some(
+                    camera::View::ALL
+                        .into_iter()
+                        .find(|v| v.label().eq_ignore_ascii_case(&name))
+                        .ok_or(
+                            "--camera-view needs Front, Back, Left, Right, Top, Bottom or 3/4",
+                        )?,
+                );
+            }
             "--skybox-width" => {
                 ui.skybox_width = args
                     .next()
@@ -2770,6 +2804,15 @@ fn run() -> GpuResult<()> {
         }
         ui.bindings = bindings;
     }
+    // Program log file, when the owner turned it on (never in smoke runs).
+    if ui.log_to_file && view_settings_path.is_some() {
+        match log::write_to(log::default_folder()) {
+            Ok(path) => eprintln!("log_file path_set={}", path.is_some()),
+            Err(error) => view_warnings.push(format!("журнал не пишется в файл: {error}")),
+        }
+    } else {
+        ui.log_to_file = false;
+    }
     if !view_warnings.is_empty() {
         ui.set_status(
             format!("Настройки вида: {}", view_warnings.join("; ")),
@@ -2810,6 +2853,7 @@ fn run() -> GpuResult<()> {
         view_pending: None,
         skybox_restore_on,
         smoke_view_change,
+        initial_view,
         smoke_input,
         input_smoke_done: false,
         cursor: None,
