@@ -60,6 +60,15 @@ impl StagedScene<'_> {
     }
 }
 
+/// Work-Tree view override of one draw: hidden, or tinted with an sRGB
+/// colour at `TINT_ALPHA`. View only.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DrawOverride {
+    pub hidden: bool,
+    pub tint: Option<[u8; 3]>,
+}
+/// Opacity of a Work-Tree colour mark.
+pub const TINT_ALPHA: f32 = 0.45;
 /// ADR-0041 drag preview: view-projection including the preview transform,
 /// the eye and the lamp direction in the previewed model's frame.
 pub type ModelPreview = ([[f32; 4]; 4], [f32; 3], [f32; 3]);
@@ -105,6 +114,8 @@ pub struct Renderer {
     /// panorama, and frames lit by the panorama (smoke evidence).
     environment_fallback: Option<crate::sky::Skybox>,
     ibl_frames: u64,
+    /// Per-draw Work-Tree overrides (used when the length matches the scene).
+    overrides: Vec<DrawOverride>,
     sample_textures: bool,
     sample_mr_maps: bool,
     sample_normal_maps: bool,
@@ -168,6 +179,7 @@ impl Renderer {
             panorama_frames: 0,
             environment_fallback: None,
             ibl_frames: 0,
+            overrides: Vec::new(),
             model_preview: None,
             channel: crate::lighting::Channel::Lit,
             wireframe: false,
@@ -314,6 +326,18 @@ impl Renderer {
             self.skybox = Some(skybox);
         }
         Ok(())
+    }
+    /// Work-Tree: hidden and tinted draws, one entry per scene draw (an
+    /// empty or mismatched list draws everything as it is).
+    pub fn set_draw_overrides(&mut self, overrides: Vec<DrawOverride>) {
+        self.overrides = overrides;
+    }
+    fn draw_override(&self, index: usize, draws: usize) -> DrawOverride {
+        if self.overrides.len() == draws {
+            self.overrides[index]
+        } else {
+            DrawOverride::default()
+        }
     }
     /// Largest 2D image side the GPU accepts (SkyBox quality limit).
     pub fn max_image_side(&self) -> u32 {
@@ -604,7 +628,10 @@ impl Renderer {
                     0,
                     vk::IndexType::UINT32,
                 );
-                for draw in &scene.draws {
+                for (index, draw) in scene.draws.iter().enumerate() {
+                    if self.draw_override(index, scene.draws.len()).hidden {
+                        continue;
+                    }
                     device.cmd_draw_indexed(
                         self.command,
                         draw.index_count,
@@ -808,7 +835,18 @@ impl Renderer {
                         );
                         self.wire_frames += 1;
                     }
-                    for draw in &scene.draws {
+                    for (index, draw) in scene.draws.iter().enumerate() {
+                        let mark = self.draw_override(index, scene.draws.len());
+                        if mark.hidden {
+                            continue;
+                        }
+                        // Tint packed as r + 256 g + 65536 b (exact in f32).
+                        let (tint, tint_alpha) = mark.tint.map_or((0., 0.), |[r, g, b]| {
+                            (
+                                f32::from(r) + 256. * f32::from(g) + 65536. * f32::from(b),
+                                TINT_ALPHA,
+                            )
+                        });
                         let push = Push {
                             base_color: draw.base_color,
                             material: [
@@ -827,8 +865,8 @@ impl Renderer {
                                     chain.encode_srgb,
                                 ),
                                 draw.occlusion_strength,
-                                0.,
-                                0.,
+                                tint,
+                                tint_alpha,
                             ],
                             emissive: [
                                 draw.emissive_factor[0],

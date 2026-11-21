@@ -119,6 +119,10 @@ struct App {
     /// A skybox restored from the settings keeps its saved «on» flag.
     skybox_restore_on: Option<bool>,
     smoke_view_change: bool,
+    /// Work-Tree overrides were built for this (revision, document, tree rev).
+    overrides_key: Option<(u64, ad_document::DocumentId, u64)>,
+    /// Smoke: hide the first child node and mark the second.
+    smoke_work_tree: bool,
     /// --camera-view: applied once a model is shown.
     initial_view: Option<camera::View>,
     smoke_input: bool,
@@ -1892,6 +1896,13 @@ impl App {
             self.camera.set_view(view);
             eprintln!("camera_view view={view:?} ortho={}", self.camera.is_ortho());
         }
+        if self.smoke_work_tree && self.current.is_some() {
+            self.smoke_work_tree = false;
+            self.ui.tree.hidden.insert(1);
+            self.ui.tree.tints.insert(2, [235, 64, 64]);
+            self.ui.tree.rev += 1;
+            eprintln!("work_tree_smoke hidden=1 tinted=2");
+        }
         if self.smoke_view_change && self.current.is_some() {
             self.smoke_view_change = false;
             self.ui.show_axes = !self.ui.show_axes;
@@ -2040,6 +2051,35 @@ impl App {
                     .to_array(),
             )
         }));
+        // Work-Tree: hidden and colour-marked nodes, per draw of the scene.
+        if let Some(asset) = self.current.as_ref() {
+            let key = (
+                asset.snapshot().revision,
+                asset.document().id(),
+                self.ui.tree.rev,
+            );
+            if self.overrides_key != Some(key) {
+                self.overrides_key = Some(key);
+                let marks = ui_model::node_marks(asset.document(), &self.ui.tree);
+                let overrides = asset
+                    .snapshot()
+                    .draws
+                    .iter()
+                    .map(|d| {
+                        let (hidden, tint) = marks.get(d.node.0).copied().unwrap_or_default();
+                        ad_render_vulkan::renderer::DrawOverride { hidden, tint }
+                    })
+                    .collect();
+                let overrides: Vec<ad_render_vulkan::renderer::DrawOverride> = overrides;
+                eprintln!(
+                    "work_tree_overrides draws={} hidden={} tinted={}",
+                    overrides.len(),
+                    overrides.iter().filter(|o| o.hidden).count(),
+                    overrides.iter().filter(|o| o.tint.is_some()).count()
+                );
+                renderer.set_draw_overrides(overrides);
+            }
+        }
         renderer.set_channel(self.ui.channel);
         renderer.set_wireframe(self.ui.wireframe);
         self.ui.wireframe_supported = renderer.wireframe_supported();
@@ -2585,6 +2625,7 @@ fn run() -> GpuResult<()> {
     }
     let mut smoke_view_change = false;
     let mut initial_view = None;
+    let mut smoke_work_tree = false;
     let mut args = argv.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -2643,6 +2684,7 @@ fn run() -> GpuResult<()> {
                 args.next();
             }
             "--smoke-view-change" => smoke_view_change = true,
+            "--smoke-work-tree" => smoke_work_tree = true,
             "--channel" => {
                 ui.channel = args
                     .next()
@@ -2853,6 +2895,8 @@ fn run() -> GpuResult<()> {
         view_pending: None,
         skybox_restore_on,
         smoke_view_change,
+        overrides_key: None,
+        smoke_work_tree,
         initial_view,
         smoke_input,
         input_smoke_done: false,

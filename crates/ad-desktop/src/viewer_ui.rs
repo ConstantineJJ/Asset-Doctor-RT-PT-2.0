@@ -1232,6 +1232,9 @@ impl ViewerUi {
                     });
                 });
             });
+            if self.show_tree {
+                self.work_tree_panel(root);
+            }
             if self.show_summary && width>=680. {
                 self.right_panel(root,asset,loading,&mut actions);
             }
@@ -1251,7 +1254,7 @@ impl ViewerUi {
                 if !(asset.is_some() && self.lamp_icon && self.lamp_gizmo.is_some()) {
                     self.lamp_hot=None;
                 }
-                self.tree_overlay(&context);
+                self.work_tree_strip(&context,width);
                 self.corner_overlay(&context,width,loading,&mut actions);
                 if asset.is_none() {
                     let center=self.scene.center();
@@ -1828,6 +1831,26 @@ FORMAT=32-bit_rle_rgbe
         assert!(ui.show_log);
         crate::log::push("test line for the log window");
         warm(&mut ui, None, size);
+    }
+    #[test]
+    fn work_tree_strip_opens_the_left_block_and_the_eye_hides_a_node() {
+        let asset = fixture("Twin_Cubes.glb");
+        let mut ui = ViewerUi::default();
+        ui.tree.replace(asset.document());
+        let size = (1600., 900.);
+        warm(&mut ui, Some(&asset), size);
+        let (out, closed, _) = ui.layout(raw(size.0, size.1), Some(&asset), false);
+        out.drop_without_applying_deltas();
+        let button = ui.tree_rect;
+        assert!(button.top() >= 48. && button.left() < 20., "{button:?}");
+        click(&mut ui, Some(&asset), button, size);
+        assert!(ui.show_tree);
+        warm(&mut ui, Some(&asset), size);
+        let (out, open, _) = ui.layout(raw(size.0, size.1), Some(&asset), false);
+        out.drop_without_applying_deltas();
+        // The left block mirrors the right one: about 390 points wide.
+        assert!(open.left() - closed.left() > 300., "{closed:?} {open:?}");
+        assert!(ui.tree.hidden.is_empty());
     }
     /// Each menu shows all its items at once, also after switching menus.
     #[test]

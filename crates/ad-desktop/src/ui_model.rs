@@ -10,6 +10,34 @@ pub struct SceneTree {
     pub document: Option<DocumentId>,
     pub rows: Vec<SceneRow>,
     pub selected: Option<NodeId>,
+    /// Work-Tree view state (node indices): hidden nodes and colour marks;
+    /// `rev` changes with them. Cleared for another document.
+    pub hidden: std::collections::BTreeSet<usize>,
+    pub tints: std::collections::BTreeMap<usize, [u8; 3]>,
+    pub rev: u64,
+}
+/// Hidden and mark of every node: a node follows its nearest marked
+/// ancestor (itself included); hidden when it or any ancestor is hidden.
+pub fn node_marks(document: &AssetDocument, tree: &SceneTree) -> Vec<(bool, Option<[u8; 3]>)> {
+    let nodes = document.nodes();
+    let mut marks = vec![(false, None); nodes.len()];
+    let mut pending: Vec<(usize, bool, Option<[u8; 3]>)> = document
+        .roots()
+        .iter()
+        .map(|id| (id.0, false, None))
+        .collect();
+    let mut seen = vec![false; nodes.len()];
+    while let Some((id, hidden, tint)) = pending.pop() {
+        if id >= nodes.len() || seen[id] {
+            continue;
+        }
+        seen[id] = true;
+        let hidden = hidden || tree.hidden.contains(&id);
+        let tint = tree.tints.get(&id).copied().or(tint);
+        marks[id] = (hidden, tint);
+        pending.extend(nodes[id].children.iter().map(|c| (c.0, hidden, tint)));
+    }
+    marks
 }
 impl SceneTree {
     pub fn replace(&mut self, document: &AssetDocument) {
@@ -19,6 +47,9 @@ impl SceneTree {
         self.document = Some(document.id());
         self.selected = None;
         self.rows.clear();
+        self.hidden.clear();
+        self.tints.clear();
+        self.rev += 1;
         let mut seen = vec![false; document.nodes().len()];
         let mut pending: Vec<_> = document
             .roots()
@@ -77,6 +108,39 @@ mod tests {
         assert_eq!(tree.selected, Some(NodeId(1)));
         tree.replace(&document(2));
         assert_eq!(tree.selected, None);
+    }
+    #[test]
+    fn hidden_and_marks_follow_the_parent_and_reset_for_another_document() {
+        let doc = document(1);
+        let mut tree = SceneTree::default();
+        tree.replace(&doc);
+        // Twin_Cubes: node 0 with children 1 and 2.
+        tree.tints.insert(0, [1, 2, 3]);
+        tree.tints.insert(2, [9, 9, 9]);
+        tree.hidden.insert(1);
+        let marks = node_marks(&doc, &tree);
+        assert_eq!(marks[0], (false, Some([1, 2, 3])));
+        assert_eq!(
+            marks[1],
+            (true, Some([1, 2, 3])),
+            "child follows the parent mark"
+        );
+        assert_eq!(marks[2], (false, Some([9, 9, 9])), "its own mark wins");
+        tree.hidden.insert(0);
+        assert!(
+            node_marks(&doc, &tree).iter().all(|m| m.0),
+            "hiding the root hides all"
+        );
+        // Snapshot draws name their nodes.
+        let snapshot = doc
+            .snapshot(ImportLimits::default(), &Cancellation::default())
+            .unwrap();
+        let mut nodes: Vec<_> = snapshot.draws.iter().map(|d| d.node.0).collect();
+        nodes.dedup();
+        assert_eq!(nodes, [1, 2]);
+        let rev = tree.rev;
+        tree.replace(&document(2));
+        assert!(tree.hidden.is_empty() && tree.tints.is_empty() && tree.rev > rev);
     }
     #[test]
     fn deep_hierarchy_is_flattened_iteratively_without_source_changes() {

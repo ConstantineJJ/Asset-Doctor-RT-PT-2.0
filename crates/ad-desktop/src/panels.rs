@@ -12,6 +12,19 @@ const DOWN: egui::Vec2 = egui::vec2(0., 1.);
 const UP: egui::Vec2 = egui::vec2(0., -1.);
 const RIGHT: egui::Vec2 = egui::vec2(1., 0.);
 const LAMP_ON: Color32 = Color32::from_rgb(255, 210, 60);
+/// Height of the light grey tool strip under the top bar.
+const STRIP_HEIGHT: f32 = 26.;
+/// Colour marks of the Work-Tree (and fixed outline colours): red, orange,
+/// yellow, green, cyan, blue, magenta.
+pub(crate) const MARK_COLORS: [[u8; 3]; 7] = [
+    [235, 64, 64],
+    [245, 150, 40],
+    [240, 220, 50],
+    [70, 200, 90],
+    [60, 200, 220],
+    [70, 120, 240],
+    [210, 80, 220],
+];
 /// View menus of the top bar, left to right (ADR-0045 amendment).
 const VIEW_MENUS: [(TopMenu, &str, &str); 8] = [
     (TopMenu::View, "Вид", "Вид"),
@@ -1057,83 +1070,134 @@ impl ViewerUi {
         self.show_log &= open;
     }
 
-    /// «Дерево» in the viewport's top-left corner; the tree unfolds below it.
-    pub(super) fn tree_overlay(&mut self, context: &egui::Context) {
-        let scene = self.scene;
-        if scene.width() < 160. || scene.height() < 120. {
-            return;
-        }
-        egui::Area::new(egui::Id::new("tree_button"))
+    /// Light grey strip under the top bar (room for future tools) with the
+    /// black «Work-Tree» button that opens the left block.
+    pub(super) fn work_tree_strip(&mut self, context: &egui::Context, width: f32) {
+        let strip = egui::Rect::from_min_size(
+            egui::pos2(0., 48.),
+            egui::vec2((width * 0.405).max(160.), STRIP_HEIGHT),
+        );
+        egui::Area::new(egui::Id::new("work_tree_strip"))
             .order(egui::Order::Foreground)
-            .fixed_pos(scene.min + egui::vec2(10., 10.))
+            .fixed_pos(strip.min)
             .show(context, |ui| {
-                let response = ui.add(
-                    egui::Button::selectable(self.show_tree, "      Дерево")
-                        .min_size(egui::vec2(100., 28.)),
-                );
-                triangle(
-                    ui.painter(),
-                    egui::pos2(response.rect.left() + 14., response.rect.center().y),
-                    5.,
-                    if self.show_tree { DOWN } else { RIGHT },
-                    ui.visuals().strong_text_color(),
-                );
-                #[cfg(test)]
-                {
-                    self.tree_rect = response.rect;
-                }
-                if response
-                    .on_hover_text("Структура сцены: узлы активной сцены")
-                    .clicked()
-                {
-                    self.show_tree = !self.show_tree;
-                }
-            });
-        if !self.show_tree {
-            return;
-        }
-        let rows_height = (scene.height() - 110.).clamp(80., 560.);
-        egui::Area::new(egui::Id::new("tree_panel"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(scene.min + egui::vec2(10., 44.))
-            .show(context, |ui| {
-                egui::Frame::popup(ui.style())
-                    .inner_margin(8.)
-                    .show(ui, |ui| {
-                        ui.set_width(280.);
-                        ui.strong("Сцена");
-                        ui.weak("Узлы активной сцены");
-                        ui.separator();
-                        if self.tree.rows.is_empty() {
-                            ui.label("Модель не открыта");
+                ui.painter().rect_filled(strip, 0., Color32::from_rgb(196, 198, 204));
+                ui.scope_builder(egui::UiBuilder::new().max_rect(strip.shrink2(egui::vec2(6., 2.))), |ui| {
+                    ui.horizontal_centered(|ui| {
+                        let text = RichText::new("      Work-Tree").color(Color32::from_rgb(235, 235, 240)).size(13.);
+                        let fill = if self.show_tree {
+                            Color32::from_rgb(110, 36, 44)
+                        } else {
+                            Color32::from_rgb(18, 18, 22)
+                        };
+                        let response = ui.add(egui::Button::new(text).fill(fill).min_size(egui::vec2(110., STRIP_HEIGHT - 6.)));
+                        triangle(
+                            ui.painter(),
+                            egui::pos2(response.rect.left() + 13., response.rect.center().y),
+                            4.5,
+                            if self.show_tree { DOWN } else { RIGHT },
+                            Color32::from_rgb(235, 235, 240),
+                        );
+                        #[cfg(test)]
+                        {
+                            self.tree_rect = response.rect;
                         }
-                        egui::ScrollArea::vertical()
-                            .max_height(rows_height)
-                            .show_rows(ui, 24., self.tree.rows.len(), |ui, range| {
-                                for index in range {
-                                    let row = &self.tree.rows[index];
-                                    ui.horizontal(|ui| {
-                                        ui.add_space((row.depth.min(12) * 12) as f32);
-                                        let label = if row.label.is_empty() {
-                                            "Без имени"
-                                        } else {
-                                            &row.label
-                                        };
-                                        let response = ui.add_sized(
-                                            [ui.available_width(), 24.],
-                                            egui::Button::selectable(
-                                                self.tree.selected == Some(row.id),
-                                                label,
-                                            )
-                                            .truncate(),
-                                        );
-                                        if response.on_hover_text(label).clicked() {
-                                            self.tree.selected = Some(row.id);
-                                        }
-                                    });
-                                }
-                            });
+                        if response
+                            .on_hover_text("Work-Tree: структура сцены — узлы, порядок, вложенность; скрыть объект или пометить его цветом (только вид)")
+                            .clicked()
+                        {
+                            self.show_tree = !self.show_tree;
+                        }
                     });
+                });
+            });
+    }
+
+    /// The left block (mirror of the right one): the scene tree with hide
+    /// and colour-mark switches per node. View only; children follow.
+    pub(super) fn work_tree_panel(&mut self, root: &mut egui::Ui) {
+        egui::Panel::left("work_tree")
+            .default_size(390.)
+            .min_size(330.)
+            .max_size(570.)
+            .show(root, |ui| {
+                ui.add_space(STRIP_HEIGHT + 4.);
+                ui.horizontal(|ui| {
+                    ui.strong("Work-Tree");
+                    ui.weak(format!("узлов: {}", self.tree.rows.len()));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add_enabled(!self.tree.hidden.is_empty() || !self.tree.tints.is_empty(), egui::Button::new("Сбросить").small())
+                            .on_hover_text("Показать всё и снять цветные пометки")
+                            .clicked()
+                        {
+                            self.tree.hidden.clear();
+                            self.tree.tints.clear();
+                            self.tree.rev += 1;
+                        }
+                    });
+                });
+                ui.weak("Глаз — скрыть или показать, квадрат — цветная пометка. Вложенные узлы следуют за родителем. Только вид: в файл не попадает.");
+                ui.separator();
+                if self.tree.rows.is_empty() {
+                    ui.label("Модель не открыта");
+                }
+                let rows = self.tree.rows.len();
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, 24., rows, |ui, range| {
+                    for index in range {
+                        let (id, depth, label) = {
+                            let row = &self.tree.rows[index];
+                            (row.id, row.depth, row.label.clone())
+                        };
+                        ui.horizontal(|ui| {
+                            ui.set_min_height(24.);
+                            ui.add_space((depth.min(12) * 12) as f32);
+                            let hidden = self.tree.hidden.contains(&id.0);
+                            let (eye, response) = ui.allocate_exact_size(egui::vec2(20., 20.), egui::Sense::click());
+                            paint_eye(ui.painter(), eye.center(), !hidden, if response.hovered() { ui.visuals().strong_text_color() } else { ui.visuals().text_color() });
+                            if response.on_hover_text(if hidden { "Показать" } else { "Скрыть" }).clicked() {
+                                if hidden {
+                                    self.tree.hidden.remove(&id.0);
+                                } else {
+                                    self.tree.hidden.insert(id.0);
+                                }
+                                self.tree.rev += 1;
+                            }
+                            let tint = self.tree.tints.get(&id.0).copied();
+                            let (square, response) = ui.allocate_exact_size(egui::vec2(18., 18.), egui::Sense::click());
+                            match tint {
+                                Some([r, g, b]) => ui.painter().rect_filled(square.shrink(2.), 3., Color32::from_rgb(r, g, b)),
+                                None => ui.painter().rect_stroke(square.shrink(3.), 3., egui::Stroke::new(1., ui.visuals().weak_text_color()), egui::StrokeKind::Inside),
+                            };
+                            let response = response.on_hover_text("Цветная пометка");
+                            egui::Popup::menu(&response).show(|ui| {
+                                ui.horizontal(|ui| {
+                                    for color in MARK_COLORS {
+                                        let (r, response) = ui.allocate_exact_size(egui::vec2(20., 20.), egui::Sense::click());
+                                        ui.painter().rect_filled(r, 3., Color32::from_rgb(color[0], color[1], color[2]));
+                                        if response.clicked() {
+                                            self.tree.tints.insert(id.0, color);
+                                            self.tree.rev += 1;
+                                        }
+                                    }
+                                    if ui.small_button("Без пометки").clicked() {
+                                        self.tree.tints.remove(&id.0);
+                                        self.tree.rev += 1;
+                                    }
+                                });
+                            });
+                            let name = if label.is_empty() { "Без имени".to_string() } else { label };
+                            let text = if hidden { RichText::new(&name).weak() } else { RichText::new(&name) };
+                            let response = ui.add_sized(
+                                [ui.available_width(), 22.],
+                                egui::Button::selectable(self.tree.selected == Some(id), text).truncate(),
+                            );
+                            if response.on_hover_text(&name).clicked() {
+                                self.tree.selected = Some(id);
+                            }
+                        });
+                    }
+                });
             });
     }
 
@@ -1233,4 +1297,26 @@ fn history_button(ui: &mut egui::Ui, enabled: bool, redo: bool) -> egui::Respons
     painter.add(egui::Shape::line(points, egui::Stroke::new(2., color)));
     triangle(painter, end + egui::vec2(0., 2.), 4.5, DOWN, color);
     response
+}
+
+/// An eye: open (shown) or crossed out (hidden).
+fn paint_eye(painter: &egui::Painter, c: egui::Pos2, open: bool, color: Color32) {
+    let stroke = egui::Stroke::new(1.4, color);
+    let upper: Vec<egui::Pos2> = (0..=10)
+        .map(|i| {
+            let t = i as f32 / 10.;
+            c + egui::vec2(-7. + 14. * t, -4.5 * (std::f32::consts::PI * t).sin())
+        })
+        .collect();
+    let lower: Vec<egui::Pos2> = upper
+        .iter()
+        .map(|p| egui::pos2(p.x, 2. * c.y - p.y))
+        .collect();
+    painter.add(egui::Shape::line(upper, stroke));
+    painter.add(egui::Shape::line(lower, stroke));
+    if open {
+        painter.circle_filled(c, 2.2, color);
+    } else {
+        painter.line_segment([c + egui::vec2(-6., 5.), c + egui::vec2(6., -5.)], stroke);
+    }
 }

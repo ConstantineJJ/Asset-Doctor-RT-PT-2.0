@@ -161,6 +161,15 @@ vec3 direct_pbr(vec3 base,vec3 n,vec2 mr,vec3 v,float occlusion,vec3 emission,fl
     vec3 exposed=max((radiance+emission)*exp2(frame.eye_exposure.w),vec3(0.0));
     return exposed/(vec3(1.0)+exposed);
 }
+// Work-Tree colour mark: view.z = r + 256 g + 65536 b (sRGB bytes), view.w =
+// opacity. Mixed in the output space (encoded when the shader encodes).
+vec3 work_tree_tint(vec3 c,uint flags) {
+    if (pc.view.w<=0.0) {return c;}
+    float packed=pc.view.z;
+    vec3 tint=vec3(mod(packed,256.0),mod(floor(packed/256.0),256.0),floor(packed/65536.0))/255.0;
+    if ((flags&4u)==0u) {tint=mix(tint/12.92,pow((tint+0.055)/1.055,vec3(2.4)),greaterThan(tint,vec3(0.04045)));}
+    return mix(c,tint,pc.view.w);
+}
 void main() {
     vec3 px=dFdx(world_position);
     vec3 py=dFdy(world_position);
@@ -224,9 +233,9 @@ void main() {
     if (pc.material.z>=0.0 && base.a<pc.material.z) {discard;}
     if ((flags&128u)!=0u) {color=vec4(1.0,0.72,0.2,1.0); return;}
     vec3 display=linear;
-    if (raw) {color=vec4(clamp(display,0.0,1.0),1.0); return;}
+    if (raw) {color=vec4(work_tree_tint(clamp(display,0.0,1.0),flags),1.0); return;}
     if ((flags&4u)!=0u) {
         display=mix(12.92*linear,1.055*pow(linear,vec3(1.0/2.4))-0.055,greaterThan(linear,vec3(0.0031308)));
     }
-    color=vec4(display,1.0);
+    color=vec4(work_tree_tint(display,flags),1.0);
 }

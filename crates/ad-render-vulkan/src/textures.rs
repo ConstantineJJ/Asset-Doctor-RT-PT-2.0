@@ -817,6 +817,7 @@ mod tests {
             sampler: TextureSampler::default(),
         });
         let draw = |color, mr| DrawRange {
+            node: ad_document::NodeId(0),
             index_start: 0,
             index_count: 3,
             base_color: [1.; 4],

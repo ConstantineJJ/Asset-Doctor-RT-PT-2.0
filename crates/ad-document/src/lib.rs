@@ -171,6 +171,8 @@ pub struct Bounds {
     pub max: [f32; 3],
 }
 pub struct DrawRange {
+    /// Scene node this instance belongs to (Work-Tree, picking).
+    pub node: NodeId,
     pub index_start: u32,
     pub index_count: u32,
     pub base_color: [f32; 4],
@@ -489,7 +491,7 @@ impl DocumentView<'_> {
                         "Instanced scene exceeds snapshot/GPU geometry budget",
                     ));
                 }
-                instances.push((*mesh_id, world));
+                instances.push((*mesh_id, world, id));
             }
             pending.extend(node.children.iter().rev().map(|id| (*id, world)));
         }
@@ -575,7 +577,7 @@ impl DocumentView<'_> {
             .map_err(|_| {
                 AssetError::new(ErrorCode::ResourceLimit, "Cannot allocate scene draws")
             })?;
-        for (mesh_id, world) in instances {
+        for (mesh_id, world, node_id) in instances {
             let mesh = self.primitive(mesh_id);
             let normal_matrix = normals::normal_matrix(world);
             let tangent_matrix = normals::tangent_matrix(world);
@@ -631,6 +633,7 @@ impl DocumentView<'_> {
                     .push(mesh.colors.as_ref().map_or([1.; 4], |colors| colors[i]));
             }
             result.draws.push(DrawRange {
+                node: node_id,
                 index_start: result.indices.len() as u32,
                 index_count: self.indices(mesh_id).len() as u32,
                 base_color: mesh.base_color,
