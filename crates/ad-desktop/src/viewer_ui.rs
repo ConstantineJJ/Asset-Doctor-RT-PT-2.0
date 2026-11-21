@@ -9,6 +9,7 @@ use winit::{event::WindowEvent, window::Window};
 
 #[path = "panels.rs"]
 mod panels;
+pub(crate) use panels::MARK_COLORS;
 #[path = "view_settings.rs"]
 pub mod view_settings;
 
@@ -64,15 +65,29 @@ pub struct Actions {
     /// ADR-0040 skybox: choose a panorama file / remove the loaded one.
     pub skybox_load: bool,
     pub skybox_remove: bool,
+    /// SkyBox quality changed: prepare this panorama again.
+    pub skybox_reload: Option<std::path::PathBuf>,
+    /// Right-click menu «Удалить»: take this object out of the scene.
+    pub delete_object: Option<ad_document::NodeId>,
+    /// Fixed camera view chosen in the viewport corner.
+    pub camera_view: Option<crate::camera::View>,
+    /// SkyBox window: show this panorama; choose the library folder.
+    pub skybox_open: Option<std::path::PathBuf>,
+    pub skybox_folder_choose: bool,
     /// ADR-0040 lamp gizmo dragged by (dx, dy) logical points this frame.
     pub lamp_drag: Option<[f32; 2]>,
     /// Lamp context menu: point the lamp from the camera.
     pub lamp_from_camera: bool,
-    /// Lamp handles: degrees of azimuth and elevation to turn this frame.
+    /// Lamp handles: degrees of azimuth and elevation to turn this frame,
+    /// and model radii to move the lamp closer (−) or farther (+).
     pub lamp_turn: Option<[f32; 2]>,
+    pub lamp_distance: Option<f32>,
     /// ADR-0041 model gizmo: handle dragged by (dx, dy) in viewport units
     /// (0..1 of its width/height), released this frame, or reset requested.
     pub model_drag: Option<(crate::model_gizmo::Handle, [f32; 2])>,
+    /// A ring grabbed anywhere: axis and the pointer before and after
+    /// (viewport units).
+    pub model_ring_drag: Option<(usize, [f32; 2], [f32; 2])>,
     pub model_drag_end: bool,
     pub model_reset: bool,
     /// ADR-0041 numeric fields: preview of the edited placement, and the
@@ -116,6 +131,7 @@ enum LampPart {
     Icon,
     Azimuth,
     Elevation,
+    Distance,
 }
 /// Repair history as shown by the UI; filled by the application on demand.
 #[derive(Default)]
@@ -233,6 +249,31 @@ pub struct ViewerUi {
     pub skybox_name: Option<String>,
     /// File of the shown skybox (view settings load it again next run).
     pub skybox_path: Option<std::path::PathBuf>,
+    /// ADR-0047: widest SkyBox level kept on the GPU (2048, 4096 or 8192).
+    pub skybox_width: u32,
+    /// SkyBox window: open, its folder (kept in the view settings), the
+    /// panoramas there and the one under the pointer.
+    pub show_skybox: bool,
+    pub skybox_folder: Option<std::path::PathBuf>,
+    pub skybox_library: crate::skybox_library::Library,
+    skybox_hover: Option<usize>,
+    /// Program log window, its file switch (view settings) and the warnings
+    /// already seen (the bug turns amber for new ones).
+    pub show_log: bool,
+    pub log_to_file: bool,
+    /// Object outline (Tab, amoeba icon): on/off and colour (None: dynamic
+    /// contrast, Some: index into the seven fixed colours). The hovered node
+    /// is set by the application from the pointer.
+    pub outline_on: bool,
+    pub outline_color: Option<usize>,
+    pub hover_node: Option<ad_document::NodeId>,
+    /// ADR-0048: the gizmo works on this object instead of the whole model.
+    pub object_gizmo: Option<ad_document::NodeId>,
+    /// Right-click menu: where (points) and on which object.
+    context_menu: Option<(egui::Pos2, Option<ad_document::NodeId>)>,
+    log_seen_warnings: u64,
+    log_filter: String,
+    log_only_warnings: bool,
     pub skybox_on: bool,
     pub skybox_yaw: f32,
     pub skybox_light: Option<[[f32; 3]; 3]>,
@@ -346,6 +387,16 @@ pub struct ViewerUi {
     lamp_switch_rect: egui::Rect,
     #[cfg(test)]
     lamp_handle_rects: Vec<(LampPart, egui::Rect)>,
+    #[cfg(test)]
+    skybox_button_rect: egui::Rect,
+    #[cfg(test)]
+    bug_rect: egui::Rect,
+    #[cfg(test)]
+    amoeba_rect: egui::Rect,
+    #[cfg(test)]
+    view_rects: Vec<(crate::camera::View, egui::Rect)>,
+    #[cfg(test)]
+    skybox_tile_rects: Vec<egui::Rect>,
 }
 impl Default for ViewerUi {
     fn default() -> Self {
@@ -371,6 +422,21 @@ impl Default for ViewerUi {
             environment_strength: 1.,
             skybox_name: None,
             skybox_path: None,
+            skybox_width: ad_render_vulkan::ibl::DEFAULT_WIDTH,
+            show_skybox: false,
+            skybox_folder: None,
+            skybox_library: Default::default(),
+            skybox_hover: None,
+            show_log: false,
+            log_to_file: false,
+            outline_on: true,
+            outline_color: None,
+            hover_node: None,
+            object_gizmo: None,
+            context_menu: None,
+            log_seen_warnings: 0,
+            log_filter: String::new(),
+            log_only_warnings: false,
             skybox_on: false,
             skybox_yaw: 0.,
             skybox_light: None,
@@ -463,6 +529,16 @@ impl Default for ViewerUi {
             lamp_switch_rect: egui::Rect::NOTHING,
             #[cfg(test)]
             lamp_handle_rects: Vec::new(),
+            #[cfg(test)]
+            skybox_button_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            bug_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            amoeba_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            view_rects: Vec::new(),
+            #[cfg(test)]
+            skybox_tile_rects: Vec::new(),
         }
     }
 }
@@ -482,6 +558,11 @@ impl ViewerUi {
     pub fn set_status(&mut self, text: impl Into<String>, warning: bool) {
         self.status = text.into();
         self.status_warning = warning;
+        crate::log::push(format!(
+            "status{}: {}",
+            if warning { " warning" } else { "" },
+            self.status
+        ));
     }
     pub fn attach(&mut self, window: &Window) {
         self.input = Some(egui_winit::State::new(
@@ -782,13 +863,67 @@ impl ViewerUi {
                 }
             }
         }
+        // The rings can be grabbed anywhere: a small grab area follows the
+        // pointer while it is near a ring (or while that ring is dragged).
+        let pointer = context.pointer_hover_pos();
         for (slot, axis) in crate::model_gizmo::RING_AXES.into_iter().enumerate() {
-            let color = colors[axis].gamma_multiply(0.8);
             let ring = &gizmo.rings[slot];
+            let grab_id = egui::Id::new(("model_ring_grab", axis));
+            let dragging = context.is_being_dragged(grab_id);
+            let near = pointer.is_some_and(|p| {
+                (0..ring.len()).any(|i| match (ring[i], ring[(i + 1) % ring.len()]) {
+                    (Some(a), Some(b)) => {
+                        egui::emath::Rect::from_two_pos(at(a), at(b))
+                            .expand(7.)
+                            .contains(p)
+                            && segment_distance(p, at(a), at(b)) < 7.
+                    }
+                    _ => false,
+                })
+            });
+            let hot = dragging || near;
+            let color = if hot {
+                colors[axis]
+            } else {
+                colors[axis].gamma_multiply(0.8)
+            };
             for i in 0..ring.len() {
                 if let (Some(a), Some(b)) = (ring[i], ring[(i + 1) % ring.len()]) {
-                    painter.line_segment([at(a), at(b)], egui::Stroke::new(1.6, color));
+                    painter.line_segment(
+                        [at(a), at(b)],
+                        egui::Stroke::new(if hot { 3. } else { 1.6 }, color),
+                    );
                 }
+            }
+            if let Some(p) = pointer.filter(|_| hot && scene.contains(pointer.unwrap_or_default()))
+            {
+                egui::Area::new(egui::Id::new(("model_ring_area", axis)))
+                    .order(egui::Order::Middle)
+                    .fixed_pos(p - egui::vec2(10., 10.))
+                    .show(context, |ui| {
+                        let rect = egui::Rect::from_center_size(p, egui::vec2(20., 20.));
+                        let response = ui.interact(rect, grab_id, egui::Sense::drag());
+                        if response.dragged() {
+                            let d = response.drag_delta();
+                            if d != egui::Vec2::ZERO {
+                                let uv = |q: egui::Pos2| {
+                                    [
+                                        (q.x - scene.min.x) / scene.width(),
+                                        (q.y - scene.min.y) / scene.height(),
+                                    ]
+                                };
+                                actions.model_ring_drag = Some((axis, uv(p - d), uv(p)));
+                            }
+                        }
+                        if response.drag_stopped() {
+                            actions.model_drag_end = true;
+                        }
+                        response.on_hover_text(if axis == 0 {
+                            "Тяните по красному кольцу — наклон вокруг X"
+                        } else {
+                            "Тяните по зелёному кольцу — поворот вокруг Y"
+                        });
+                    });
             }
             if let Some(knob) = gizmo.knobs[slot].map(at)
                 && scene.shrink(10.).contains(knob)
@@ -916,7 +1051,7 @@ impl ViewerUi {
                     path(&guides.orbit, true, azimuth_color.gamma_multiply(0.45));
                     path(&guides.arc, false, elevation_color.gamma_multiply(0.45));
                 }
-                None => {}
+                Some(LampPart::Distance) | None => {}
             }
             for (part, tangent, color, hint) in [
                 (
@@ -930,6 +1065,12 @@ impl ViewerUi {
                     guides.elevation,
                     elevation_color,
                     "Тяните — поднять или опустить лампу (высота); азимут не меняется.",
+                ),
+                (
+                    LampPart::Distance,
+                    guides.distance,
+                    Color32::from_rgb(200, 120, 245),
+                    "Тяните — приблизить или отдалить лампу (расстояние до модели); ближе — ярче.",
                 ),
             ] {
                 let Some(t) = tangent else {
@@ -985,10 +1126,13 @@ impl ViewerUi {
                             let d = response.drag_delta();
                             let turn = crate::lamp::handle_turn([d.x, d.y], [t_px.x, t_px.y]);
                             if turn != 0. {
-                                actions.lamp_turn = Some(match part {
-                                    LampPart::Azimuth => [turn, 0.],
-                                    _ => [0., turn],
-                                });
+                                match part {
+                                    LampPart::Azimuth => actions.lamp_turn = Some([turn, 0.]),
+                                    LampPart::Distance => {
+                                        actions.lamp_distance = Some(turn.clamp(-1., 1.));
+                                    }
+                                    _ => actions.lamp_turn = Some([0., turn]),
+                                }
                             }
                         }
                         response.on_hover_text(hint);
@@ -1082,6 +1226,23 @@ impl ViewerUi {
                 });
             });
     }
+    /// Opens the right-click menu at a window position (pixels).
+    pub fn open_context_menu(&mut self, x: f64, y: f64, node: Option<ad_document::NodeId>) {
+        let scale = self.context.pixels_per_point() as f64;
+        self.context_menu = Some((egui::pos2((x / scale) as f32, (y / scale) as f32), node));
+        self.menu = None;
+    }
+    /// Viewport coordinates (0..1, y down) of a window position in pixels.
+    pub fn viewport_uv(&self, x: f64, y: f64) -> Option<[f32; 2]> {
+        let scale = self.context.pixels_per_point() as f64;
+        let p = egui::pos2((x / scale) as f32, (y / scale) as f32);
+        self.scene.contains(p).then(|| {
+            [
+                (p.x - self.scene.min.x) / self.scene.width(),
+                (p.y - self.scene.min.y) / self.scene.height(),
+            ]
+        })
+    }
     pub fn camera_at(&self, x: f64, y: f64) -> bool {
         let scale = self.context.pixels_per_point() as f64;
         self.scene
@@ -1173,9 +1334,15 @@ impl ViewerUi {
                     }
                     else if self.status_warning {ui.add(egui::Label::new(RichText::new(&self.status).color(Color32::from_rgb(255,190,120))).truncate()).on_hover_text(&self.status);}
                     else {ui.label(&self.status);}
-                    if ui.available_width()>220. {ui.separator();ui.weak("Vulkan · геометрия и базовые цвета");}
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui| {
+                        self.bug_button(ui);
+                        if ui.available_width()>220. {ui.weak("Vulkan · геометрия и базовые цвета");ui.separator();}
+                    });
                 });
             });
+            if self.show_tree {
+                self.work_tree_panel(root);
+            }
             if self.show_summary && width>=680. {
                 self.right_panel(root,asset,loading,&mut actions);
             }
@@ -1195,7 +1362,7 @@ impl ViewerUi {
                 if !(asset.is_some() && self.lamp_icon && self.lamp_gizmo.is_some()) {
                     self.lamp_hot=None;
                 }
-                self.tree_overlay(&context);
+                self.work_tree_strip(&context,width);
                 self.corner_overlay(&context,width,loading,&mut actions);
                 if asset.is_none() {
                     let center=self.scene.center();
@@ -1204,6 +1371,11 @@ impl ViewerUi {
                 }
             }
             self.menu_popup(&context,height,asset,&mut actions);
+            #[cfg(test)]
+            self.skybox_tile_rects.clear();
+            self.skybox_window(&context,&mut actions);
+            self.log_window(&context);
+            self.context_menu_ui(&context,asset,&mut actions);
             if let Some(info)=self.edit.preview.clone() {
                 let ready=!loading && self.edit.busy.is_none();
                 let code=crate::edits::repair_label(info.kind);
@@ -1338,7 +1510,7 @@ impl ViewerUi {
                 ui.label("«Сохранить» (Ctrl+S) перезаписывает рабочий файл после подтверждения и проверки; «Сохранить копию…» (Ctrl+Shift+S) пишет проверенный GLB в новый файл. При закрытии или открытии другой модели с несохранёнными правками программа спросит, что делать.");
                 ui.separator();ui.label("Выбор узла показывает сведения. Подсветка узлов появится позднее.");
                 ui.label("Меню «Вид»: базовый вид или PBR с авторскими нормалями, металлом и шероховатостью. Экспозиция и свет меняют только просмотр. Сведения о модели — вкладка «Инфо».");
-                ui.label("Цвет, металл/шероховатость, нормали, окклюзия и свечение: встроенные PNG/JPEG до 8 бит/канал с независимыми переключателями. AO влияет только на заполняющий свет. Нормали используют авторские касательные либо приближённую UV-основу без MikkTSpace. Свечение не освещает соседние объекты; ореол, HDR-окружение и тени пока не отображаются. Обе стороны граней видимы.");
+                ui.label("Цвет, металл/шероховатость, нормали, окклюзия и свечение: встроенные PNG/JPEG до 8 бит/канал с независимыми переключателями. AO затемняет заполняющий свет и свет окружения. Нормали используют авторские касательные либо приближённую UV-основу без MikkTSpace. Свечение не освещает соседние объекты, ореола нет. Скайбокс PNG/JPEG или HDR со включённым «Свет окружения» освещает модель (IBL); тени — от лампы. Обе стороны граней видимы.");
                 ui.collapsing("Лицензии встроенных шрифтов",|ui| {
                     egui::ScrollArea::vertical().max_height(280.).show(ui,|ui| {
                         ui.label(include_str!("../../../assets/font-licenses.txt"));
@@ -1348,6 +1520,13 @@ impl ViewerUi {
         });
         (output, self.scene, actions)
     }
+}
+
+/// Distance from a point to a segment (screen points).
+fn segment_distance(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
+    let ab = b - a;
+    let t = ((p - a).dot(ab) / ab.length_sq().max(1e-6)).clamp(0., 1.);
+    (a + ab * t - p).length()
 }
 
 #[cfg(test)]
@@ -1412,6 +1591,7 @@ mod tests {
                 key: 7.,
                 fill: 0.8,
                 direction: [0., 1., 0.],
+                distance: 4.,
                 color: [1., 0.5, 0.2],
                 enabled: false,
             },
@@ -1678,7 +1858,7 @@ mod tests {
             rect_of(TopMenu::View).left() > ui.open_rect.right(),
             "{menus:?}"
         );
-        let end = ui.lamp_switch_rect.right();
+        let end = ui.amoeba_rect.right();
         assert!(
             end <= ui.scene.right() && end > ui.scene.right() - 30.,
             "{end} {:?}",
@@ -1704,6 +1884,122 @@ mod tests {
         let settings = rect_of(TopMenu::Settings);
         click(&mut ui, None, settings, size);
         assert_eq!(ui.menu, Some(TopMenu::Settings));
+    }
+    #[test]
+    fn skybox_window_lists_the_folder_and_a_preview_click_opens_the_panorama() {
+        let dir = std::env::temp_dir().join(format!("ad-sky-window-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut hdr = b"#?RADIANCE
+FORMAT=32-bit_rle_rgbe
+
+-Y 8 +X 16
+"
+        .to_vec();
+        for _ in 0..8 * 16 {
+            hdr.extend([128, 160, 255, 129]);
+        }
+        for name in ["one.hdr", "two.hdr"] {
+            std::fs::write(dir.join(name), &hdr).unwrap();
+        }
+        let mut ui = ViewerUi {
+            skybox_folder: Some(dir.clone()),
+            ..Default::default()
+        };
+        let size = (1900., 1000.);
+        warm(&mut ui, None, size);
+        let button = ui.skybox_button_rect;
+        assert!(button.is_positive());
+        click(&mut ui, None, button, size);
+        assert!(ui.show_skybox);
+        assert_eq!(ui.skybox_library.entries.len(), 2);
+        warm(&mut ui, None, size);
+        assert_eq!(ui.skybox_tile_rects.len(), 2);
+        let tile = ui.skybox_tile_rects[1];
+        warm(&mut ui, None, size);
+        let actions = click(&mut ui, None, tile, size);
+        assert_eq!(actions.skybox_open, Some(dir.join("two.hdr")));
+        // Help moved to the settings menu: no top-bar «Справка».
+        ui.menu = Some(TopMenu::Settings);
+        warm(&mut ui, None, size);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+    #[test]
+    fn view_buttons_choose_camera_views_and_the_bug_opens_the_log() {
+        let mut ui = ViewerUi::default();
+        let size = (1600., 900.);
+        warm(&mut ui, None, size);
+        let views: Vec<_> = ui.view_rects.iter().map(|(v, _)| *v).collect();
+        assert_eq!(views, crate::camera::View::ALL);
+        // The view buttons sit left of Undo/Redo in the bottom-right corner.
+        let top = ui.view_rects[4].1;
+        assert!(
+            top.right() < ui.undo_rect.left()
+                && (top.center().y - ui.undo_rect.center().y).abs() < 2.
+        );
+        let actions = click(&mut ui, None, top, size);
+        assert_eq!(actions.camera_view, Some(crate::camera::View::Top));
+        assert!(ui.undo_rect.width() < 50., "Undo is an icon now");
+        let bug = ui.bug_rect;
+        assert!(
+            bug.is_positive() && bug.right() > size.0 - 40. && bug.bottom() > size.1 - 40.,
+            "{bug:?}"
+        );
+        click(&mut ui, None, bug, size);
+        assert!(ui.show_log);
+        crate::log::push("test line for the log window");
+        warm(&mut ui, None, size);
+    }
+    #[test]
+    fn work_tree_strip_opens_the_left_block_and_the_eye_hides_a_node() {
+        let asset = fixture("Twin_Cubes.glb");
+        let mut ui = ViewerUi::default();
+        ui.tree.replace(asset.document());
+        let size = (1600., 900.);
+        warm(&mut ui, Some(&asset), size);
+        let (out, closed, _) = ui.layout(raw(size.0, size.1), Some(&asset), false);
+        out.drop_without_applying_deltas();
+        let button = ui.tree_rect;
+        assert!(button.top() >= 48. && button.left() < 20., "{button:?}");
+        click(&mut ui, Some(&asset), button, size);
+        assert!(ui.show_tree);
+        warm(&mut ui, Some(&asset), size);
+        let (out, open, _) = ui.layout(raw(size.0, size.1), Some(&asset), false);
+        out.drop_without_applying_deltas();
+        // The left block mirrors the right one: about 390 points wide.
+        assert!(open.left() - closed.left() > 300., "{closed:?} {open:?}");
+        assert!(ui.tree.hidden.is_empty());
+    }
+    #[test]
+    fn right_click_menu_offers_object_gizmo_delete_and_view_submenus() {
+        let asset = fixture("Twin_Cubes.glb");
+        let mut ui = ViewerUi::default();
+        ui.tree.replace(asset.document());
+        let size = (1400., 900.);
+        warm(&mut ui, Some(&asset), size);
+        ui.open_context_menu(500., 400., Some(ad_document::NodeId(1)));
+        warm(&mut ui, Some(&asset), size);
+        let area = ui
+            .context
+            .memory(|m| m.area_rect(egui::Id::new("viewport_context_menu")))
+            .unwrap();
+        assert!(
+            area.contains(egui::pos2(510., 410.)) && area.height() > 150.,
+            "{area:?}"
+        );
+        // «Gizmo» is the first button under the name.
+        let gizmo = egui::Rect::from_center_size(
+            egui::pos2(area.left() + 60., area.top() + 40.),
+            egui::vec2(2., 2.),
+        );
+        click(&mut ui, Some(&asset), gizmo, size);
+        assert_eq!(ui.object_gizmo, Some(ad_document::NodeId(1)));
+        assert!(ui.context_menu.is_none(), "a choice closes the menu");
+        // A press outside closes it; Esc too.
+        ui.open_context_menu(500., 400., None);
+        warm(&mut ui, Some(&asset), size);
+        let outside = egui::Rect::from_center_size(egui::pos2(900., 700.), egui::vec2(2., 2.));
+        click(&mut ui, Some(&asset), outside, size);
+        assert!(ui.context_menu.is_none());
     }
     /// Each menu shows all its items at once, also after switching menus.
     #[test]
@@ -1731,7 +2027,7 @@ mod tests {
                     .context
                     .memory(|m| m.area_rect(egui::Id::new(("top_menu", menu))))
                     .unwrap();
-                assert!(area.height() > 50., "{menu:?}: {area:?}");
+                assert!(area.height() > 30., "{menu:?}: {area:?}");
                 heights.push((menu, area.height()));
             }
         }
@@ -1951,6 +2247,7 @@ mod tests {
                 arc: [None; crate::lamp::ARC_POINTS],
                 azimuth: Some([0.01, 0.]),
                 elevation: Some([0., -0.01]),
+                distance: None,
             })),
         });
         let size = (1400., 1000.);

@@ -1,6 +1,7 @@
 //! Renderer-independent source-retaining data and revision-tagged snapshots.
 mod color;
 mod indices;
+mod node_edits;
 mod normals;
 mod placement;
 mod uv;
@@ -10,6 +11,7 @@ pub use indices::{
     AppliedRemoval, DocumentStamp, DocumentTag, IndexExchange, PreparedRemoval, RemovalPreview,
     StagedExchange, StagedRemoval,
 };
+pub use node_edits::{NodeEdits, NodeOp};
 pub use placement::Placement;
 pub use view::{CandidateIndices, DocumentView, Primitives};
 #[cfg(test)]
@@ -163,6 +165,8 @@ pub struct AssetDocument {
     normals_changed: Vec<bool>,
     /// ADR-0041 placement above the scene roots.
     placement: Placement,
+    /// ADR-0048 object edits (node transforms, nodes taken out).
+    node_edits: NodeEdits,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -171,6 +175,8 @@ pub struct Bounds {
     pub max: [f32; 3],
 }
 pub struct DrawRange {
+    /// Scene node this instance belongs to (Work-Tree, picking).
+    pub node: NodeId,
     pub index_start: u32,
     pub index_count: u32,
     pub base_color: [f32; 4],
@@ -381,6 +387,7 @@ impl AssetDocument {
         Ok(Self {
             normals_changed,
             placement: Placement::IDENTITY,
+            node_edits: NodeEdits::default(),
             vertex_maps,
             parts,
             texture_stats: textures.stats,
@@ -438,11 +445,13 @@ impl DocumentView<'_> {
         let document = self.document();
         cancel.check()?;
         let mut visited = vec![false; document.parts.nodes.len()];
+        let edits = self.node_edits();
         let mut pending: Vec<_> = document
             .parts
             .roots
             .iter()
             .rev()
+            .filter(|id| !edits.is_detached(**id))
             .map(|id| (*id, self.placement().matrix()))
             .collect();
         let mut instances = Vec::new();
@@ -457,7 +466,7 @@ impl DocumentView<'_> {
             }
             visited[id.0] = true;
             let node = &document.parts.nodes[id.0];
-            let world = parent * Mat4::from_cols_array_2d(&node.local);
+            let world = parent * Mat4::from_cols_array_2d(&edits.local(document, id));
             if !world.is_finite() {
                 return Err(AssetError::new(
                     ErrorCode::InvalidScene,
@@ -489,9 +498,15 @@ impl DocumentView<'_> {
                         "Instanced scene exceeds snapshot/GPU geometry budget",
                     ));
                 }
-                instances.push((*mesh_id, world));
+                instances.push((*mesh_id, world, id));
             }
-            pending.extend(node.children.iter().rev().map(|id| (*id, world)));
+            pending.extend(
+                node.children
+                    .iter()
+                    .rev()
+                    .filter(|id| !edits.is_detached(**id))
+                    .map(|id| (*id, world)),
+            );
         }
         if indices == 0 {
             return Err(AssetError::new(
@@ -575,7 +590,7 @@ impl DocumentView<'_> {
             .map_err(|_| {
                 AssetError::new(ErrorCode::ResourceLimit, "Cannot allocate scene draws")
             })?;
-        for (mesh_id, world) in instances {
+        for (mesh_id, world, node_id) in instances {
             let mesh = self.primitive(mesh_id);
             let normal_matrix = normals::normal_matrix(world);
             let tangent_matrix = normals::tangent_matrix(world);
@@ -631,6 +646,7 @@ impl DocumentView<'_> {
                     .push(mesh.colors.as_ref().map_or([1.; 4], |colors| colors[i]));
             }
             result.draws.push(DrawRange {
+                node: node_id,
                 index_start: result.indices.len() as u32,
                 index_count: self.indices(mesh_id).len() as u32,
                 base_color: mesh.base_color,

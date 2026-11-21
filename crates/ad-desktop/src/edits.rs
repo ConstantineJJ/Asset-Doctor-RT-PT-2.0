@@ -30,6 +30,8 @@ pub enum EditKind {
     FixNormals(MeshId),
     /// ADR-0041: replace the model placement (move / uniform scale).
     Place(ad_document::Placement),
+    /// ADR-0048: one object edit (node transform or delete).
+    Node(ad_document::NodeOp),
     Undo,
     Redo,
 }
@@ -43,7 +45,7 @@ impl EditKind {
             Self::MergeVertices(mesh) => Some((mesh, RepairKind::DuplicateVertices)),
             Self::CreateNormals(mesh) => Some((mesh, RepairKind::MissingNormals)),
             Self::FixNormals(mesh) => Some((mesh, RepairKind::ZeroNormals)),
-            Self::Undo | Self::Redo | Self::Place(_) => None,
+            Self::Undo | Self::Redo | Self::Place(_) | Self::Node(_) => None,
         }
     }
     pub fn from_repair(mesh: MeshId, kind: RepairKind) -> Self {
@@ -246,6 +248,17 @@ pub fn prepare_edit(
             preview = None;
             change = Change::Remove(plan);
         }
+        EditKind::Node(op) => {
+            let plan = session.prepare_node_op(base.tag(), op, cancel)?;
+            if !plan.changes() {
+                return Err(AssetError::new(
+                    ad_document::ErrorCode::Unsupported,
+                    "объект не изменился",
+                ));
+            }
+            preview = None;
+            change = Change::Remove(plan);
+        }
         EditKind::Undo => {
             preview = None;
             change = Change::Undo;
@@ -263,7 +276,7 @@ pub fn prepare_edit(
     let mesh = candidate.mesh();
     let view = document.candidate_view(candidate, cancel)?;
     let mut appended = 0;
-    if kind.repair().is_some() || matches!(kind, EditKind::Place(_)) {
+    if kind.repair().is_some() || matches!(kind, EditKind::Place(_) | EditKind::Node(_)) {
         // G002-06: refuse before Apply if the result could not be saved by
         // the verified static exporter (ADR-0028), with its exact reason.
         appended = ad_formats::preflight_changed_export(

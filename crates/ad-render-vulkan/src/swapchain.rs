@@ -14,6 +14,8 @@ pub(crate) struct Swapchain {
     pub grid: Option<GridPipeline>,
     pub sky: Option<SkyPipeline>,
     pub sky_panorama: Option<SkyPipeline>,
+    /// Object outline mask and pipelines (sized like the swapchain).
+    pub outline: Option<crate::outline::OutlineTarget>,
     pub encode_srgb: bool,
     pub format: vk::Format,
     depth: Option<DepthTarget>,
@@ -68,6 +70,7 @@ impl Swapchain {
                 grid: None,
                 sky: None,
                 sky_panorama: None,
+                outline: None,
                 format: format.format,
                 encode_srgb: !matches!(
                     format.format,
@@ -153,6 +156,11 @@ impl Swapchain {
             result.grid = Some(GridPipeline::new(result.gpu.clone(), result.pass)?);
             result.sky = Some(SkyPipeline::new(result.gpu.clone(), result.pass, false)?);
             result.sky_panorama = Some(SkyPipeline::new(result.gpu.clone(), result.pass, true)?);
+            result.outline = Some(crate::outline::OutlineTarget::new(
+                result.gpu.clone(),
+                extent,
+                result.pass,
+            )?);
             for image in result.loader.get_swapchain_images(result.handle)? {
                 let range = vk::ImageSubresourceRange::default()
                     .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -216,6 +224,7 @@ impl Drop for Swapchain {
             self.grid = None;
             self.sky = None;
             self.sky_panorama = None;
+            self.outline = None;
             self.pipeline = None;
             self.gpu.device.destroy_render_pass(self.pass, None);
             for view in self.views.drain(..) {

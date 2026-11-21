@@ -66,6 +66,7 @@ impl ViewerUi {
                 "direction": l.direction,
                 "color": l.color,
                 "kelvin": self.lamp_kelvin,
+                "distance": l.distance,
                 "icon": self.lamp_icon,
             },
             "exposure_ev": l.exposure_ev,
@@ -78,12 +79,17 @@ impl ViewerUi {
             "environment_strength": self.environment_strength,
             "floor": self.floor.map(|f| index_of(&FloorTheme::ALL, f)),
             "last_floor": index_of(&FloorTheme::ALL, self.last_floor),
+            "skybox_width": self.skybox_width,
+            "skybox_folder": self.skybox_folder.as_ref().map(|p| p.to_string_lossy()),
             "skybox": self.skybox_path.as_ref().map(|p| json!({
                 "path": p.to_string_lossy(),
                 "on": self.skybox_on,
                 "yaw": self.skybox_yaw,
             })),
             "model_gizmo": self.model_gizmo_on,
+            "log_to_file": self.log_to_file,
+            "outline": self.outline_on,
+            "outline_color": self.outline_color,
             "layout": {
                 "right_block": self.show_summary,
                 "tab": if self.tab == Tab::Info { "info" } else { "health" },
@@ -181,6 +187,13 @@ impl ViewerUi {
                 &mut self.lamp_kelvin,
                 &mut bad,
             );
+            number(
+                lamp,
+                "distance",
+                ad_render_vulkan::lighting::LAMP_DISTANCES,
+                &mut lighting.distance,
+                &mut bad,
+            );
             let vector = |key: &str| -> Option<[f32; 3]> {
                 let a = lamp.get(key)?.as_array()?;
                 (a.len() == 3).then_some(())?;
@@ -253,6 +266,20 @@ impl ViewerUi {
         if let Some(i) = choice(value, "last_floor", FloorTheme::ALL.len(), &mut bad) {
             self.last_floor = FloorTheme::ALL[i];
         }
+        match value.get("skybox_width") {
+            None => {}
+            Some(n) => match n.as_u64().map(|n| n as u32) {
+                Some(w) if ad_render_vulkan::ibl::WIDTHS.contains(&w) => self.skybox_width = w,
+                _ => bad.push("skybox_width".into()),
+            },
+        }
+        match value.get("skybox_folder") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(path)) if !path.is_empty() => {
+                self.skybox_folder = Some(PathBuf::from(path));
+            }
+            Some(_) => bad.push("skybox_folder".into()),
+        }
         let mut skybox = None;
         match value.get("skybox") {
             None | Some(Value::Null) => {}
@@ -267,6 +294,16 @@ impl ViewerUi {
             },
         }
         flag(value, "model_gizmo", &mut self.model_gizmo_on, &mut bad);
+        flag(value, "log_to_file", &mut self.log_to_file, &mut bad);
+        flag(value, "outline", &mut self.outline_on, &mut bad);
+        match value.get("outline_color") {
+            None => {}
+            Some(Value::Null) => self.outline_color = None,
+            Some(n) => match n.as_u64().map(|n| n as usize) {
+                Some(i) if i < 7 => self.outline_color = Some(i),
+                _ => bad.push("outline_color".into()),
+            },
+        }
         if let Some(layout) = value.get("layout") {
             flag(layout, "right_block", &mut self.show_summary, &mut bad);
             flag(layout, "tree", &mut self.show_tree, &mut bad);
@@ -318,6 +355,8 @@ mod tests {
             skybox_path: Some(PathBuf::from("C:/panoramas/sky.png")),
             skybox_on: false,
             skybox_yaw: 90.,
+            skybox_width: 8192,
+            skybox_folder: Some(PathBuf::from("C:/panoramas")),
             ..Default::default()
         };
         ui.health_page = HealthPage::Repair;

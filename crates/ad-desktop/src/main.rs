@@ -1,5 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+/// Every diagnostic line also goes to the program log (crate::log).
+macro_rules! eprintln {
+    ($($arg:tt)*) => {{
+        let line = format!($($arg)*);
+        std::eprintln!("{line}");
+        crate::log::push(line);
+    }};
+}
+
 mod camera;
 mod diagnostic_ui;
 mod edits;
@@ -8,11 +17,14 @@ mod history;
 mod imports;
 mod input;
 mod lamp;
+mod log;
 mod model_gizmo;
 mod native;
+mod picking;
 mod queue;
 mod saving;
 mod skybox;
+mod skybox_library;
 mod ui_model;
 mod viewer_ui;
 mod worker;
@@ -108,6 +120,21 @@ struct App {
     /// A skybox restored from the settings keeps its saved «on» flag.
     skybox_restore_on: Option<bool>,
     smoke_view_change: bool,
+    /// Work-Tree overrides were built for this (revision, document, tree rev).
+    overrides_key: Option<(u64, ad_document::DocumentId, u64)>,
+    /// Smoke: hide the first child node and mark the second.
+    smoke_work_tree: bool,
+    /// ADR-0048 left-button object drag (active once the pointer moved).
+    object_drag: Option<ObjectDrag>,
+    /// Where the right button went down (a click opens the context menu).
+    press_right: Option<(f64, f64)>,
+    /// Picking: draw boxes and node parents of the shown snapshot; where the
+    /// left button went down (a click selects).
+    pick_cache: Option<PickCache>,
+    press: Option<(f64, f64)>,
+    smoke_select: bool,
+    /// --camera-view: applied once a model is shown.
+    initial_view: Option<camera::View>,
     smoke_input: bool,
     input_smoke_done: bool,
     cursor: Option<(f64, f64)>,
@@ -138,6 +165,7 @@ struct App {
     /// ADR-0040 skybox: dialog requested, background decode, decoded image
     /// waiting for upload.
     pending_skybox_choose: bool,
+    pending_skybox_folder: bool,
     /// Viewport size of the last frame (lamp gizmo projection).
     last_view: (u32, u32),
     /// ADR-0041 gizmo drag preview, kept until its placement edit finishes.
@@ -146,6 +174,8 @@ struct App {
     /// Ring being turned (its knob follows the preview).
     model_turning: Option<usize>,
     /// Smoke: place, Undo, Redo, then a verified export of the placement.
+    /// ADR-0048 smoke: object move, Undo, Redo, delete, verified export.
+    smoke_object: bool,
     smoke_place: bool,
     place_smoke_done: bool,
     skybox_job: Option<std::sync::mpsc::Receiver<Result<skybox::Loaded, String>>>,
@@ -207,8 +237,10 @@ impl App {
             let grid_frames = renderer.grid_frames();
             let sky_frames = renderer.sky_frames();
             let environment_light_frames = renderer.environment_light_frames();
+            let ibl_frames = renderer.ibl_frames();
             let panorama_frames = renderer.panorama_frames();
             let wire_frames = renderer.wire_frames();
+            let outline_frames = renderer.outline_frames();
             let shadow_frames = renderer.shadow_frames();
             let wire_supported = renderer.wireframe_supported();
             let mr_frames = renderer.mr_frames;
@@ -303,6 +335,10 @@ impl App {
                     );
                     eprintln!("grid_smoke grid_frames={}", grid_frames);
                     eprintln!(
+                        "outline_smoke on={} color={:?} outline_frames={outline_frames}",
+                        self.ui.outline_on, self.ui.outline_color
+                    );
+                    eprintln!(
                         "view_smoke channel={:?} wireframe={} wire_supported={wire_supported} wire_frames={wire_frames} axes={} bounds={} helper_lines={}",
                         self.ui.channel,
                         self.ui.wireframe,
@@ -320,7 +356,7 @@ impl App {
                         self.ui.lighting.color, self.ui.lamp_icon, self.ui.lighting.enabled
                     );
                     eprintln!(
-                        "environment_smoke environment={} sky_frames={sky_frames} panorama_frames={panorama_frames} light={} light_frames={environment_light_frames}",
+                        "environment_smoke environment={} sky_frames={sky_frames} panorama_frames={panorama_frames} light={} light_frames={environment_light_frames} ibl_frames={ibl_frames}",
                         self.ui.environment.label(),
                         self.ui.environment_light
                     );
@@ -570,6 +606,8 @@ impl App {
             EditKind::CreateNormals(_) => "Расчёт и проверка нормалей G004…",
             EditKind::FixNormals(_) => "Расчёт и проверка нормалей G005…",
             EditKind::Place(_) => "Перемещение модели…",
+            EditKind::Node(ad_document::NodeOp::Local(..)) => "Перемещение объекта…",
+            EditKind::Node(ad_document::NodeOp::Detach(_)) => "Удаление объекта…",
             EditKind::Undo => "Подготовка отмены правки…",
             EditKind::Redo => "Подготовка повтора правки…",
         }
@@ -839,6 +877,24 @@ impl App {
         {
             return Ok(());
         }
+        if self.edit_mesh.is_none() && self.smoke_object {
+            // ADR-0048 smoke: move node 1, Undo, Redo, delete node 2.
+            self.ensure_pick_cache();
+            let moved = self
+                .object_edit(
+                    ad_document::NodeId(1),
+                    glam::Mat4::from_translation(glam::Vec3::new(0.25, 0.5, -0.125))
+                        * glam::Mat4::from_rotation_y(0.3),
+                )
+                .ok_or("Object smoke cannot compute the move")?;
+            self.edit_mesh = Some(MeshId(0));
+            self.edit_queue = VecDeque::from([
+                moved,
+                EditKind::Undo,
+                EditKind::Redo,
+                EditKind::Node(ad_document::NodeOp::Detach(ad_document::NodeId(2))),
+            ]);
+        }
         if self.edit_mesh.is_none() && self.smoke_place {
             let asset = self.current.as_ref().ok_or("Place smoke has no model")?;
             let bounds = asset.snapshot().bounds;
@@ -915,8 +971,17 @@ impl App {
             if self.saving || !self.advance_overwrite_smoke() || !self.advance_save_smoke() {
                 return Ok(());
             }
-            if self.smoke_place && !self.place_smoke_done {
+            if (self.smoke_place || self.smoke_object) && !self.place_smoke_done {
                 self.place_smoke_done = true;
+                if let Some(asset) = self.current.as_ref() {
+                    let edits = asset.document().node_edits();
+                    eprintln!(
+                        "object_edits locals={} detached={} roots={}",
+                        edits.locals.len(),
+                        edits.detached.len(),
+                        asset.document().scene_roots().len()
+                    );
+                }
                 self.verify_place_export()?;
             }
             if !self.edit_smoke_done {
@@ -1495,8 +1560,23 @@ impl App {
         {
             match native::choose_image(window) {
                 Ok(Some(path)) => {
-                    self.skybox_job = Some(skybox::spawn(path));
+                    self.skybox_job = Some(skybox::spawn(path, self.skybox_width()));
                     self.ui.set_status("Загрузка скайбокса...", false);
+                }
+                Ok(None) => (),
+                Err(error) => self.ui.set_status(error.to_string(), true),
+            }
+        }
+        // SkyBox window «Папка…»: any file in the folder picks the folder.
+        if std::mem::take(&mut self.pending_skybox_folder)
+            && let Some(window) = self.window.as_ref()
+        {
+            match native::choose_image(window) {
+                Ok(Some(path)) => {
+                    if let Some(folder) = path.parent().map(std::path::Path::to_path_buf) {
+                        self.ui.skybox_folder = Some(folder.clone());
+                        self.ui.skybox_library.open(folder);
+                    }
                 }
                 Ok(None) => (),
                 Err(error) => self.ui.set_status(error.to_string(), true),
@@ -1530,17 +1610,25 @@ impl App {
             return;
         };
         if let Some(loaded) = self.pending_skybox.take() {
-            match renderer.set_skybox_image(Some(&loaded.image)) {
+            match renderer.set_environment_map(Some(&loaded.map)) {
                 Ok(()) => {
                     eprintln!(
                         "skybox_loaded name={} size={}x{}",
-                        loaded.name, loaded.image.width, loaded.image.height
+                        loaded.name, loaded.width, loaded.height
+                    );
+                    eprintln!(
+                        "environment_map hdr={} levels={} gpu_size={}x{} prepare_ms={}",
+                        loaded.map.hdr,
+                        loaded.map.levels.len(),
+                        loaded.map.width,
+                        loaded.map.height,
+                        loaded.prepare_ms
                     );
                     if loaded.not_panorama {
                         self.ui.set_status(
                             format!(
                                 "Скайбокс {}: не 2:1 ({}x{}), картинка будет растянута",
-                                loaded.name, loaded.image.width, loaded.image.height
+                                loaded.name, loaded.width, loaded.height
                             ),
                             true,
                         );
@@ -1613,6 +1701,8 @@ impl App {
             A::ToggleBounds => self.ui.show_bounds = !self.ui.show_bounds,
             A::ToggleLampIcon => self.ui.lamp_icon = !self.ui.lamp_icon,
             A::ToggleModelGizmo => self.ui.model_gizmo_on = !self.ui.model_gizmo_on,
+            A::ToggleOutline => self.ui.outline_on = !self.ui.outline_on,
+            A::DeleteObject => self.delete_selected(),
             A::Help => self.ui.help(),
             A::Cancel => {
                 self.ui.dismiss_help();
@@ -1623,6 +1713,238 @@ impl App {
             }
             A::Orbit | A::Pan => (),
         }
+    }
+    /// Scene node under a window position (pixels), if any.
+    fn pick_at(&mut self, x: f64, y: f64) -> Option<ad_document::NodeId> {
+        self.pick_hit(x, y).map(|(node, _)| node)
+    }
+    /// Scene node and world point under a window position (pixels).
+    fn pick_hit(&mut self, x: f64, y: f64) -> Option<(ad_document::NodeId, glam::Vec3)> {
+        self.current.as_ref()?;
+        let uv = self.ui.viewport_uv(x, y)?;
+        self.ensure_pick_cache();
+        let asset = self.current.as_ref()?;
+        let cache = self.pick_cache.as_ref()?;
+        let (w, h) = self.last_view;
+        let (origin, direction) = picking::ray(&self.camera, uv, w, h)?;
+        let marks = ui_model::node_marks(asset.document(), &self.ui.tree);
+        let snapshot = asset.snapshot();
+        let (draw, t) = picking::pick(snapshot, &cache.bounds, origin, direction, |i| {
+            marks.get(snapshot.draws[i].node.0).is_some_and(|m| m.0)
+        })?;
+        Some((snapshot.draws[draw].node, origin + direction * t))
+    }
+    /// Left-button drag of an object: move it in the plane facing the camera
+    /// through the grabbed point.
+    fn drag_object(&mut self, x: f64, y: f64) {
+        let Some(uv) = self.ui.viewport_uv(x, y) else {
+            return;
+        };
+        let (w, h) = self.last_view;
+        let Some(drag) = self.object_drag.as_mut() else {
+            return;
+        };
+        let Some((origin, direction)) = picking::ray(&self.camera, uv, w, h) else {
+            return;
+        };
+        let normal = glam::Vec3::from_array(self.camera.view_direction());
+        let denominator = direction.dot(normal);
+        if denominator.abs() < 1e-6 {
+            return;
+        }
+        let t = (drag.hit - origin).dot(normal) / denominator;
+        if t > 0. {
+            drag.offset = origin + direction * t - drag.hit;
+        }
+    }
+    /// Builds the picking data of the shown snapshot once.
+    fn ensure_pick_cache(&mut self) {
+        let Some(asset) = self.current.as_ref() else {
+            return;
+        };
+        let key = (asset.snapshot().revision, asset.document().id());
+        if self.pick_cache.as_ref().is_some_and(|c| c.key == key) {
+            return;
+        }
+        let document = asset.document();
+        let mut parents = vec![None; document.nodes().len()];
+        for (i, node) in document.nodes().iter().enumerate() {
+            for child in &node.children {
+                if let Some(p) = parents.get_mut(child.0) {
+                    *p = Some(i);
+                }
+            }
+        }
+        self.pick_cache = Some(PickCache {
+            key,
+            bounds: picking::draw_bounds(asset.snapshot()),
+            parents,
+        });
+    }
+    /// Outline of this frame: the selected and the hovered node with all
+    /// their children (the hovered one only when it is another node).
+    fn outline_settings(&mut self) -> ad_render_vulkan::outline::OutlineSettings {
+        if !self.ui.outline_on || self.current.is_none() {
+            return Default::default();
+        }
+        self.ensure_pick_cache();
+        let selected = self.ui.tree.selected;
+        let hovered = self.ui.hover_node.filter(|h| Some(*h) != selected);
+        ad_render_vulkan::outline::OutlineSettings {
+            selected: selected.map(|n| self.subtree_draws(n)).unwrap_or_default(),
+            hovered: hovered.map(|n| self.subtree_draws(n)).unwrap_or_default(),
+            color: self.ui.outline_color.map(|i| viewer_ui::MARK_COLORS[i % 7]),
+        }
+    }
+    /// Selects a node (Work-Tree, Info, outline) or clears the selection.
+    fn select(&mut self, node: Option<ad_document::NodeId>) {
+        self.ui.tree.selected = node;
+        let name = node
+            .and_then(|n| {
+                self.current
+                    .as_ref()?
+                    .document()
+                    .nodes()
+                    .get(n.0)
+                    .map(|n| n.name.clone())
+            })
+            .map(|n| {
+                if n.is_empty() {
+                    "Без имени".to_string()
+                } else {
+                    n
+                }
+            });
+        match name {
+            Some(name) => self.ui.set_status(format!("Выбран объект: {name}"), false),
+            None => eprintln!("selection_cleared"),
+        }
+    }
+    /// Draws of a node and all nodes under it.
+    fn subtree_draws(&self, node: ad_document::NodeId) -> Vec<usize> {
+        let (Some(asset), Some(cache)) = (self.current.as_ref(), self.pick_cache.as_ref()) else {
+            return Vec::new();
+        };
+        asset
+            .snapshot()
+            .draws
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| {
+                let mut at = Some(d.node.0);
+                let mut steps = 0;
+                while let Some(n) = at {
+                    if n == node.0 {
+                        return true;
+                    }
+                    steps += 1;
+                    if steps > cache.parents.len() {
+                        return false;
+                    }
+                    at = cache.parents.get(n).copied().flatten();
+                }
+                false
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+    /// X / Delete: takes the selected object out of the scene (one edit,
+    /// Undo brings it back; «Сохранить» writes it).
+    fn delete_selected(&mut self) {
+        let Some(node) = self.ui.tree.selected else {
+            self.ui
+                .set_status("Нет выбранного объекта: выберите его левой кнопкой", true);
+            return;
+        };
+        if self.request_edit(EditKind::Node(ad_document::NodeOp::Detach(node))) {
+            self.ui.tree.selected = None;
+            self.ui.hover_node = None;
+            if self.ui.object_gizmo == Some(node) {
+                self.ui.object_gizmo = None;
+            }
+        } else {
+            self.ui
+                .set_status("Объект сейчас нельзя удалить: идёт другая работа", true);
+        }
+    }
+    /// World matrix of a node: placement, then every effective local from
+    /// the root down.
+    fn node_world(&self, node: ad_document::NodeId) -> Option<glam::Mat4> {
+        let asset = self.current.as_ref()?;
+        let cache = self.pick_cache.as_ref()?;
+        let document = asset.document();
+        let mut chain = vec![node.0];
+        while let Some(Some(parent)) = cache.parents.get(*chain.last()?) {
+            if chain.len() > cache.parents.len() {
+                return None;
+            }
+            chain.push(*parent);
+        }
+        let mut world = document.placement().matrix();
+        for n in chain.iter().rev() {
+            world *= glam::Mat4::from_cols_array_2d(
+                &document
+                    .node_edits()
+                    .local(document, ad_document::NodeId(*n)),
+            );
+        }
+        world.is_finite().then_some(world)
+    }
+    /// The edit that applies a world change `delta` to an object:
+    /// L' = P⁻¹ · D · P · L with P the parent's world.
+    fn object_edit(&self, node: ad_document::NodeId, delta: glam::Mat4) -> Option<EditKind> {
+        let asset = self.current.as_ref()?;
+        let world = self.node_world(node)?;
+        let local = glam::Mat4::from_cols_array_2d(
+            &asset.document().node_edits().local(asset.document(), node),
+        );
+        let parent = world * local.inverse();
+        let next = parent.inverse() * delta * world;
+        next.is_finite()
+            .then(|| EditKind::Node(ad_document::NodeOp::Local(node, next.to_cols_array_2d())))
+    }
+    /// Bounds the gizmo works on: the object (with its children) or the model.
+    fn gizmo_bounds(&mut self) -> Option<ad_document::Bounds> {
+        let asset = self.current.as_ref()?;
+        let model = asset.snapshot().bounds;
+        let Some(node) = self.ui.object_gizmo else {
+            return Some(model);
+        };
+        self.ensure_pick_cache();
+        let cache = self.pick_cache.as_ref()?;
+        let draws = self.subtree_draws(node);
+        let (mut lo, mut hi) = (
+            glam::Vec3::splat(f32::INFINITY),
+            glam::Vec3::splat(f32::NEG_INFINITY),
+        );
+        for i in draws {
+            if let Some((a, b)) = cache.bounds.get(i) {
+                lo = lo.min(*a);
+                hi = hi.max(*b);
+            }
+        }
+        (lo.is_finite() && hi.is_finite()).then(|| ad_document::Bounds {
+            min: lo.to_array(),
+            max: hi.to_array(),
+        })
+    }
+    /// Point lamp frame: model centre and radius (half the box diagonal).
+    fn lamp_frame(&self) -> Option<([f32; 3], f32)> {
+        let bounds = self.current.as_ref()?.snapshot().bounds;
+        let (min, max) = (
+            glam::Vec3::from_array(bounds.min),
+            glam::Vec3::from_array(bounds.max),
+        );
+        let radius = ((max - min).length() * 0.5).max(1e-4);
+        (min.is_finite() && max.is_finite()).then(|| (((min + max) * 0.5).to_array(), radius))
+    }
+    /// SkyBox width: the chosen quality within what the GPU accepts.
+    fn skybox_width(&self) -> u32 {
+        let limit = self
+            .renderer
+            .as_ref()
+            .map_or(u32::MAX, |r| r.max_image_side());
+        self.ui.skybox_width.min(limit)
     }
     /// Writes the view settings once a change has settled for a second
     /// (`now`: at exit, at once). A failure is a warning and is not retried
@@ -1722,11 +2044,18 @@ impl App {
     /// ADR-0041: gizmo drags update the preview; release or reset requests
     /// one placement edit.
     fn model_gizmo_actions(&mut self, actions: &viewer_ui::Actions, width: u32, height: u32) {
+        let Some(bounds) = self.gizmo_bounds() else {
+            return;
+        };
         let Some(asset) = self.current.as_ref() else {
             return;
         };
-        let bounds = asset.snapshot().bounds;
-        let current = asset.document().placement();
+        // An object scales freely within the same limits as the model.
+        let current = if self.ui.object_gizmo.is_some() {
+            ad_document::Placement::IDENTITY
+        } else {
+            asset.document().placement()
+        };
         if let Some((handle, [nx, ny])) = actions.model_drag
             && !self.model_pending
         {
@@ -1775,10 +2104,56 @@ impl App {
                 model_gizmo::Handle::Scale => model_gizmo::drag_scale(delta, current, drag[1]),
             }
         }
+        // A ring grabbed anywhere: the pointer's angle around the centre.
+        if let Some((axis, [bx, by], [ax, ay])) = actions.model_ring_drag
+            && !self.model_pending
+        {
+            self.model_turning = Some(axis);
+            let delta = self
+                .model_preview
+                .get_or_insert_with(|| model_gizmo::Delta::new(model_gizmo::pivot(bounds)));
+            let origin = delta
+                .matrix()
+                .transform_point3(glam::Vec3::from_array(delta.pivot));
+            if let Some(c) = self.camera.project(origin.to_array(), width, height) {
+                let eye = glam::Vec3::from_array(self.camera.eye(width, height)) - origin;
+                let axis_vector = if axis == 0 {
+                    glam::Vec3::X
+                } else {
+                    glam::Vec3::Y
+                };
+                let (w, h) = (width as f32, height as f32);
+                model_gizmo::drag_ring(
+                    delta,
+                    axis,
+                    [bx * w, by * h],
+                    [ax * w, ay * h],
+                    [c[0] * w, c[1] * h],
+                    axis_vector.dot(eye.normalize_or_zero()),
+                );
+            }
+        }
         if actions.model_drag_end {
             self.model_turning = None;
         }
-        if actions.model_drag_end && !self.model_pending {
+        if actions.model_drag_end
+            && !self.model_pending
+            && let Some(node) = self.ui.object_gizmo
+        {
+            // ADR-0048: the object gizmo edits the node, not the placement.
+            if let Some(delta) = self.model_preview.filter(|d| !d.is_noop()) {
+                match self.object_edit(node, delta.matrix()) {
+                    Some(kind) if self.request_edit(kind) => self.model_pending = true,
+                    _ => {
+                        self.model_preview = None;
+                        self.ui
+                            .set_status("Объект сейчас нельзя изменить: идёт другая работа", true);
+                    }
+                }
+            } else {
+                self.model_preview = None;
+            }
+        } else if actions.model_drag_end && !self.model_pending {
             match self.model_preview {
                 Some(delta) if !delta.is_noop() => {
                     let placement = delta.placement(current);
@@ -1840,6 +2215,19 @@ impl App {
             return Ok(());
         }
         self.refresh_edit_ui();
+        if self.current.is_some()
+            && let Some(view) = self.initial_view.take()
+        {
+            self.camera.set_view(view);
+            eprintln!("camera_view view={view:?} ortho={}", self.camera.is_ortho());
+        }
+        if self.smoke_work_tree && self.current.is_some() {
+            self.smoke_work_tree = false;
+            self.ui.tree.hidden.insert(1);
+            self.ui.tree.tints.insert(2, [235, 64, 64]);
+            self.ui.tree.rev += 1;
+            eprintln!("work_tree_smoke hidden=1 tinted=2");
+        }
         if self.smoke_view_change && self.current.is_some() {
             self.smoke_view_change = false;
             self.ui.show_axes = !self.ui.show_axes;
@@ -1849,10 +2237,18 @@ impl App {
         // ADR-0040 lamp gizmo: lamp 1.25 model radii from the centre.
         let (view_w, view_h) = self.last_view;
         // ADR-0041 model gizmo at the (previewed) bottom centre.
-        self.ui.model_gizmo = self.current.as_ref().and_then(|asset| {
+        if self.ui.object_gizmo.is_some_and(|n| {
+            self.current
+                .as_ref()
+                .is_none_or(|a| n.0 >= a.document().nodes().len())
+        }) {
+            self.ui.object_gizmo = None;
+        }
+        let gizmo_bounds = self.gizmo_bounds();
+        self.ui.model_gizmo = gizmo_bounds.and_then(|bounds| {
             model_gizmo::screen(
                 &self.camera,
-                asset.snapshot().bounds,
+                bounds,
                 self.model_preview.as_ref(),
                 self.model_turning,
                 view_w,
@@ -1877,19 +2273,29 @@ impl App {
             .map_or(ad_document::Placement::IDENTITY, |a| {
                 a.document().placement()
             });
-        self.ui.lamp_gizmo = self.current.as_ref().and_then(|_| {
+        // Point lamp around the model centre at its distance (model radii).
+        let lamp_frame = self.lamp_frame();
+        self.ui.lamp_gizmo = lamp_frame.and_then(|(centre, radius)| {
             let camera = &self.camera;
-            let guides = lamp::guides(self.ui.lighting.direction, |d| {
-                camera.project_direction(d, LAMP_DISTANCE, view_w, view_h)
+            let distance = self.ui.lighting.distance;
+            let point = |d: [f32; 3], k: f32| {
+                (glam::Vec3::from_array(centre) + glam::Vec3::from_array(d) * radius * k).to_array()
+            };
+            let mut guides = lamp::guides(self.ui.lighting.direction, |d| {
+                camera.project(point(d, distance), view_w, view_h)
             });
-            Some(viewer_ui::LampGizmo {
-                lamp: camera.project_direction(
-                    self.ui.lighting.direction,
-                    LAMP_DISTANCE,
+            let here =
+                camera.project(point(self.ui.lighting.direction, distance), view_w, view_h)?;
+            guides.distance = camera
+                .project(
+                    point(self.ui.lighting.direction, distance + 0.1),
                     view_w,
                     view_h,
-                )?,
-                center: camera.project_direction([0., 1., 0.], 0., view_w, view_h)?,
+                )
+                .map(|p| [(p[0] - here[0]) / 0.1, (p[1] - here[1]) / 0.1]);
+            Some(viewer_ui::LampGizmo {
+                lamp: here,
+                center: camera.project(centre, view_w, view_h)?,
                 guides: Some(std::sync::Arc::new(guides)),
             })
         });
@@ -1908,14 +2314,41 @@ impl App {
             let (width, height) = frame.scene.map_or((1, 1), |r| (r.width, r.height));
             self.model_gizmo_actions(&actions, width, height);
         }
+        let outline = self.outline_settings();
+        // ADR-0048: an object gizmo or a left-button drag previews only the
+        // object's draws; the model gizmo previews the whole model.
+        let object_preview = self
+            .ui
+            .object_gizmo
+            .zip(self.model_preview)
+            .map(|(node, delta)| (node, delta.matrix()))
+            .or(self
+                .object_drag
+                .as_ref()
+                .filter(|d| d.active)
+                .map(|d| (d.node, glam::Mat4::from_translation(d.offset))))
+            .map(|(node, m)| (m.to_cols_array_2d(), self.subtree_draws(node)));
         let renderer = self.renderer.as_mut().expect("Drawable renderer checked");
+        renderer.set_outline(outline);
         let (width, height) = frame.scene.map_or((1, 1), |r| (r.width, r.height));
         self.last_view = (width, height);
-        if let Some([dx, dy]) = actions.lamp_drag {
+        if let (Some([dx, dy]), Some((centre, radius))) = (actions.lamp_drag, lamp_frame) {
             let camera = &self.camera;
+            let distance = self.ui.lighting.distance;
             self.ui.lighting.direction = lamp::drag(self.ui.lighting.direction, dx, dy, |d| {
-                camera.project_direction(d, LAMP_DISTANCE, width, height)
+                camera.project(
+                    (glam::Vec3::from_array(centre)
+                        + glam::Vec3::from_array(d) * radius * distance)
+                        .to_array(),
+                    width,
+                    height,
+                )
             });
+        }
+        if let Some(step) = actions.lamp_distance {
+            let range = ad_render_vulkan::lighting::LAMP_DISTANCES;
+            self.ui.lighting.distance =
+                (self.ui.lighting.distance + step).clamp(*range.start(), *range.end());
         }
         if let Some([turn_azimuth, turn_elevation]) = actions.lamp_turn {
             let (azimuth, elevation) = lamp::angles(self.ui.lighting.direction);
@@ -1941,8 +2374,14 @@ impl App {
                 .as_ref()
                 .filter(|_| self.ui.shadows)
                 .and_then(|asset| {
-                    lamp::shadow_matrix(
-                        self.ui.lighting.direction,
+                    // Point lamp: a perspective shadow from the lamp itself.
+                    let (centre, radius) = lamp_frame?;
+                    let position = glam::Vec3::from_array(centre)
+                        + glam::Vec3::from_array(self.ui.lighting.direction)
+                            * radius
+                            * self.ui.lighting.distance;
+                    lamp::point_shadow_matrix(
+                        position.to_array(),
                         asset.snapshot().bounds,
                         floor_grid.map(|g| g.floor_y),
                         ad_render_vulkan::shadow::SIZE,
@@ -1951,10 +2390,20 @@ impl App {
                 .map(|(matrix, texel)| ad_render_vulkan::shadow::ShadowSettings {
                     light_view_projection: matrix.to_cols_array_2d(),
                     strength: self.ui.shadow_strength,
-                    bias: 0.0015,
+                    bias: 0.0005,
                     normal_offset: texel * 1.5,
                 }),
         );
+        renderer.set_lamp_position(lamp_frame.map(|(centre, radius)| {
+            (
+                (glam::Vec3::from_array(centre)
+                    + glam::Vec3::from_array(self.ui.lighting.direction)
+                        * radius
+                        * self.ui.lighting.distance)
+                    .to_array(),
+                radius * ad_render_vulkan::lighting::DEFAULT_LAMP_DISTANCE,
+            )
+        }));
         let view_projection = self.camera.matrix(width, height);
         // ADR-0040 environment: sky only, lamps/exposure stay as they are.
         renderer.set_sky(Some(ad_render_vulkan::sky::SkySettings {
@@ -1973,7 +2422,11 @@ impl App {
         }));
         renderer.set_camera(view_projection, self.camera.eye(width, height))?;
         let lamp_direction = self.ui.lighting.direction;
-        renderer.set_model_preview(self.model_preview.map(|delta| {
+        renderer.set_node_preview(object_preview);
+        let whole_model = self
+            .model_preview
+            .filter(|_| self.ui.object_gizmo.is_none());
+        renderer.set_model_preview(whole_model.map(|delta| {
             let m = delta.matrix();
             let inverse = m.inverse();
             (
@@ -1988,6 +2441,41 @@ impl App {
                     .to_array(),
             )
         }));
+        // Work-Tree: hidden and colour-marked nodes, per draw of the scene.
+        if let Some(asset) = self.current.as_ref() {
+            let key = (
+                asset.snapshot().revision,
+                asset.document().id(),
+                self.ui.tree.rev,
+            );
+            if self.overrides_key != Some(key) {
+                self.overrides_key = Some(key);
+                let marks = ui_model::node_marks(asset.document(), &self.ui.tree);
+                let overrides = asset
+                    .snapshot()
+                    .draws
+                    .iter()
+                    .map(|d| {
+                        let (hidden, tint) = marks.get(d.node.0).copied().unwrap_or_default();
+                        ad_render_vulkan::renderer::DrawOverride { hidden, tint }
+                    })
+                    .collect();
+                let overrides: Vec<ad_render_vulkan::renderer::DrawOverride> = overrides;
+                eprintln!(
+                    "work_tree_overrides draws={} hidden={} tinted={}",
+                    overrides.len(),
+                    overrides.iter().filter(|o| o.hidden).count(),
+                    overrides.iter().filter(|o| o.tint.is_some()).count()
+                );
+                renderer.set_draw_overrides(overrides);
+            }
+        }
+        if self.smoke_select && self.current.is_some() {
+            self.smoke_select = false;
+            self.ui.tree.selected = Some(ad_document::NodeId(1));
+            self.ui.hover_node = Some(ad_document::NodeId(2));
+            eprintln!("select_smoke selected=1 hovered=2");
+        }
         renderer.set_channel(self.ui.channel);
         renderer.set_wireframe(self.ui.wireframe);
         self.ui.wireframe_supported = renderer.wireframe_supported();
@@ -2008,13 +2496,34 @@ impl App {
         if actions.skybox_load {
             self.pending_skybox_choose = true;
         }
+        if let Some(path) = actions.skybox_open.clone() {
+            self.skybox_job = Some(skybox::spawn(path, self.skybox_width()));
+            self.ui.set_status("Загрузка скайбокса...", false);
+        }
+        if let Some(node) = actions.delete_object {
+            self.ui.tree.selected = Some(node);
+            self.delete_selected();
+        }
+        if let Some(view) = actions.camera_view {
+            self.camera.set_view(view);
+            eprintln!("camera_view view={view:?} ortho={}", self.camera.is_ortho());
+        }
+        if actions.skybox_folder_choose {
+            self.pending_skybox_folder = true;
+        }
+        // SkyBox quality changed: the shown panorama is prepared again.
+        if let Some(path) = actions.skybox_reload.clone() {
+            self.skybox_restore_on = Some(self.ui.skybox_on);
+            self.skybox_job = Some(skybox::spawn(path, self.skybox_width()));
+            self.ui.set_status("Загрузка скайбокса...", false);
+        }
         if actions.skybox_remove {
             self.ui.skybox_name = None;
             self.ui.skybox_path = None;
             self.ui.skybox_light = None;
             self.ui.skybox_on = false;
             if let Some(renderer) = self.renderer.as_mut() {
-                renderer.set_skybox_image(None)?;
+                renderer.set_environment_map(None)?;
             }
         }
         // Open native dialogs only after the acquired image has been submitted.
@@ -2215,7 +2724,11 @@ impl App {
                 || !self.failed_replacement_preserved
                 || (self.smoke_gpu_fault.is_some() && !self.gpu_fault_preserved)
                 || (self.smoke_edit && !self.edit_smoke_done)
-                || (self.smoke_queue && !self.queue_smoke_done))
+                || (self.smoke_queue && !self.queue_smoke_done)
+                // A skybox restored from the view settings loads in the
+                // background; the smoke waits for it.
+                || self.skybox_job.is_some()
+                || self.pending_skybox.is_some())
         {
             if self.started.elapsed() > Duration::from_secs(20) {
                 return Err("Import smoke timed out".into());
@@ -2346,10 +2859,61 @@ impl ApplicationHandler for App {
                     } else if inside && let Some(drag) = self.ui.bindings.drag(button, chord.mods) {
                         self.mouse = Some(button);
                         self.mouse_drag = Some(drag);
+                    } else if inside && button == MouseButton::Left {
+                        // The left button is the cursor: a click selects, a
+                        // drag on an object moves it (ADR-0048).
+                        self.press = self.cursor;
+                        if let Some((x, y)) = self.cursor
+                            && !self.model_pending
+                            && !self.editing
+                            && let Some((node, hit)) = self.pick_hit(x, y)
+                        {
+                            self.object_drag = Some(ObjectDrag {
+                                node,
+                                hit,
+                                offset: glam::Vec3::ZERO,
+                                start: (x, y),
+                                active: false,
+                            });
+                        }
+                    } else if inside && button == MouseButton::Right {
+                        self.press_right = self.cursor;
                     }
                 } else if state == ElementState::Released && self.mouse == Some(button) {
                     self.mouse = None;
                     self.mouse_drag = None;
+                } else if state == ElementState::Released && button == MouseButton::Left {
+                    let drag = self.object_drag.take();
+                    if let Some(drag) = drag.filter(|d| d.active) {
+                        self.press = None;
+                        let delta = glam::Mat4::from_translation(drag.offset);
+                        match self.object_edit(drag.node, delta) {
+                            Some(kind) if drag.offset.length() > 0. && self.request_edit(kind) => {
+                                self.ui.tree.selected = Some(drag.node);
+                            }
+                            Some(_) => self.ui.set_status(
+                                "Объект сейчас нельзя переместить: идёт другая работа",
+                                true,
+                            ),
+                            None => (),
+                        }
+                    } else if let (Some((px, py)), Some((x, y))) = (self.press.take(), self.cursor)
+                        && (px - x).hypot(py - y) < 5.
+                    {
+                        let picked = self.pick_at(x, y);
+                        self.select(picked);
+                    }
+                } else if state == ElementState::Released
+                    && button == MouseButton::Right
+                    && let (Some((px, py)), Some((x, y))) = (self.press_right.take(), self.cursor)
+                    && (px - x).hypot(py - y) < 5.
+                {
+                    // Context menu on the object under the pointer (or the scene).
+                    let picked = self.pick_at(x, y);
+                    if picked.is_some() {
+                        self.ui.tree.selected = picked;
+                    }
+                    self.ui.open_context_menu(x, y, picked);
                 }
                 Ok(())
             }
@@ -2366,6 +2930,25 @@ impl ApplicationHandler for App {
                     }
                 }
                 self.cursor = Some((position.x, position.y));
+                // Hover outline: the object under the pointer (not over UI,
+                // not while the camera moves).
+                if let Some(drag) = self.object_drag.as_mut()
+                    && !drag.active
+                    && (drag.start.0 - position.x).hypot(drag.start.1 - position.y) >= 5.
+                {
+                    drag.active = true;
+                    self.ui.tree.selected = Some(drag.node);
+                }
+                if self.object_drag.as_ref().is_some_and(|d| d.active) {
+                    self.drag_object(position.x, position.y);
+                }
+                let hover = if self.mouse_drag.is_none() && self.object_drag.is_none() && !consumed
+                {
+                    self.pick_at(position.x, position.y)
+                } else {
+                    None
+                };
+                self.ui.hover_node = hover;
                 Ok(())
             }
             WindowEvent::CursorLeft { .. } => {
@@ -2436,8 +3019,22 @@ impl ApplicationHandler for App {
     }
 }
 
-/// ADR-0040: the lamp gizmo sits this many model radii from the centre.
-const LAMP_DISTANCE: f32 = 1.25;
+/// A left-button drag of one object.
+struct ObjectDrag {
+    node: ad_document::NodeId,
+    /// Grabbed world point and how far it moved.
+    hit: glam::Vec3,
+    offset: glam::Vec3,
+    start: (f64, f64),
+    active: bool,
+}
+
+/// Picking data of one snapshot.
+struct PickCache {
+    key: (u64, ad_document::DocumentId),
+    bounds: Vec<(glam::Vec3, glam::Vec3)>,
+    parents: Vec<Option<usize>>,
+}
 
 fn edit_name(kind: EditKind) -> &'static str {
     match kind {
@@ -2448,6 +3045,8 @@ fn edit_name(kind: EditKind) -> &'static str {
         | EditKind::CreateNormals(_)
         | EditKind::FixNormals(_) => "remove",
         EditKind::Place(_) => "place",
+        EditKind::Node(ad_document::NodeOp::Local(..)) => "move_object",
+        EditKind::Node(ad_document::NodeOp::Detach(_)) => "delete_object",
         EditKind::Undo => "undo",
         EditKind::Redo => "redo",
     }
@@ -2466,6 +3065,7 @@ fn run() -> GpuResult<()> {
     let mut smoke_overwrite = false;
     let mut smoke_queue = false;
     let mut smoke_place = false;
+    let mut smoke_object = false;
     let mut smoke_input = false;
     let mut bindings_arg: Option<PathBuf> = None;
     let mut pending_skybox = None;
@@ -2511,6 +3111,9 @@ fn run() -> GpuResult<()> {
         );
     }
     let mut smoke_view_change = false;
+    let mut initial_view = None;
+    let mut smoke_work_tree = false;
+    let mut smoke_select = false;
     let mut args = argv.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -2545,6 +3148,10 @@ fn run() -> GpuResult<()> {
                 smoke_edit = true;
                 smoke_place = true;
             }
+            "--smoke-object" => {
+                smoke_edit = true;
+                smoke_object = true;
+            }
             "--smoke-guard" => smoke_guard = 1,
             "--smoke-overwrite" => smoke_overwrite = true,
             "--smoke-queue" => smoke_queue = true,
@@ -2569,6 +3176,8 @@ fn run() -> GpuResult<()> {
                 args.next();
             }
             "--smoke-view-change" => smoke_view_change = true,
+            "--smoke-work-tree" => smoke_work_tree = true,
+            "--smoke-select" => smoke_select = true,
             "--channel" => {
                 ui.channel = args
                     .next()
@@ -2615,7 +3224,25 @@ fn run() -> GpuResult<()> {
                 let path = args
                     .next()
                     .ok_or("--skybox needs a PNG/JPEG panorama path")?;
-                pending_skybox = Some(skybox::load(std::path::Path::new(&path))?);
+                pending_skybox = Some(skybox::load(std::path::Path::new(&path), ui.skybox_width)?);
+            }
+            "--camera-view" => {
+                let name = args.next().ok_or("--camera-view needs a view name")?;
+                initial_view = Some(
+                    camera::View::ALL
+                        .into_iter()
+                        .find(|v| v.label().eq_ignore_ascii_case(&name))
+                        .ok_or(
+                            "--camera-view needs Front, Back, Left, Right, Top, Bottom or 3/4",
+                        )?,
+                );
+            }
+            "--skybox-width" => {
+                ui.skybox_width = args
+                    .next()
+                    .and_then(|n| n.parse::<u32>().ok())
+                    .filter(|w| ad_render_vulkan::ibl::WIDTHS.contains(w))
+                    .ok_or("--skybox-width needs 2048, 4096 or 8192")?;
             }
             "--environment" => {
                 ui.environment = args
@@ -2710,7 +3337,18 @@ fn run() -> GpuResult<()> {
         if !warnings.is_empty() {
             ui.set_status(format!("Управление: {}", warnings.join("; ")), true);
         }
+        // An older file moved to the new mouse layout: write it back.
+        ui.bindings_changed = bindings.migrated;
         ui.bindings = bindings;
+    }
+    // Program log file, when the owner turned it on (never in smoke runs).
+    if ui.log_to_file && view_settings_path.is_some() {
+        match log::write_to(log::default_folder()) {
+            Ok(path) => eprintln!("log_file path_set={}", path.is_some()),
+            Err(error) => view_warnings.push(format!("журнал не пишется в файл: {error}")),
+        }
+    } else {
+        ui.log_to_file = false;
     }
     if !view_warnings.is_empty() {
         ui.set_status(
@@ -2720,7 +3358,9 @@ fn run() -> GpuResult<()> {
     }
     let view_saved = ui.view_settings();
     let (skybox_job, skybox_restore_on) = match restore_skybox {
-        Some((path, on)) if pending_skybox.is_none() => (Some(skybox::spawn(path)), Some(on)),
+        Some((path, on)) if pending_skybox.is_none() => {
+            (Some(skybox::spawn(path, ui.skybox_width)), Some(on))
+        }
         _ => (None, None),
     };
     let mut app = App {
@@ -2750,6 +3390,14 @@ fn run() -> GpuResult<()> {
         view_pending: None,
         skybox_restore_on,
         smoke_view_change,
+        overrides_key: None,
+        smoke_work_tree,
+        object_drag: None,
+        press_right: None,
+        pick_cache: None,
+        press: None,
+        smoke_select,
+        initial_view,
         smoke_input,
         input_smoke_done: false,
         cursor: None,
@@ -2771,11 +3419,13 @@ fn run() -> GpuResult<()> {
         pending_save: false,
         pending_overwrite: false,
         pending_skybox_choose: false,
+        pending_skybox_folder: false,
         last_view: (1, 1),
         model_preview: None,
         model_pending: false,
         model_turning: None,
         smoke_place,
+        smoke_object,
         place_smoke_done: false,
         skybox_job,
         pending_skybox,

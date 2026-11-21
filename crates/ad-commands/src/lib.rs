@@ -249,6 +249,20 @@ impl Session {
         }
         Ok(plan)
     }
+    /// ADR-0048: one object edit (node transform or taking a node out).
+    pub fn prepare_node_op(
+        &self,
+        expected: DocumentTag,
+        op: ad_document::NodeOp,
+        cancel: &Cancellation,
+    ) -> AssetResult<PreparedRemoval> {
+        self.document.verify_tag(expected, cancel)?;
+        let plan = self.document.prepare_node_op(expected, op, cancel)?;
+        if plan.changes() {
+            self.admit(plan.retained_bytes())?;
+        }
+        Ok(plan)
+    }
     pub fn commit(
         &mut self,
         plan: PreparedRemoval,

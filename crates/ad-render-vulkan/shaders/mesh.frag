@@ -19,7 +19,10 @@ layout(set=1,binding=7) uniform sampler occlusion_sampler;
 layout(set=1,binding=8) uniform texture2D emissive_image;
 layout(set=1,binding=9) uniform sampler emissive_sampler;
 layout(location=0) out vec4 color;
-layout(set=0,binding=0,std140) uniform Frame { mat4 view_projection; vec4 eye_exposure; vec4 lighting; vec4 sky_zenith; vec4 sky_horizon; vec4 sky_ground; vec4 light_direction; vec4 light_color; mat4 light_view_projection; vec4 shadow; } frame;
+layout(set=0,binding=0,std140) uniform Frame { mat4 view_projection; vec4 eye_exposure; vec4 lighting; vec4 sky_zenith; vec4 sky_horizon; vec4 sky_ground; vec4 light_direction; vec4 light_color; mat4 light_view_projection; vec4 shadow; vec4 ibl; vec4 sh[9]; mat4 node_preview; vec4 light_position; } frame;
+// ADR-0047 environment panorama (linear RGBA16F, prefiltered levels).
+layout(set=0,binding=3) uniform texture2D environment_image;
+layout(set=0,binding=4) uniform sampler environment_sampler;
 layout(set=0,binding=1) uniform texture2D shadow_map;
 layout(set=0,binding=2) uniform sampler shadow_sampler;
 // ADR-0044: lit fraction from the lamp's depth map (3x3 PCF), 1 outside it.
@@ -98,8 +101,55 @@ vec3 environment_light(vec3 base,vec3 n,vec3 v,float metal,float rough,vec3 f0) 
     vec3 reflected=mix(sky_color(reflect(-v,n).y),irradiance,rough);
     return ((vec3(1.0)-fresnel)*(1.0-metal)*base*irradiance+fresnel*reflected)*frame.sky_zenith.w;
 }
+// ADR-0047 image based lighting from the shown panorama: irradiance from
+// nine SH coefficients, reflections from the GGX-prefiltered level chosen by
+// roughness, split-sum with the analytic environment BRDF (Karis). Lookups
+// turn by the panorama yaw exactly like the sky pass.
+vec3 environment_direction(vec3 d) {
+    float c=cos(frame.ibl.z);
+    float s=sin(frame.ibl.z);
+    return vec3(c*d.x-s*d.z,d.y,s*d.x+c*d.z);
+}
+vec3 sh_irradiance(vec3 n) {
+    float x=n.x;
+    float y=n.y;
+    float z=n.z;
+    vec3 e=frame.sh[0].rgb*0.282095
+        +frame.sh[1].rgb*(0.488603*y)+frame.sh[2].rgb*(0.488603*z)+frame.sh[3].rgb*(0.488603*x)
+        +frame.sh[4].rgb*(1.092548*x*y)+frame.sh[5].rgb*(1.092548*y*z)
+        +frame.sh[6].rgb*(0.315392*(3.0*z*z-1.0))+frame.sh[7].rgb*(1.092548*x*z)
+        +frame.sh[8].rgb*(0.546274*(x*x-y*y));
+    return max(e,vec3(0.0));
+}
+vec3 image_light(vec3 base,vec3 n,vec3 v,float metal,float rough,vec3 f0,float occlusion) {
+    float nv=clamp(dot(n,v),0.0,1.0);
+    vec4 c0=vec4(-1.0,-0.0275,-0.572,0.022);
+    vec4 c1=vec4(1.0,0.0425,1.04,-0.04);
+    vec4 r=rough*c0+c1;
+    float a004=min(r.x*r.x,exp2(-9.28*nv))*r.x+r.y;
+    vec2 ab=vec2(-1.04,1.04)*a004+r.zw;
+    vec3 specular_weight=f0*ab.x+ab.y;
+    vec3 d=environment_direction(reflect(-v,n));
+    vec2 uv=vec2(atan(d.x,-d.z)/(2.0*PI)+0.5,acos(clamp(d.y,-1.0,1.0))/PI);
+    vec3 prefiltered=textureLod(sampler2D(environment_image,environment_sampler),uv,rough*frame.ibl.y).rgb;
+    vec3 irradiance=sh_irradiance(environment_direction(n));
+    vec3 diffuse=(vec3(1.0)-specular_weight)*(1.0-metal)*base*irradiance/PI;
+    return (diffuse+prefiltered*specular_weight)*occlusion*frame.ibl.x;
+}
+// Point lamp (w > 0): direction towards it and inverse-square falloff,
+// 1 at the reference distance w; otherwise the sun-like direction.
+vec3 lamp_direction(vec3 world) {
+    if (frame.light_position.w<=0.0) {return frame.light_direction.xyz;}
+    return unit_or(frame.light_position.xyz-world,frame.light_direction.xyz);
+}
+float lamp_falloff(vec3 world) {
+    if (frame.light_position.w<=0.0) {return 1.0;}
+    vec3 d=frame.light_position.xyz-world;
+    return min(frame.light_position.w*frame.light_position.w/max(dot(d,d),1e-12),16.0);
+}
 vec3 direct_pbr(vec3 base,vec3 n,vec2 mr,vec3 v,float occlusion,vec3 emission,float lit) {
-    vec3 l=frame.light_direction.xyz;
+    vec3 l=lamp_direction(world_position);
+    lit*=lamp_falloff(world_position);
     vec3 h=unit_or(v+l,n);
     float nv=max(dot(n,v),0.00001);
     float nl=max(dot(n,l),0.0);
@@ -119,8 +169,18 @@ vec3 direct_pbr(vec3 base,vec3 n,vec2 mr,vec3 v,float occlusion,vec3 emission,fl
     // Inspection fill is an explicit approximation; no environment is sampled.
     vec3 radiance=(diffuse+specular)*nl*frame.lighting.x*frame.light_color.rgb*lit+((1.0-metal)*base+f0)*frame.lighting.y*occlusion;
     if (frame.sky_zenith.w>0.0) {radiance+=environment_light(base,n,v,metal,rough,f0)*occlusion;}
+    if (frame.ibl.x>0.0) {radiance+=image_light(base,n,v,metal,rough,f0,occlusion);}
     vec3 exposed=max((radiance+emission)*exp2(frame.eye_exposure.w),vec3(0.0));
     return exposed/(vec3(1.0)+exposed);
+}
+// Work-Tree colour mark: view.z = r + 256 g + 65536 b (sRGB bytes), view.w =
+// opacity. Mixed in the output space (encoded when the shader encodes).
+vec3 work_tree_tint(vec3 c,uint flags) {
+    if (pc.view.w<=0.0) {return c;}
+    float packed=pc.view.z;
+    vec3 tint=vec3(mod(packed,256.0),mod(floor(packed/256.0),256.0),floor(packed/65536.0))/255.0;
+    if ((flags&4u)==0u) {tint=mix(tint/12.92,pow((tint+0.055)/1.055,vec3(2.4)),greaterThan(tint,vec3(0.04045)));}
+    return mix(c,tint,pc.view.w);
 }
 void main() {
     vec3 px=dFdx(world_position);
@@ -131,9 +191,10 @@ void main() {
     vec3 n=face;
     n/=max(length(n),0.00000001);
     // Normal offset towards the lamp side keeps lit faces out of their own shadow.
-    float toward=dot(n,frame.light_direction.xyz)>=0.0?1.0:-1.0;
+    vec3 to_lamp=lamp_direction(world_position);
+    float toward=dot(n,to_lamp)>=0.0?1.0:-1.0;
     float lit=lit_fraction(world_position+n*toward*frame.shadow.w);
-    vec3 light=vec3(0.25)+0.75*abs(dot(n,frame.light_direction.xyz))*frame.light_color.rgb*lit;
+    vec3 light=vec3(0.25)+0.75*abs(dot(n,to_lamp))*frame.light_color.rgb*lit*lamp_falloff(world_position);
     vec4 base=pc.base_color*tint;
     uint flags=uint(pc.view.x);
     if ((flags&2u)!=0u) {base*=texture(sampler2D(base_color_image,base_color_sampler),uv);}
@@ -185,9 +246,9 @@ void main() {
     if (pc.material.z>=0.0 && base.a<pc.material.z) {discard;}
     if ((flags&128u)!=0u) {color=vec4(1.0,0.72,0.2,1.0); return;}
     vec3 display=linear;
-    if (raw) {color=vec4(clamp(display,0.0,1.0),1.0); return;}
+    if (raw) {color=vec4(work_tree_tint(clamp(display,0.0,1.0),flags),1.0); return;}
     if ((flags&4u)!=0u) {
         display=mix(12.92*linear,1.055*pow(linear,vec3(1.0/2.4))-0.055,greaterThan(linear,vec3(0.0031308)));
     }
-    color=vec4(display,1.0);
+    color=vec4(work_tree_tint(display,flags),1.0);
 }

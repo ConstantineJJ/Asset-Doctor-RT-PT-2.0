@@ -21,13 +21,15 @@ pub enum Action {
     ToggleBounds,
     ToggleLampIcon,
     ToggleModelGizmo,
+    ToggleOutline,
+    DeleteObject,
     Help,
     Cancel,
     Orbit,
     Pan,
 }
 impl Action {
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 18] = [
         Self::Open,
         Self::Save,
         Self::SaveCopy,
@@ -40,6 +42,8 @@ impl Action {
         Self::ToggleBounds,
         Self::ToggleLampIcon,
         Self::ToggleModelGizmo,
+        Self::ToggleOutline,
+        Self::DeleteObject,
         Self::Help,
         Self::Cancel,
         Self::Orbit,
@@ -59,6 +63,8 @@ impl Action {
             Self::ToggleBounds => "Габариты: вкл/выкл",
             Self::ToggleLampIcon => "Значок лампы: вкл/выкл",
             Self::ToggleModelGizmo => "Гизмо модели: вкл/выкл",
+            Self::ToggleOutline => "Контур объектов: вкл/выкл",
+            Self::DeleteObject => "Удалить выбранный объект",
             Self::Help => "Справка",
             Self::Cancel => "Отмена загрузки/правки",
             Self::Orbit => "Камера: вращать (держать)",
@@ -80,6 +86,8 @@ impl Action {
             Self::ToggleBounds => "toggle_bounds",
             Self::ToggleLampIcon => "toggle_lamp_icon",
             Self::ToggleModelGizmo => "toggle_model_gizmo",
+            Self::ToggleOutline => "toggle_outline",
+            Self::DeleteObject => "delete_object",
             Self::Help => "help",
             Self::Cancel => "cancel",
             Self::Orbit => "orbit",
@@ -321,6 +329,8 @@ pub struct Bindings {
     slots: Vec<(Action, Slots)>,
     /// Scroll up zooms out instead of in.
     pub invert_zoom: bool,
+    /// Read from an older file and changed on the way (save it back).
+    pub migrated: bool,
 }
 impl Default for Bindings {
     fn default() -> Self {
@@ -328,7 +338,17 @@ impl Default for Bindings {
         Self {
             slots,
             invert_zoom: false,
+            migrated: false,
         }
+    }
+}
+fn shift_mouse(button: MouseButton) -> Chord {
+    Chord {
+        input: Input::Mouse(button),
+        mods: Mods {
+            shift: true,
+            ..Mods::NONE
+        },
     }
 }
 pub fn default_slots(action: Action) -> Slots {
@@ -349,14 +369,25 @@ pub fn default_slots(action: Action) -> Slots {
         Action::SaveCopy => [Some(shift_ctrl(K::KeyS)), None],
         Action::Undo => [Some(Chord::ctrl(K::KeyZ)), None],
         Action::Redo => [Some(Chord::ctrl(K::KeyY)), Some(shift_ctrl(K::KeyZ))],
-        Action::Fit => [Some(Chord::plain(K::KeyF)), None],
+        Action::Fit => [
+            Some(Chord::plain(K::KeyF)),
+            Some(Chord::mouse(MouseButton::Middle)),
+        ],
+        Action::ToggleOutline => [Some(Chord::plain(K::Tab)), None],
+        Action::DeleteObject => [Some(Chord::plain(K::KeyX)), Some(Chord::plain(K::Delete))],
         Action::ToggleFloor => [Some(Chord::plain(K::KeyG)), None],
         Action::Help => [Some(Chord::plain(K::KeyH)), None],
         Action::Cancel => [Some(Chord::plain(K::Escape)), None],
-        Action::Orbit => [Some(Chord::mouse(MouseButton::Left)), None],
+        // 2026-11-21: the left button selects and the right one opens the
+        // context menu; the side buttons turn and move the camera, with
+        // Shift + left / right as the fallback for mice without them.
+        Action::Orbit => [
+            Some(Chord::mouse(MouseButton::Forward)),
+            Some(shift_mouse(MouseButton::Left)),
+        ],
         Action::Pan => [
-            Some(Chord::mouse(MouseButton::Right)),
-            Some(Chord::mouse(MouseButton::Middle)),
+            Some(Chord::mouse(MouseButton::Back)),
+            Some(shift_mouse(MouseButton::Right)),
         ],
         _ => [None, None],
     }
@@ -477,14 +508,15 @@ impl Bindings {
                 json!(slots.iter().flatten().map(|c| c.name()).collect::<Vec<_>>()),
             );
         }
-        json!({"version": 1, "invert_zoom": self.invert_zoom, "actions": actions})
+        json!({"version": 2, "invert_zoom": self.invert_zoom, "actions": actions})
     }
     /// Reads a bindings file. Unknown actions and unreadable chords are
     /// skipped with a warning (that action keeps its defaults); a conflict
     /// or a wrong version falls back to all defaults.
     pub fn from_json(value: &Value) -> (Self, Vec<String>) {
         let mut warnings = Vec::new();
-        if value.get("version").and_then(Value::as_u64) != Some(1) {
+        let version = value.get("version").and_then(Value::as_u64);
+        if !matches!(version, Some(1 | 2)) {
             return (
                 Self::default(),
                 vec!["неизвестная версия файла управления; взяты значения по умолчанию".into()],
@@ -510,7 +542,21 @@ impl Bindings {
                 .as_array()
                 .map(|a| a.iter().filter_map(Value::as_str).collect())
                 .unwrap_or_default();
-            let chords: Vec<_> = list.iter().map(|t| Chord::parse(t)).collect();
+            let mut chords: Vec<_> = list.iter().map(|t| Chord::parse(t)).collect();
+            // Version 1 → 2: plain left/right camera drags move to Shift.
+            if version == Some(1) && action.is_drag() {
+                for chord in chords.iter_mut().flatten() {
+                    if chord.mods == Mods::NONE
+                        && matches!(
+                            chord.input,
+                            Input::Mouse(MouseButton::Left | MouseButton::Right)
+                        )
+                    {
+                        chord.mods.shift = true;
+                        result.migrated = true;
+                    }
+                }
+            }
             if chords.iter().any(Option::is_none) || chords.len() > 2 {
                 warnings.push(format!(
                     "«{}»: непонятная клавиша, оставлено по умолчанию",
@@ -527,10 +573,14 @@ impl Bindings {
         for (action, _) in &parsed {
             *result.slots_mut(*action) = [None, None];
         }
+        let listed: Vec<Action> = parsed.iter().map(|(a, _)| *a).collect();
         for (action, slots) in parsed {
             for (slot, chord) in slots.iter().enumerate() {
+                // A new default (not in the file) gives way to the owner's chord.
                 if let Some(chord) = chord
-                    && result.assign(action, slot, *chord, false).is_err()
+                    && let Err(conflict) = result.assign(action, slot, *chord, false)
+                    && (listed.contains(&conflict.action)
+                        || result.assign(action, slot, *chord, true).is_err())
                 {
                     return (
                         Self::default(),
@@ -541,6 +591,11 @@ impl Bindings {
                     );
                 }
             }
+        }
+        if result.migrated {
+            warnings.push(
+                "ЛКМ и ПКМ теперь — выбор объектов и контекстное меню: вращение и сдвиг с них перенесены на Shift+ЛКМ и Shift+ПКМ".into(),
+            );
         }
         (result, warnings)
     }
@@ -637,13 +692,34 @@ mod tests {
             b.command(Chord::plain(KeyCode::Escape)),
             Some(Action::Cancel)
         );
-        assert_eq!(b.drag(MouseButton::Left, Mods::NONE), Some(Action::Orbit));
-        assert_eq!(b.drag(MouseButton::Middle, Mods::NONE), Some(Action::Pan));
+        // 2026-11-21: side buttons turn and move the camera, Shift + left /
+        // right are the fallback; plain left and right stay free (select,
+        // context menu); the middle click frames the model.
+        assert_eq!(
+            b.drag(MouseButton::Forward, Mods::NONE),
+            Some(Action::Orbit)
+        );
+        assert_eq!(b.drag(MouseButton::Back, Mods::NONE), Some(Action::Pan));
+        assert_eq!(b.drag(MouseButton::Left, Mods::NONE), None);
+        assert_eq!(b.drag(MouseButton::Right, Mods::NONE), None);
         let shift = Mods {
             shift: true,
             ..Mods::NONE
         };
         assert_eq!(b.drag(MouseButton::Left, shift), Some(Action::Orbit));
+        assert_eq!(b.drag(MouseButton::Right, shift), Some(Action::Pan));
+        assert_eq!(
+            b.command(Chord::mouse(MouseButton::Middle)),
+            Some(Action::Fit)
+        );
+        assert_eq!(
+            b.command(Chord::plain(KeyCode::Tab)),
+            Some(Action::ToggleOutline)
+        );
+        assert_eq!(
+            b.command(Chord::plain(KeyCode::KeyX)),
+            Some(Action::DeleteObject)
+        );
         assert_eq!(
             b.command(Chord::mouse(MouseButton::Left)),
             None,
@@ -679,9 +755,7 @@ mod tests {
         assert_eq!(b.command(g), Some(Action::ToggleFloor));
         assert_eq!(b.slots(Action::ToggleWireframe), [None, None]);
         // Side buttons can drive commands and drags.
-        b.assign(Action::Undo, 1, Chord::mouse(MouseButton::Back), false)
-            .unwrap();
-        b.assign(Action::Orbit, 1, Chord::mouse(MouseButton::Forward), false)
+        b.assign(Action::Undo, 1, Chord::mouse(MouseButton::Back), true)
             .unwrap();
         assert_eq!(
             b.command(Chord::mouse(MouseButton::Back)),
@@ -697,6 +771,43 @@ mod tests {
             .unwrap();
         b.reset_all();
         assert_eq!(b, Bindings::default());
+    }
+    #[test]
+    fn version_one_files_move_plain_left_and_right_camera_drags_to_shift() {
+        // The owner's file of 2026-11-20: left/right and the side buttons.
+        let v1 = json!({"version": 1, "invert_zoom": false, "actions": {
+            "orbit": ["Mouse Left", "Mouse Forward"],
+            "pan": ["Mouse Right", "Mouse Back"],
+            "fit": ["F", "Mouse Middle"],
+            "toggle_wireframe": ["X"]
+        }});
+        let (b, warnings) = Bindings::from_json(&v1);
+        assert!(b.migrated);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        let shift = Mods {
+            shift: true,
+            ..Mods::NONE
+        };
+        assert_eq!(b.drag(MouseButton::Left, Mods::NONE), None);
+        assert_eq!(b.drag(MouseButton::Left, shift), Some(Action::Orbit));
+        assert_eq!(b.drag(MouseButton::Right, shift), Some(Action::Pan));
+        assert_eq!(
+            b.drag(MouseButton::Forward, Mods::NONE),
+            Some(Action::Orbit)
+        );
+        // The owner's X keeps its meaning; the new delete default gives way.
+        assert_eq!(
+            b.command(Chord::plain(KeyCode::KeyX)),
+            Some(Action::ToggleWireframe)
+        );
+        assert_eq!(
+            b.command(Chord::plain(KeyCode::Tab)),
+            Some(Action::ToggleOutline)
+        );
+        // Saved again as version 2 and read back unchanged.
+        let (again, warnings) = Bindings::from_json(&b.to_json());
+        assert!(warnings.is_empty() && !again.migrated);
+        assert_eq!(again.slots(Action::Orbit), b.slots(Action::Orbit));
     }
     #[test]
     fn capture_waits_for_modifiers_cancels_on_esc_and_reports_conflicts() {
@@ -763,7 +874,7 @@ mod tests {
             invert_zoom: true,
             ..Bindings::default()
         };
-        b.assign(Action::ToggleAxes, 0, Chord::plain(KeyCode::KeyX), false)
+        b.assign(Action::ToggleAxes, 0, Chord::plain(KeyCode::KeyJ), false)
             .unwrap();
         let (back, warnings) = Bindings::from_json(&b.to_json());
         assert!(warnings.is_empty(), "{warnings:?}");

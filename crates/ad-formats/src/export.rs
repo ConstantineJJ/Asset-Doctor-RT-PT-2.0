@@ -442,8 +442,9 @@ pub fn preflight_changed_export(
         return Err(budget());
     }
     let changed = bindings(&parsed, view, limits, cancel)?;
-    let roots = placed_roots(&parsed, document, view.placement(), cancel)?;
-    if changed.is_empty() && roots.is_empty() {
+    let edits = view.node_edits();
+    let roots = placed_roots(&parsed, document, view.placement(), edits, cancel)?;
+    if changed.is_empty() && roots.is_empty() && edits.detached.is_empty() {
         if document.source().len() > limits.output_bytes {
             return Err(budget());
         }
@@ -455,44 +456,60 @@ pub fn preflight_changed_export(
     Ok(bin_len - original)
 }
 
-/// ADR-0041: new transforms of the scene roots for a non-identity placement,
-/// in each node's own form (TRS or matrix), as f32 values the importer reads
-/// back exactly. Empty for the identity.
+/// ADR-0041/0048: new local transforms to write: every scene root under a
+/// non-identity placement (in the root's own form, or a matrix when the root
+/// itself was edited) and every other edited node (a matrix), as f32 values
+/// the importer reads back exactly.
 fn placed_roots(
     parsed: &source::Parsed<'_>,
     document: &AssetDocument,
     placement: ad_document::Placement,
+    edits: &ad_document::NodeEdits,
     cancel: &Cancellation,
 ) -> AssetResult<Vec<(usize, gltf::scene::Transform)>> {
     use gltf::scene::Transform;
-    if placement.is_identity() {
-        return Ok(Vec::new());
-    }
     if !placement.valid() {
         return Err(invalid());
     }
     let mut roots = Vec::new();
     roots
-        .try_reserve_exact(document.roots().len())
+        .try_reserve_exact(document.roots().len() + edits.locals.len())
         .map_err(|_| budget())?;
+    let placed = !placement.is_identity();
     for root in document.roots() {
         cancel.check()?;
+        if edits.is_detached(*root) || (!placed && !edits.locals.contains_key(&root.0)) {
+            continue;
+        }
         let node = parsed.document.nodes().nth(root.0).ok_or_else(invalid)?;
-        let placed = match node.transform() {
-            Transform::Matrix { matrix } => Transform::Matrix {
+        let own = match edits.locals.get(&root.0) {
+            Some(matrix) => Transform::Matrix { matrix: *matrix },
+            None => node.transform(),
+        };
+        let transform = match own {
+            Transform::Matrix { matrix } if placed => Transform::Matrix {
                 matrix: placement.apply_matrix(matrix),
             },
             Transform::Decomposed {
                 translation,
                 rotation,
                 scale,
-            } => Transform::Decomposed {
+            } if placed => Transform::Decomposed {
                 translation: placement.apply(translation),
                 rotation: placement.apply_rotation(rotation),
                 scale: scale.map(|v| v * placement.scale),
             },
+            other => other,
         };
-        let finite = match &placed {
+        roots.push((root.0, transform));
+    }
+    for (&node, matrix) in &edits.locals {
+        if !document.roots().iter().any(|r| r.0 == node) {
+            roots.push((node, Transform::Matrix { matrix: *matrix }));
+        }
+    }
+    for (_, transform) in &roots {
+        let finite = match transform {
             Transform::Matrix { matrix } => matrix.iter().flatten().all(|v| v.is_finite()),
             Transform::Decomposed {
                 translation,
@@ -510,9 +527,46 @@ fn placed_roots(
                 "Placed root transform overflows f32",
             ));
         }
-        roots.push((root.0, placed));
     }
     Ok(roots)
+}
+/// ADR-0048: nodes taken out of the scene leave every children list and
+/// scene node list; an emptied list is removed (glTF forbids empty ones).
+/// The nodes themselves stay in the file, unused.
+fn write_detached(
+    meta: &mut Value,
+    detached: &std::collections::BTreeSet<usize>,
+) -> AssetResult<()> {
+    if detached.is_empty() {
+        return Ok(());
+    }
+    let keep = |list: &mut Vec<Value>| {
+        list.retain(|v| v.as_u64().is_none_or(|n| !detached.contains(&(n as usize))));
+        list.is_empty()
+    };
+    for node in array(meta, "nodes")?.iter_mut() {
+        let Some(object) = node.as_object_mut() else {
+            continue;
+        };
+        if let Some(children) = object.get_mut("children").and_then(Value::as_array_mut)
+            && keep(children)
+        {
+            object.remove("children");
+        }
+    }
+    if let Some(scenes) = meta.get_mut("scenes").and_then(Value::as_array_mut) {
+        for scene in scenes.iter_mut() {
+            let Some(object) = scene.as_object_mut() else {
+                continue;
+            };
+            if let Some(nodes) = object.get_mut("nodes").and_then(Value::as_array_mut)
+                && keep(nodes)
+            {
+                object.remove("nodes");
+            }
+        }
+    }
+    Ok(())
 }
 /// Root locals a saved copy of `document` must read back with (ADR-0041).
 pub(crate) fn expected_roots(
@@ -520,16 +574,20 @@ pub(crate) fn expected_roots(
     import: ImportLimits,
     cancel: &Cancellation,
 ) -> AssetResult<Vec<(usize, [[f32; 4]; 4])>> {
-    if document.placement().is_identity() {
+    if document.placement().is_identity() && document.node_edits().locals.is_empty() {
         return Ok(Vec::new());
     }
     let parsed = source::parse(document.source(), import, cancel)?;
-    Ok(
-        placed_roots(&parsed, document, document.placement(), cancel)?
-            .into_iter()
-            .map(|(i, t)| (i, t.matrix()))
-            .collect(),
-    )
+    Ok(placed_roots(
+        &parsed,
+        document,
+        document.placement(),
+        document.node_edits(),
+        cancel,
+    )?
+    .into_iter()
+    .map(|(i, t)| (i, t.matrix()))
+    .collect())
 }
 /// Writes placed root transforms into node metadata (ADR-0041).
 fn write_roots(meta: &mut Value, roots: &[(usize, gltf::scene::Transform)]) -> AssetResult<()> {
@@ -542,6 +600,10 @@ fn write_roots(meta: &mut Value, roots: &[(usize, gltf::scene::Transform)]) -> A
             .ok_or_else(invalid)?;
         match transform {
             Transform::Matrix { matrix } => {
+                // An edited TRS node is written as a matrix (ADR-0048).
+                for key in ["translation", "rotation", "scale"] {
+                    node.remove(key);
+                }
                 node.insert("matrix".into(), numbers(matrix.as_flattened()));
             }
             Transform::Decomposed {
@@ -595,8 +657,9 @@ pub fn prepare_glb(
     }
     let view = document.view();
     let changed = bindings(&parsed, &view, limits, cancel)?;
-    let roots = placed_roots(&parsed, document, document.placement(), cancel)?;
-    let bytes = if changed.is_empty() && roots.is_empty() {
+    let edits = document.node_edits();
+    let roots = placed_roots(&parsed, document, document.placement(), edits, cancel)?;
+    let bytes = if changed.is_empty() && roots.is_empty() && edits.detached.is_empty() {
         if document.source().len() > limits.output_bytes {
             return Err(budget());
         }
@@ -700,6 +763,7 @@ pub fn prepare_glb(
             offset += size;
         }
         write_roots(&mut meta, &roots)?;
+        write_detached(&mut meta, &edits.detached)?;
         let buffer = array(&mut meta, "buffers")?
             .first_mut()
             .and_then(Value::as_object_mut)

@@ -9,6 +9,9 @@ fn main() {
         ("shadow.vert", naga::ShaderStage::Vertex),
         ("sky.frag", naga::ShaderStage::Fragment),
         ("sky_panorama.frag", naga::ShaderStage::Fragment),
+        ("mask.vert", naga::ShaderStage::Vertex),
+        ("mask.frag", naga::ShaderStage::Fragment),
+        ("outline.frag", naga::ShaderStage::Fragment),
     ] {
         let path = format!("shaders/{name}");
         println!("cargo:rerun-if-changed={path}");
@@ -31,10 +34,10 @@ fn main() {
         let options = naga::back::spv::Options {
             flags: naga::back::spv::WriterFlags::LABEL_VARYINGS,
             fake_missing_bindings: false,
-            // Set 0: frame uniform + shadow map (mesh, floor) or panorama
-            // image/sampler (sky);
+            // Set 0: frame uniform, shadow map and environment panorama
+            // (mesh, floor) or panorama image/sampler (sky);
             // set 1: material images and samplers.
-            binding_map: (0..3)
+            binding_map: (0..5)
                 .map(|binding| (0, binding))
                 .chain((0..10).map(|binding| (1, binding)))
                 .map(|(group, binding)| {

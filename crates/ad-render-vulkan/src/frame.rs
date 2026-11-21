@@ -21,6 +21,16 @@ pub(crate) struct FrameData {
     /// (strength 0 = off, depth bias, texel size, normal offset).
     pub light_view_projection: [[f32; 4]; 4],
     pub shadow: [f32; 4],
+    /// ADR-0047 image based lighting: (strength, 0 = off; last prefiltered
+    /// level; panorama yaw in radians; unused) and the irradiance
+    /// coefficients (rgb, w unused).
+    pub ibl: [f32; 4],
+    pub sh: [[f32; 4]; 9],
+    /// ADR-0048 object drag preview: applied to draws whose push asks for it.
+    pub node_preview: [[f32; 4]; 4],
+    /// Point lamp: world position and reference distance (w = 0: the lamp
+    /// shines along `light_direction` like the sun).
+    pub light_position: [f32; 4],
 }
 impl FrameData {
     fn bytes(&self) -> &[u8] {
@@ -56,6 +66,17 @@ impl FrameLayout {
                 .descriptor_count(1)
                 .descriptor_type(vk::DescriptorType::SAMPLER)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            // ADR-0047 environment panorama and its sampler.
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(3)
+                .descriptor_count(1)
+                .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(4)
+                .descriptor_count(1)
+                .descriptor_type(vk::DescriptorType::SAMPLER)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         ];
         // SAFETY: Fixed valid layout, borrowed create info lives through call.
         let handle = unsafe {
@@ -85,7 +106,11 @@ pub(crate) struct FrameBinding {
     gpu: Arc<Gpu>,
 }
 impl FrameBinding {
-    pub fn new(gpu: Arc<Gpu>, shadow: &crate::shadow::ShadowMap) -> GpuResult<Self> {
+    pub fn new(
+        gpu: Arc<Gpu>,
+        shadow: &crate::shadow::ShadowMap,
+        environment: &crate::sky::Skybox,
+    ) -> GpuResult<Self> {
         let buffer = Buffer::upload(
             gpu.clone(),
             FrameData::default().bytes(),
@@ -107,11 +132,11 @@ impl FrameBinding {
                 },
                 vk::DescriptorPoolSize {
                     ty: vk::DescriptorType::SAMPLED_IMAGE,
-                    descriptor_count: 1,
+                    descriptor_count: 2,
                 },
                 vk::DescriptorPoolSize {
                     ty: vk::DescriptorType::SAMPLER,
-                    descriptor_count: 1,
+                    descriptor_count: 2,
                 },
             ];
             result.pool = result.gpu.device.create_descriptor_pool(
@@ -161,7 +186,42 @@ impl FrameBinding {
                 &[],
             );
         }
+        // SAFETY: the set was just written and is not in use yet.
+        unsafe { result.bind_environment(environment) };
         Ok(result)
+    }
+    /// ADR-0047: points bindings 3 and 4 at an environment panorama.
+    ///
+    /// # Safety
+    /// No submitted work may use the set (the renderer waited for idle).
+    pub unsafe fn bind_environment(&self, environment: &crate::sky::Skybox) {
+        let image = [vk::DescriptorImageInfo {
+            sampler: vk::Sampler::null(),
+            image_view: environment.image.view,
+            image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        }];
+        let sampler = [vk::DescriptorImageInfo {
+            sampler: environment.sampler.handle,
+            ..Default::default()
+        }];
+        // SAFETY: caller guarantees the set is idle; both handles are live.
+        unsafe {
+            self.gpu.device.update_descriptor_sets(
+                &[
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(self.set)
+                        .dst_binding(3)
+                        .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                        .image_info(&image),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(self.set)
+                        .dst_binding(4)
+                        .descriptor_type(vk::DescriptorType::SAMPLER)
+                        .image_info(&sampler),
+                ],
+                &[],
+            );
+        }
     }
     /// # Safety
     /// The renderer must have retired the single in-flight submission first.
@@ -183,7 +243,11 @@ mod tests {
     use super::*;
     #[test]
     fn std140_frame_offsets_and_data_bytes_match_glsl() {
-        assert_eq!(std::mem::size_of::<FrameData>(), 256);
+        assert_eq!(std::mem::size_of::<FrameData>(), 496);
+        assert_eq!(std::mem::offset_of!(FrameData, light_position), 480);
+        assert_eq!(std::mem::offset_of!(FrameData, node_preview), 416);
+        assert_eq!(std::mem::offset_of!(FrameData, ibl), 256);
+        assert_eq!(std::mem::offset_of!(FrameData, sh), 272);
         assert_eq!(std::mem::offset_of!(FrameData, light_view_projection), 176);
         assert_eq!(std::mem::offset_of!(FrameData, shadow), 240);
         assert_eq!(std::mem::offset_of!(FrameData, light_direction), 144);

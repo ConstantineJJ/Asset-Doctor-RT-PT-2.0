@@ -58,7 +58,14 @@ pub struct ViewLighting {
     pub color: [f32; 3],
     /// Lamp switched on; off leaves only fill and environment light.
     pub enabled: bool,
+    /// Point lamp (2026-11-21): distance from the model centre in model
+    /// radii; light falls off with the square of the distance and equals the
+    /// former sun-like lamp at `DEFAULT_LAMP_DISTANCE`.
+    pub distance: f32,
 }
+/// Lamp distance range and default, in model radii.
+pub const LAMP_DISTANCES: std::ops::RangeInclusive<f32> = 1.2..=5.0;
+pub const DEFAULT_LAMP_DISTANCE: f32 = 2.5;
 /// The lamp direction used before the lamp became a scene object.
 pub const DEFAULT_LAMP_DIRECTION: [f32; 3] = [0.423_999_15, 0.847_998_3, 0.317_999_36];
 impl Default for ViewLighting {
@@ -71,6 +78,7 @@ impl Default for ViewLighting {
             direction: DEFAULT_LAMP_DIRECTION,
             color: [1.; 3],
             enabled: true,
+            distance: DEFAULT_LAMP_DISTANCE,
         }
     }
 }
@@ -85,6 +93,7 @@ impl ViewLighting {
             && self.direction.iter().all(|v| v.is_finite())
             && (self.direction.iter().map(|v| v * v).sum::<f32>() - 1.).abs() < 1e-3
             && self.color.iter().all(|c| (0.0..=1.0).contains(c))
+            && LAMP_DISTANCES.contains(&self.distance)
     }
     pub(crate) fn flags(
         self,

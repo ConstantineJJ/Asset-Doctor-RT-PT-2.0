@@ -671,3 +671,120 @@ fn placement_export_keeps_opaque_metadata_and_writes_rotation() {
     remove(&mut changed, 0);
     assert!(export(&changed).is_err());
 }
+
+/// ADR-0048: a moved child is written as a matrix, a deleted node leaves the
+/// scene lists (the node itself stays unused), the BIN is reused and the
+/// reimport proves the saved scene equals the edited one.
+#[test]
+fn object_edits_export_node_matrices_and_detach_nodes() {
+    use ad_document::{NodeId, NodeOp};
+    let (mut j, b) = tiny();
+    j["nodes"] = serde_json::json!([
+        {"mesh":0,"extras":{"keep":true}},
+        {"mesh":0,"translation":[1,2,3]},
+        {"children":[3, 4]},
+        {"mesh":0,"translation":[0,0,1],"rotation":[0,0,0,1],"scale":[1,1,1]},
+        {"mesh":0}
+    ]);
+    j["scenes"] = serde_json::json!([{"nodes":[0,1,2]}]);
+    let source = bytes(j, b);
+    let mut doc = import_glb(
+        Arc::from(source.as_slice()),
+        "objects".into(),
+        ad_document::DocumentId(21),
+        ImportLimits::default(),
+        &Cancellation::default(),
+    )
+    .unwrap();
+    let c = Cancellation::default();
+    // Uniform scale 2, a turn of 0.4 rad about Y and a move.
+    let (sin, cos) = 0.4f32.sin_cos();
+    let moved = [
+        [2. * cos, 0., -2. * sin, 0.],
+        [0., 2., 0., 0.],
+        [2. * sin, 0., 2. * cos, 0.],
+        [5., 0.5, -1., 1.],
+    ];
+    for op in [NodeOp::Local(NodeId(3), moved), NodeOp::Detach(NodeId(1))] {
+        let plan = doc.prepare_node_op(doc.tag(), op, &c).unwrap();
+        {
+            let candidate = plan.candidate(&doc, &c).unwrap();
+            let view = doc.candidate_view(candidate, &c).unwrap();
+            assert_eq!(
+                preflight_changed_export(
+                    &view,
+                    ExportLimits::default(),
+                    ImportLimits::default(),
+                    &c
+                )
+                .unwrap(),
+                0
+            );
+        }
+        doc.apply_triangle_removal(plan, ImportLimits::default(), &c)
+            .unwrap();
+    }
+    assert_eq!(doc.scene_roots(), [NodeId(0), NodeId(2)]);
+    let edited = doc.snapshot(ImportLimits::default(), &c).unwrap();
+    assert_eq!(edited.draws.len(), 3, "node 1 is out of the scene");
+    let verified = export(&doc).unwrap();
+    let out = verified.bytes();
+    let n = u32::from_le_bytes(out[12..16].try_into().unwrap()) as usize;
+    let json: serde_json::Value = serde_json::from_slice(&out[20..20 + n]).unwrap();
+    assert_eq!(json["scenes"][0]["nodes"], serde_json::json!([0, 2]));
+    assert_eq!(json["nodes"][3]["matrix"].as_array().unwrap().len(), 16);
+    assert!(json["nodes"][3].get("translation").is_none());
+    assert_eq!(
+        json["nodes"][0]["extras"],
+        serde_json::json!({"keep": true})
+    );
+    assert_eq!(
+        json["nodes"].as_array().unwrap().len(),
+        5,
+        "the deleted node stays unused"
+    );
+    let tail = &source[source.len() - 48..];
+    assert_eq!(&out[out.len() - 48..], tail);
+    let read = import_glb(
+        out.clone(),
+        "read".into(),
+        ad_document::DocumentId(22),
+        ImportLimits::default(),
+        &c,
+    )
+    .unwrap();
+    crate::compare_reimported(&doc, &read, &c).unwrap();
+    let saved = read.snapshot(ImportLimits::default(), &c).unwrap();
+    assert_eq!(saved.positions, edited.positions);
+    // Undo-like: the original document does not match the edited copy.
+    let original = import_glb(
+        Arc::from(source.as_slice()),
+        "original".into(),
+        ad_document::DocumentId(23),
+        ImportLimits::default(),
+        &c,
+    )
+    .unwrap();
+    assert!(crate::compare_reimported(&original, &read, &c).is_err());
+    // A sheared transform and deleting everything are refused.
+    let shear = [
+        [1., 0.5, 0., 0.],
+        [0., 1., 0., 0.],
+        [0., 0., 1., 0.],
+        [0., 0., 0., 1.],
+    ];
+    assert!(
+        doc.prepare_node_op(doc.tag(), NodeOp::Local(NodeId(3), shear), &c)
+            .is_err()
+    );
+    let mut last = doc;
+    for node in [0, 2] {
+        let result = last.prepare_node_op(last.tag(), NodeOp::Detach(NodeId(node)), &c);
+        if node == 2 {
+            assert!(result.is_err(), "the last object stays");
+        } else {
+            last.apply_triangle_removal(result.unwrap(), ImportLimits::default(), &c)
+                .unwrap();
+        }
+    }
+}

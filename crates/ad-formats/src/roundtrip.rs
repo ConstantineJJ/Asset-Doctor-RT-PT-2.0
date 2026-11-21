@@ -86,12 +86,16 @@ pub(crate) fn compare(
     {
         return Err(mismatch());
     }
-    equal(a.roots(), b.roots(), c)?;
+    // ADR-0048: nodes taken out of the scene leave the lists, not the file.
+    equal(&a.scene_roots(), b.roots(), c)?;
+    let expects = !a.placement().is_identity() || !a.node_edits().locals.is_empty();
     if b.placement() != ad_document::Placement::IDENTITY
-        || (roots.is_empty() != a.placement().is_identity())
+        || !b.node_edits().is_empty()
+        || roots.is_empty() == expects
     {
         return Err(mismatch());
     }
+    let document = a;
     for (index, (a, b)) in a.nodes().iter().zip(b.nodes()).enumerate() {
         c.check()?;
         let local = roots
@@ -101,7 +105,11 @@ pub(crate) fn compare(
         if a.name != b.name || local != b.local {
             return Err(mismatch());
         }
-        equal(&a.children, &b.children, c)?;
+        equal(
+            &document.scene_children(ad_document::NodeId(index)),
+            &b.children,
+            c,
+        )?;
         equal(&a.meshes, &b.meshes, c)?;
     }
     let mut images = Images { pairs: Vec::new() };

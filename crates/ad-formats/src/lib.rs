@@ -5,7 +5,9 @@ mod metadata;
 mod roundtrip;
 mod uv;
 pub use color::decode_image_file;
+mod hdr;
 pub use export::{ExportLimits, VerifiedGlb, preflight_changed_export, prepare_glb};
+pub use hdr::{HdrImage, decode_hdr_file, is_hdr};
 
 /// Independent comparison of a freshly reimported document with the document
 /// it was saved from: nodes, roots, transforms, every source primitive's

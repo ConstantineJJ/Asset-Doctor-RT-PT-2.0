@@ -12,6 +12,19 @@ const DOWN: egui::Vec2 = egui::vec2(0., 1.);
 const UP: egui::Vec2 = egui::vec2(0., -1.);
 const RIGHT: egui::Vec2 = egui::vec2(1., 0.);
 const LAMP_ON: Color32 = Color32::from_rgb(255, 210, 60);
+/// Height of the light grey tool strip under the top bar.
+const STRIP_HEIGHT: f32 = 26.;
+/// Colour marks of the Work-Tree (and fixed outline colours): red, orange,
+/// yellow, green, cyan, blue, magenta.
+pub(crate) const MARK_COLORS: [[u8; 3]; 7] = [
+    [235, 64, 64],
+    [245, 150, 40],
+    [240, 220, 50],
+    [70, 200, 90],
+    [60, 200, 220],
+    [70, 120, 240],
+    [210, 80, 220],
+];
 /// View menus of the top bar, left to right (ADR-0045 amendment).
 const VIEW_MENUS: [(TopMenu, &str, &str); 8] = [
     (TopMenu::View, "Вид", "Вид"),
@@ -20,7 +33,7 @@ const VIEW_MENUS: [(TopMenu, &str, &str); 8] = [
     (TopMenu::Lamp, "Лампа", "Лампа"),
     (TopMenu::Exposure, "Экспозиция и сила света", "Экспозиция"),
     (TopMenu::Scene, "Сцена", "Сцена"),
-    (TopMenu::Sky, "Небо и скайбокс", "Небо"),
+    (TopMenu::Sky, "Окружение", "Окружение"),
     (TopMenu::Model, "Модель", "Модель"),
 ];
 
@@ -93,9 +106,6 @@ impl ViewerUi {
                         ui.colored_label(Color32::from_rgb(255, 190, 120), "* не сохранено")
                             .on_hover_text("Есть правки, которых нет ни в исходном файле, ни в последней проверенной копии.");
                     }
-                    if width >= 330. {
-                        self.help |= ui.button("Справка").clicked();
-                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if width >= 1400.
                             && ui
@@ -127,14 +137,49 @@ impl ViewerUi {
             ui.add_space(free.right() - edge);
         }
         let start = ui.available_rect_before_wrap().right();
+        self.amoeba_switch(ui);
         self.lamp_switch(ui);
         for (menu, label, brief) in VIEW_MENUS.into_iter().rev() {
+            if menu == TopMenu::Sky {
+                self.skybox_button(ui);
+            }
             let response = self.menu_button(ui, menu, if short { brief } else { label });
             if short && brief != label {
                 response.on_hover_text(label);
             }
         }
         self.menu_group_width = start - ui.available_rect_before_wrap().right();
+    }
+
+    /// «SkyBox» opens or closes the SkyBox window (and lists its folder the
+    /// first time).
+    fn skybox_button(&mut self, ui: &mut egui::Ui) {
+        let response = ui
+            .add(egui::Button::selectable(self.show_skybox, "SkyBox").min_size(egui::vec2(0., 28.)))
+            .on_hover_text("Выбор панорамы-фона с превью (PNG/JPEG/HDR), поворот и качество.");
+        #[cfg(test)]
+        {
+            self.skybox_button_rect = response.rect;
+        }
+        self.menu_buttons.push(response.rect);
+        if response.clicked() {
+            self.show_skybox = !self.show_skybox;
+            self.menu = None;
+            if self.show_skybox && self.skybox_library.folder.is_none() {
+                let folder = self
+                    .skybox_folder
+                    .clone()
+                    .or_else(|| {
+                        self.skybox_path
+                            .as_ref()
+                            .and_then(|p| p.parent().map(Into::into))
+                    })
+                    .or_else(crate::skybox_library::default_folder);
+                if let Some(folder) = folder {
+                    self.skybox_library.open(folder);
+                }
+            }
+        }
     }
 
     /// A top-bar button with a filled triangle that opens its menu.
@@ -163,6 +208,66 @@ impl ViewerUi {
             self.menu_anchor = response.rect;
         }
         response
+    }
+
+    /// The amoeba: object outline on/off (Tab). Coloured like the outline
+    /// (several colours for the dynamic contrast), grey when off.
+    fn amoeba_switch(&mut self, ui: &mut egui::Ui) {
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(30., 30.), egui::Sense::click());
+        #[cfg(test)]
+        {
+            self.amoeba_rect = rect;
+        }
+        let painter = ui.painter();
+        if response.hovered() {
+            painter.rect_filled(rect, 5., ui.visuals().widgets.hovered.weak_bg_fill);
+        }
+        let c = rect.center();
+        let n = 28;
+        let points: Vec<egui::Pos2> = (0..n)
+            .map(|i| {
+                let a = i as f32 / n as f32 * std::f32::consts::TAU;
+                let r = 9. + 1.8 * (3. * a).sin() + 1.1 * (5. * a + 1.).cos();
+                c + egui::vec2(a.cos(), a.sin()) * r
+            })
+            .collect();
+        let fixed = self
+            .outline_color
+            .map(|i| MARK_COLORS[i % MARK_COLORS.len()]);
+        if self.outline_on {
+            let fill = fixed.map_or(
+                Color32::from_rgba_unmultiplied(255, 255, 255, 40),
+                |[r, g, b]| Color32::from_rgba_unmultiplied(r, g, b, 70),
+            );
+            painter.add(egui::Shape::convex_polygon(
+                points.clone(),
+                fill,
+                egui::Stroke::NONE,
+            ));
+        }
+        // Dashed outline: every other segment; the dynamic mode cycles colours.
+        for i in (0..n).step_by(2) {
+            let color = match (self.outline_on, fixed) {
+                (false, _) => ui.visuals().weak_text_color(),
+                (true, Some([r, g, b])) => Color32::from_rgb(r, g, b),
+                (true, None) => {
+                    let [r, g, b] = MARK_COLORS[(i / 2) % MARK_COLORS.len()];
+                    Color32::from_rgb(r, g, b)
+                }
+            };
+            painter.line_segment(
+                [points[i], points[(i + 1) % n]],
+                egui::Stroke::new(1.8, color),
+            );
+        }
+        let response = response.on_hover_text(if self.outline_on {
+            "Контур объектов включён (Tab): пунктир — под курсором, сплошной — выбранный. Цвет — в «Настройках»."
+        } else {
+            "Контур объектов выключен (Tab)."
+        });
+        if response.clicked() {
+            self.outline_on = !self.outline_on;
+        }
     }
 
     /// Yellow lamp: the lamp shines; grey and black: it is off. Click toggles.
@@ -253,7 +358,7 @@ impl ViewerUi {
                             TopMenu::Lamp => self.lamp_menu(ui, actions),
                             TopMenu::Exposure => self.exposure_menu(ui),
                             TopMenu::Scene => self.scene_menu(ui),
-                            TopMenu::Sky => self.sky_menu(ui, actions),
+                            TopMenu::Sky => self.sky_menu(ui),
                             TopMenu::Model => self.model_menu(ui, asset, actions),
                         }
                     });
@@ -287,6 +392,43 @@ impl ViewerUi {
         ui.weak("Клавиши и кнопки мыши, включая боковые: переназначение, конфликты, сброс.");
         if ui.button("Клавиши и мышь…").clicked() {
             self.show_controls = true;
+            self.menu = None;
+        }
+        ui.separator();
+        Self::heading(ui, "Контур объектов");
+        ui.checkbox(&mut self.outline_on, "Показывать контур (Tab)");
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut self.outline_color, None, "Динамический контраст")
+                .on_hover_text("Линия инвертирует то, что под ней: видна на любом фоне.");
+        });
+        ui.horizontal(|ui| {
+            ui.label("Фиксированный цвет:");
+            for (i, [r, g, b]) in MARK_COLORS.into_iter().enumerate() {
+                let (rect, response) =
+                    ui.allocate_exact_size(egui::vec2(20., 20.), egui::Sense::click());
+                ui.painter()
+                    .rect_filled(rect.shrink(1.), 3., Color32::from_rgb(r, g, b));
+                if self.outline_color == Some(i) {
+                    ui.painter().rect_stroke(
+                        rect,
+                        3.,
+                        egui::Stroke::new(2., ui.visuals().strong_text_color()),
+                        egui::StrokeKind::Inside,
+                    );
+                }
+                if response.clicked() {
+                    self.outline_color = Some(i);
+                }
+            }
+        });
+        ui.separator();
+        Self::heading(ui, "Справка");
+        if ui
+            .button("Справка…")
+            .on_hover_text("Клавиши, мышь и что где находится · H")
+            .clicked()
+        {
+            self.help = true;
             self.menu = None;
         }
     }
@@ -377,7 +519,7 @@ impl ViewerUi {
             ui.weak("Действует в режиме PBR (меню «Вид»).");
         }
         ui.add_enabled_ui(pbr, |ui| {
-            ui.checkbox(&mut self.environment_light, "Свет окружения").on_hover_text("Модель дополнительно освещается цветами выбранного окружения (небо сверху, земля снизу). Это приближение, не HDR/IBL.");
+            ui.checkbox(&mut self.environment_light, "Свет окружения").on_hover_text("С показанной панорамой (скайбокс PNG/JPEG или HDR) модель освещается ею целиком: рассеянный свет и отражения с учётом шероховатости (IBL). Без панорамы — приближение цветами выбранного окружения (небо сверху, земля снизу).");
             ui.add_enabled(self.environment_light, egui::Slider::new(&mut self.environment_strength, 0.0..=ad_render_vulkan::sky::EnvironmentLight::MAX_STRENGTH).text("Сила"));
         });
         ui.separator();
@@ -411,6 +553,11 @@ impl ViewerUi {
             ui.color_edit_button_rgb(&mut self.lighting.color);
             ui.checkbox(&mut self.lamp_icon, "Значок лампы").on_hover_text("Значок лампы во вьюпорте: тяните его или его стрелки, чтобы повернуть свет; правая кнопка — меню.");
         });
+        ui.add(
+            egui::Slider::new(&mut self.lighting.distance, ad_render_vulkan::lighting::LAMP_DISTANCES)
+                .text("Расстояние"),
+        )
+        .on_hover_text("Расстояние от центра модели в её размерах (радиусах). Ближе — ярче и с более резким перепадом света; тень расходится от лампы. 2,5 — как прежняя лампа.");
         let (mut azimuth, mut elevation) = crate::lamp::angles(self.lighting.direction);
         let turned = ui
             .add(egui::Slider::new(&mut azimuth, -180.0..=180.0).text("Азимут"))
@@ -472,8 +619,8 @@ impl ViewerUi {
         ui.weak("Пол на уровне нижней точки модели в исходном положении. Только вид. G — скрыть или вернуть.");
     }
 
-    fn sky_menu(&mut self, ui: &mut egui::Ui, actions: &mut Actions) {
-        egui::ComboBox::from_label("Окружение")
+    fn sky_menu(&mut self, ui: &mut egui::Ui) {
+        egui::ComboBox::from_label("Погода и время суток")
             .selected_text(self.environment.label())
             .show_ui(ui, |ui| {
                 for preset in ad_render_vulkan::sky::Environment::ALL {
@@ -484,23 +631,183 @@ impl ViewerUi {
             .on_hover_text(
                 "Фон-небо за моделью. Только вид: лампы, экспозиция и подсветка не меняются.",
             );
-        ui.horizontal(|ui| {
-            if ui.button("Скайбокс...").on_hover_text("Выбрать свою панораму PNG/JPEG 2:1 (равнопромежуточную). Файл только читается; в модель и экспорт не попадает.").clicked() {
-                actions.skybox_load = true;
-            }
-            if let Some(name) = self.skybox_name.clone() {
-                ui.checkbox(&mut self.skybox_on, name).on_hover_text("Показать панораму вместо фона-неба. Свет окружения берёт её цвета.");
-                if ui.button("Убрать").clicked() {
-                    actions.skybox_remove = true;
+        if self.skybox_on && self.skybox_name.is_some() {
+            ui.weak("Сейчас показан SkyBox; небо видно, когда SkyBox скрыт.");
+        }
+    }
+
+    /// The SkyBox window: preview, the shown panorama and its settings, and
+    /// the panoramas of a folder with their previews.
+    pub(super) fn skybox_window(&mut self, context: &egui::Context, actions: &mut Actions) {
+        if !self.show_skybox {
+            return;
+        }
+        self.skybox_library.poll(context);
+        let mut open = true;
+        egui::Window::new("SkyBox")
+            .id(egui::Id::new("skybox_window"))
+            .open(&mut open)
+            .resizable(true)
+            .default_size([560., 620.])
+            .show(context, |ui| {
+                let width = ui.available_width();
+                // Large preview: the hovered panorama, else the shown one.
+                let shown = self
+                    .skybox_path
+                    .as_ref()
+                    .and_then(|p| self.skybox_library.entries.iter().position(|e| &e.path == p));
+                let preview = self.skybox_hover.or(shown);
+                let preview_size = egui::vec2(width, (width / 2.).min(280.));
+                match preview.and_then(|i| self.skybox_library.entries.get(i)) {
+                    Some(crate::skybox_library::Entry {
+                        thumb: crate::skybox_library::Thumb::Ready(texture),
+                        name,
+                        ..
+                    }) => {
+                        ui.add(egui::Image::new((texture.id(), preview_size)).corner_radius(6.));
+                        ui.weak(name);
+                    }
+                    _ => {
+                        let (rect, _) = ui.allocate_exact_size(preview_size, egui::Sense::hover());
+                        ui.painter().rect_filled(rect, 6., ui.visuals().extreme_bg_color);
+                        ui.painter().text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "Наведите на панораму, чтобы увидеть её здесь",
+                            egui::FontId::proportional(14.),
+                            ui.visuals().weak_text_color(),
+                        );
+                    }
                 }
+                ui.separator();
+                if let Some(name) = self.skybox_name.clone() {
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.skybox_on, format!("Показать: {name}"))
+                            .on_hover_text("Показать панораму вместо неба «Окружения». Со «Светом окружения» она освещает модель.");
+                        if ui.button("Убрать").clicked() {
+                            actions.skybox_remove = true;
+                        }
+                    });
+                    if self.skybox_on {
+                        ui.add(
+                            egui::Slider::new(&mut self.skybox_yaw, 0.0..=360.0)
+                                .text("Поворот")
+                                .suffix(" град."),
+                        );
+                    }
+                } else {
+                    ui.weak("SkyBox не выбран: показано небо «Окружения».");
+                }
+                self.skybox_quality_ui(ui, actions);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let folder = self
+                        .skybox_library
+                        .folder
+                        .as_ref()
+                        .map_or_else(|| "Папка не выбрана".to_string(), |f| f.display().to_string());
+                    if ui.button("Папка…").on_hover_text("Выбрать папку с панорамами: укажите любой файл в ней.").clicked() {
+                        actions.skybox_folder_choose = true;
+                    }
+                    if ui.add_enabled(self.skybox_library.folder.is_some(), egui::Button::new("Обновить")).clicked()
+                        && let Some(folder) = self.skybox_library.folder.clone()
+                    {
+                        self.skybox_library.open(folder);
+                    }
+                    actions.skybox_load |= ui
+                        .button("Другой файл…")
+                        .on_hover_text("Открыть одну панораму PNG/JPEG/HDR из любого места.")
+                        .clicked();
+                    ui.add(egui::Label::new(egui::RichText::new(folder).weak()).truncate());
+                });
+                if let Some(error) = &self.skybox_library.error {
+                    ui.colored_label(Color32::from_rgb(255, 190, 120), error);
+                }
+                let pending = self.skybox_library.pending();
+                if pending > 0 {
+                    ui.weak(format!("Готовятся превью: {pending}"));
+                }
+                self.skybox_hover = None;
+                let tile = egui::vec2(168., 84.);
+                let columns = ((ui.available_width() + 8.) / (tile.x + 8.)).floor().max(1.) as usize;
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    let entries = self.skybox_library.entries.len();
+                    for row in (0..entries).step_by(columns) {
+                        ui.horizontal(|ui| {
+                            for i in row..(row + columns).min(entries) {
+                                let entry = &self.skybox_library.entries[i];
+                                let current = self.skybox_path.as_ref() == Some(&entry.path);
+                                let response = ui
+                                    .vertical(|ui| {
+                                        ui.set_width(tile.x);
+                                        let (rect, response) = ui.allocate_exact_size(tile, egui::Sense::click());
+                                        match &entry.thumb {
+                                            crate::skybox_library::Thumb::Ready(texture) => {
+                                                egui::Image::new((texture.id(), tile))
+                                                    .corner_radius(4.)
+                                                    .paint_at(ui, rect);
+                                            }
+                                            crate::skybox_library::Thumb::Pending => {
+                                                ui.painter().rect_filled(rect, 4., ui.visuals().extreme_bg_color);
+                                            }
+                                            crate::skybox_library::Thumb::Failed(_) => {
+                                                ui.painter().rect_filled(rect, 4., Color32::from_rgb(70, 40, 40));
+                                            }
+                                        }
+                                        let stroke = if current {
+                                            egui::Stroke::new(2.5, Color32::from_rgb(255, 205, 80))
+                                        } else if response.hovered() {
+                                            egui::Stroke::new(1.5, ui.visuals().strong_text_color())
+                                        } else {
+                                            egui::Stroke::NONE
+                                        };
+                                        ui.painter().rect_stroke(rect, 4., stroke, egui::StrokeKind::Inside);
+                                        ui.add(egui::Label::new(egui::RichText::new(&entry.name).small()).truncate());
+                                        response
+                                    })
+                                    .inner;
+                                #[cfg(test)]
+                                {
+                                    self.skybox_tile_rects.push(response.rect);
+                                }
+                                let hint = match &entry.thumb {
+                                    crate::skybox_library::Thumb::Failed(error) => error.clone(),
+                                    _ => format!("{} · {:.1} МБ · нажмите, чтобы показать", entry.name, entry.bytes as f64 / 1048576.),
+                                };
+                                let response = response.on_hover_text(hint);
+                                if response.hovered() {
+                                    self.skybox_hover = Some(i);
+                                }
+                                if response.clicked() && !current {
+                                    actions.skybox_open = Some(entry.path.clone());
+                                }
+                            }
+                        });
+                    }
+                    if entries == 0 && self.skybox_library.folder.is_some() {
+                        ui.weak("В папке нет панорам PNG/JPEG/HDR.");
+                    }
+                });
+            });
+        self.show_skybox &= open;
+    }
+
+    /// SkyBox quality: widest level kept on the GPU; changing it prepares
+    /// the shown panorama again.
+    fn skybox_quality_ui(&mut self, ui: &mut egui::Ui, actions: &mut Actions) {
+        let before = self.skybox_width;
+        ui.horizontal(|ui| {
+            ui.label("Качество SkyBox");
+            for (width, label) in ad_render_vulkan::ibl::WIDTHS.into_iter().zip(["2K", "4K", "8K"]) {
+                ui.radio_value(&mut self.skybox_width, width, label);
             }
-        });
-        if self.skybox_name.is_some() && self.skybox_on {
-            ui.add(
-                egui::Slider::new(&mut self.skybox_yaw, 0.0..=360.0)
-                    .text("Поворот")
-                    .suffix(" град."),
-            );
+        })
+        .response
+        .on_hover_text("Ширина панорамы на видеокарте. 4K — чёткий фон при умеренной памяти (около 90 МБ видеопамяти); 8K — самый чёткий, около 360 МБ видеопамяти и до 0,7 ГБ памяти во время подготовки. Освещение от этого почти не меняется.");
+        if self.skybox_width != before
+            && let Some(path) = self.skybox_path.clone()
+        {
+            actions.skybox_reload = Some(path);
         }
     }
 
@@ -733,87 +1040,389 @@ impl ViewerUi {
         });
         ui.add_space(16.);
         ui.separator();
-        ui.weak("Металл и шероховатость: параметры × карты. Заполнение приблизительное; без HDR-окружения.");
+        ui.weak("Металл и шероховатость: параметры × карты. Заполнение приблизительное. Свет окружения от панорамы (IBL) — в меню «Освещение» при показанном скайбоксе.");
         ui.weak("Статические GLB: PNG/JPEG, цвета вершин, нормали, OPAQUE/MASK. PBR — предварительный режим. BLEND, скелеты и анимации пока не поддерживаются.");
     }
 
-    /// «Дерево» in the viewport's top-left corner; the tree unfolds below it.
-    pub(super) fn tree_overlay(&mut self, context: &egui::Context) {
-        let scene = self.scene;
-        if scene.width() < 160. || scene.height() < 120. {
+    /// Right-click menu: the object under the pointer (gizmo, delete, hide,
+    /// mark, find in the Work-Tree) and the view submenus. Esc or a press
+    /// outside closes it.
+    pub(super) fn context_menu_ui(
+        &mut self,
+        context: &egui::Context,
+        asset: Option<&PreparedAsset>,
+        actions: &mut Actions,
+    ) {
+        let Some((at, node)) = self.context_menu else {
+            return;
+        };
+        if context.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.context_menu = None;
             return;
         }
-        egui::Area::new(egui::Id::new("tree_button"))
+        let mut close = false;
+        let area = egui::Area::new(egui::Id::new("viewport_context_menu"))
             .order(egui::Order::Foreground)
-            .fixed_pos(scene.min + egui::vec2(10., 10.))
+            .constrain(true)
+            .fixed_pos(at)
             .show(context, |ui| {
-                let response = ui.add(
-                    egui::Button::selectable(self.show_tree, "      Дерево")
-                        .min_size(egui::vec2(100., 28.)),
-                );
-                triangle(
-                    ui.painter(),
-                    egui::pos2(response.rect.left() + 14., response.rect.center().y),
-                    5.,
-                    if self.show_tree { DOWN } else { RIGHT },
-                    ui.visuals().strong_text_color(),
-                );
-                #[cfg(test)]
-                {
-                    self.tree_rect = response.rect;
-                }
-                if response
-                    .on_hover_text("Структура сцены: узлы активной сцены")
-                    .clicked()
-                {
-                    self.show_tree = !self.show_tree;
-                }
-            });
-        if !self.show_tree {
-            return;
-        }
-        let rows_height = (scene.height() - 110.).clamp(80., 560.);
-        egui::Area::new(egui::Id::new("tree_panel"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(scene.min + egui::vec2(10., 44.))
-            .show(context, |ui| {
-                egui::Frame::popup(ui.style())
-                    .inner_margin(8.)
-                    .show(ui, |ui| {
-                        ui.set_width(280.);
-                        ui.strong("Сцена");
-                        ui.weak("Узлы активной сцены");
-                        ui.separator();
-                        if self.tree.rows.is_empty() {
-                            ui.label("Модель не открыта");
+                egui::Frame::menu(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(220.);
+                    if let (Some(node), Some(asset)) = (node, asset) {
+                        let name = asset
+                            .document()
+                            .nodes()
+                            .get(node.0)
+                            .map_or(String::new(), |n| n.name.clone());
+                        ui.label(
+                            RichText::new(if name.is_empty() {
+                                "Без имени"
+                            } else {
+                                &name
+                            })
+                            .strong(),
+                        );
+                        if ui
+                            .button("Gizmo: переместить, повернуть, масштаб")
+                            .clicked()
+                        {
+                            self.object_gizmo = Some(node);
+                            self.model_gizmo_on = true;
+                            close = true;
                         }
-                        egui::ScrollArea::vertical()
-                            .max_height(rows_height)
-                            .show_rows(ui, 24., self.tree.rows.len(), |ui, range| {
-                                for index in range {
-                                    let row = &self.tree.rows[index];
-                                    ui.horizontal(|ui| {
-                                        ui.add_space((row.depth.min(12) * 12) as f32);
-                                        let label = if row.label.is_empty() {
-                                            "Без имени"
-                                        } else {
-                                            &row.label
-                                        };
-                                        let response = ui.add_sized(
-                                            [ui.available_width(), 24.],
-                                            egui::Button::selectable(
-                                                self.tree.selected == Some(row.id),
-                                                label,
-                                            )
-                                            .truncate(),
-                                        );
-                                        if response.on_hover_text(label).clicked() {
-                                            self.tree.selected = Some(row.id);
-                                        }
-                                    });
+                        if ui.button("Удалить (X)").clicked() {
+                            actions.delete_object = Some(node);
+                            close = true;
+                        }
+                        if ui
+                            .button("Скрыть")
+                            .on_hover_text("Только вид; вернуть — глазом в Work-Tree")
+                            .clicked()
+                        {
+                            self.tree.hidden.insert(node.0);
+                            self.tree.rev += 1;
+                            close = true;
+                        }
+                        ui.menu_button("Пометить цветом", |ui| {
+                            ui.horizontal(|ui| {
+                                for color in MARK_COLORS {
+                                    let (r, response) = ui.allocate_exact_size(
+                                        egui::vec2(20., 20.),
+                                        egui::Sense::click(),
+                                    );
+                                    ui.painter().rect_filled(
+                                        r,
+                                        3.,
+                                        Color32::from_rgb(color[0], color[1], color[2]),
+                                    );
+                                    if response.clicked() {
+                                        self.tree.tints.insert(node.0, color);
+                                        self.tree.rev += 1;
+                                        close = true;
+                                    }
                                 }
                             });
+                            if ui.button("Без пометки").clicked() {
+                                self.tree.tints.remove(&node.0);
+                                self.tree.rev += 1;
+                                close = true;
+                            }
+                        });
+                        if ui.button("Показать в Work-Tree").clicked() {
+                            self.show_tree = true;
+                            close = true;
+                        }
+                        ui.separator();
+                    }
+                    if self.object_gizmo.is_some() && ui.button("Gizmo: вся модель").clicked()
+                    {
+                        self.object_gizmo = None;
+                        close = true;
+                    }
+                    if ui.button("Вписать (F)").clicked() {
+                        actions.fit = true;
+                        close = true;
+                    }
+                    if ui
+                        .checkbox(&mut self.outline_on, "Контур объектов (Tab)")
+                        .changed()
+                    {
+                        close = true;
+                    }
+                    ui.separator();
+                    ui.menu_button("Вид", |ui| self.view_menu(ui));
+                    ui.menu_button("Сетка и помощники", |ui| self.grid_menu(ui));
+                    ui.menu_button("Освещение", |ui| self.light_menu(ui));
+                    ui.menu_button("Лампа", |ui| self.lamp_menu(ui, actions));
+                    ui.menu_button("Окружение", |ui| self.sky_menu(ui));
+                });
+            });
+        let rect = area.response.rect;
+        let press = context.input(|i| {
+            i.pointer
+                .any_pressed()
+                .then(|| i.pointer.interact_pos())
+                .flatten()
+        });
+        if close
+            || press.is_some_and(|pos| {
+                !rect.contains(pos)
+                    && !context.layer_id_at(pos).is_some_and(|layer| {
+                        matches!(layer.order, egui::Order::Foreground | egui::Order::Tooltip)
+                    })
+            })
+        {
+            self.context_menu = None;
+        }
+    }
+
+    /// A bug in the bottom-right corner opens the program log; amber when
+    /// new warnings came since the log was last open.
+    pub(super) fn bug_button(&mut self, ui: &mut egui::Ui) {
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(26., 22.), egui::Sense::click());
+        #[cfg(test)]
+        {
+            self.bug_rect = rect;
+        }
+        let (_, warnings) = crate::log::counts();
+        let fresh = warnings > self.log_seen_warnings;
+        let color = if fresh {
+            Color32::from_rgb(255, 190, 90)
+        } else if response.hovered() || self.show_log {
+            ui.visuals().strong_text_color()
+        } else {
+            ui.visuals().weak_text_color()
+        };
+        let painter = ui.painter();
+        let c = rect.center() + egui::vec2(0., 1.);
+        let stroke = egui::Stroke::new(1.3, color);
+        for dy in [-3.5f32, 0., 3.5] {
+            painter.line_segment(
+                [c + egui::vec2(-3., dy), c + egui::vec2(-8., dy - 2.)],
+                stroke,
+            );
+            painter.line_segment(
+                [c + egui::vec2(3., dy), c + egui::vec2(8., dy - 2.)],
+                stroke,
+            );
+        }
+        painter.add(egui::Shape::ellipse_filled(
+            c + egui::vec2(0., 1.),
+            egui::vec2(4.5, 6.),
+            color,
+        ));
+        painter.circle_filled(c + egui::vec2(0., -6.), 2.8, color);
+        painter.line_segment(
+            [c + egui::vec2(-1.5, -8.), c + egui::vec2(-4., -10.5)],
+            stroke,
+        );
+        painter.line_segment(
+            [c + egui::vec2(1.5, -8.), c + egui::vec2(4., -10.5)],
+            stroke,
+        );
+        let response = response.on_hover_text(if fresh {
+            "Журнал работы программы: есть новые предупреждения"
+        } else {
+            "Журнал работы программы"
+        });
+        if response.clicked() {
+            self.show_log = !self.show_log;
+        }
+    }
+
+    /// The program log: every diagnostic line and status message, with a
+    /// filter, copy, clear and writing to a file.
+    pub(super) fn log_window(&mut self, context: &egui::Context) {
+        if !self.show_log {
+            return;
+        }
+        let (lines, total, warnings) = crate::log::snapshot();
+        self.log_seen_warnings = warnings;
+        let mut open = true;
+        egui::Window::new("Log")
+            .id(egui::Id::new("program_log"))
+            .open(&mut open)
+            .resizable(true)
+            .default_size([760., 420.])
+            .show(context, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(format!("Строк: {total} · предупреждений: {warnings}"));
+                    ui.separator();
+                    ui.add(egui::TextEdit::singleline(&mut self.log_filter).hint_text("Фильтр").desired_width(180.));
+                    ui.checkbox(&mut self.log_only_warnings, "Только предупреждения");
+                });
+                ui.horizontal(|ui| {
+                    let before = self.log_to_file;
+                    ui.checkbox(&mut self.log_to_file, "Писать в файл")
+                        .on_hover_text("Каждый запуск — новый файл в %LOCALAPPDATA%\\AssetDoctorRTPT\\logs. Включение запоминается.");
+                    if self.log_to_file != before {
+                        let target = self.log_to_file.then(crate::log::default_folder).flatten();
+                        if let Err(error) = crate::log::write_to(target) {
+                            self.log_to_file = false;
+                            self.set_status(format!("Журнал не пишется в файл: {error}"), true);
+                        }
+                    }
+                    if let Some(path) = crate::log::file() {
+                        ui.add(egui::Label::new(egui::RichText::new(path.display().to_string()).weak()).truncate());
+                    }
+                });
+                let filter = self.log_filter.to_lowercase();
+                let shown: Vec<&crate::log::Line> = lines
+                    .iter()
+                    .filter(|l| !self.log_only_warnings || l.warning)
+                    .filter(|l| filter.is_empty() || l.text.to_lowercase().contains(&filter))
+                    .collect();
+                ui.horizontal(|ui| {
+                    if ui.button("Копировать").on_hover_text("Показанные строки — в буфер обмена").clicked() {
+                        let text: Vec<String> = shown.iter().map(|l| format!("{:10.3} {}", l.at, l.text)).collect();
+                        ui.ctx().copy_text(text.join("\n"));
+                    }
+                    if ui.button("Очистить").on_hover_text("Убрать строки из окна (файл не меняется)").clicked() {
+                        crate::log::clear();
+                    }
+                });
+                ui.separator();
+                egui::ScrollArea::both()
+                    .auto_shrink([false, false])
+                    .stick_to_bottom(true)
+                    .show_rows(ui, 16., shown.len(), |ui, range| {
+                        for line in &shown[range] {
+                            let text = egui::RichText::new(format!("{:9.3}  {}", line.at, line.text)).monospace().size(12.);
+                            ui.label(if line.warning { text.color(Color32::from_rgb(255, 190, 120)) } else { text });
+                        }
                     });
+            });
+        self.show_log &= open;
+    }
+
+    /// Light grey strip under the top bar (room for future tools) with the
+    /// black «Work-Tree» button that opens the left block.
+    pub(super) fn work_tree_strip(&mut self, context: &egui::Context, width: f32) {
+        let strip = egui::Rect::from_min_size(
+            egui::pos2(0., 48.),
+            egui::vec2((width * 0.405).max(160.), STRIP_HEIGHT),
+        );
+        egui::Area::new(egui::Id::new("work_tree_strip"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(strip.min)
+            .show(context, |ui| {
+                ui.painter().rect_filled(strip, 0., Color32::from_rgb(196, 198, 204));
+                ui.scope_builder(egui::UiBuilder::new().max_rect(strip.shrink2(egui::vec2(6., 2.))), |ui| {
+                    ui.horizontal_centered(|ui| {
+                        let text = RichText::new("      Work-Tree").color(Color32::from_rgb(235, 235, 240)).size(13.);
+                        let fill = if self.show_tree {
+                            Color32::from_rgb(110, 36, 44)
+                        } else {
+                            Color32::from_rgb(18, 18, 22)
+                        };
+                        let response = ui.add(egui::Button::new(text).fill(fill).min_size(egui::vec2(110., STRIP_HEIGHT - 6.)));
+                        triangle(
+                            ui.painter(),
+                            egui::pos2(response.rect.left() + 13., response.rect.center().y),
+                            4.5,
+                            if self.show_tree { DOWN } else { RIGHT },
+                            Color32::from_rgb(235, 235, 240),
+                        );
+                        #[cfg(test)]
+                        {
+                            self.tree_rect = response.rect;
+                        }
+                        if response
+                            .on_hover_text("Work-Tree: структура сцены — узлы, порядок, вложенность; скрыть объект или пометить его цветом (только вид)")
+                            .clicked()
+                        {
+                            self.show_tree = !self.show_tree;
+                        }
+                    });
+                });
+            });
+    }
+
+    /// The left block (mirror of the right one): the scene tree with hide
+    /// and colour-mark switches per node. View only; children follow.
+    pub(super) fn work_tree_panel(&mut self, root: &mut egui::Ui) {
+        egui::Panel::left("work_tree")
+            .default_size(390.)
+            .min_size(330.)
+            .max_size(570.)
+            .show(root, |ui| {
+                ui.add_space(STRIP_HEIGHT + 4.);
+                ui.horizontal(|ui| {
+                    ui.strong("Work-Tree");
+                    ui.weak(format!("узлов: {}", self.tree.rows.len()));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add_enabled(!self.tree.hidden.is_empty() || !self.tree.tints.is_empty(), egui::Button::new("Сбросить").small())
+                            .on_hover_text("Показать всё и снять цветные пометки")
+                            .clicked()
+                        {
+                            self.tree.hidden.clear();
+                            self.tree.tints.clear();
+                            self.tree.rev += 1;
+                        }
+                    });
+                });
+                ui.weak("Глаз — скрыть или показать, квадрат — цветная пометка. Вложенные узлы следуют за родителем. Только вид: в файл не попадает.");
+                ui.separator();
+                if self.tree.rows.is_empty() {
+                    ui.label("Модель не открыта");
+                }
+                let rows = self.tree.rows.len();
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, 24., rows, |ui, range| {
+                    for index in range {
+                        let (id, depth, label) = {
+                            let row = &self.tree.rows[index];
+                            (row.id, row.depth, row.label.clone())
+                        };
+                        ui.horizontal(|ui| {
+                            ui.set_min_height(24.);
+                            ui.add_space((depth.min(12) * 12) as f32);
+                            let hidden = self.tree.hidden.contains(&id.0);
+                            let (eye, response) = ui.allocate_exact_size(egui::vec2(20., 20.), egui::Sense::click());
+                            paint_eye(ui.painter(), eye.center(), !hidden, if response.hovered() { ui.visuals().strong_text_color() } else { ui.visuals().text_color() });
+                            if response.on_hover_text(if hidden { "Показать" } else { "Скрыть" }).clicked() {
+                                if hidden {
+                                    self.tree.hidden.remove(&id.0);
+                                } else {
+                                    self.tree.hidden.insert(id.0);
+                                }
+                                self.tree.rev += 1;
+                            }
+                            let tint = self.tree.tints.get(&id.0).copied();
+                            let (square, response) = ui.allocate_exact_size(egui::vec2(18., 18.), egui::Sense::click());
+                            match tint {
+                                Some([r, g, b]) => ui.painter().rect_filled(square.shrink(2.), 3., Color32::from_rgb(r, g, b)),
+                                None => ui.painter().rect_stroke(square.shrink(3.), 3., egui::Stroke::new(1., ui.visuals().weak_text_color()), egui::StrokeKind::Inside),
+                            };
+                            let response = response.on_hover_text("Цветная пометка");
+                            egui::Popup::menu(&response).show(|ui| {
+                                ui.horizontal(|ui| {
+                                    for color in MARK_COLORS {
+                                        let (r, response) = ui.allocate_exact_size(egui::vec2(20., 20.), egui::Sense::click());
+                                        ui.painter().rect_filled(r, 3., Color32::from_rgb(color[0], color[1], color[2]));
+                                        if response.clicked() {
+                                            self.tree.tints.insert(id.0, color);
+                                            self.tree.rev += 1;
+                                        }
+                                    }
+                                    if ui.small_button("Без пометки").clicked() {
+                                        self.tree.tints.remove(&id.0);
+                                        self.tree.rev += 1;
+                                    }
+                                });
+                            });
+                            let name = if label.is_empty() { "Без имени".to_string() } else { label };
+                            let text = if hidden { RichText::new(&name).weak() } else { RichText::new(&name) };
+                            let response = ui.add_sized(
+                                [ui.available_width(), 22.],
+                                egui::Button::selectable(self.tree.selected == Some(id), text).truncate(),
+                            );
+                            if response.on_hover_text(&name).clicked() {
+                                self.tree.selected = Some(id);
+                            }
+                        });
+                    }
+                });
             });
     }
 
@@ -837,12 +1446,27 @@ impl ViewerUi {
             .fixed_pos(scene.right_bottom() - egui::vec2(10., 10.))
             .show(context, |ui| {
                 ui.horizontal(|ui| {
-                    let undo = history_button(ui, idle && self.edit.can_undo, "Undo", false)
-                        .on_hover_text(
-                            "Отменить последнюю правку · Ctrl+Z. Ревизия всё равно увеличится.",
-                        );
-                    let redo = history_button(ui, idle && self.edit.can_redo, "Redo", true)
-                        .on_hover_text("Повторить отменённую правку · Ctrl+Y");
+                    #[cfg(test)]
+                    self.view_rects.clear();
+                    for view in crate::camera::View::ALL {
+                        let response = ui
+                            .add(
+                                egui::Button::new(egui::RichText::new(view.label()).size(13.))
+                                    .min_size(egui::vec2(0., 32.)),
+                            )
+                            .on_hover_text(view.hint());
+                        #[cfg(test)]
+                        self.view_rects.push((view, response.rect));
+                        if response.clicked() {
+                            actions.camera_view = Some(view);
+                        }
+                    }
+                    ui.add_space(8.);
+                    let undo = history_button(ui, idle && self.edit.can_undo, false).on_hover_text(
+                        "Undo: отменить последнюю правку · Ctrl+Z. Ревизия всё равно увеличится.",
+                    );
+                    let redo = history_button(ui, idle && self.edit.can_redo, true)
+                        .on_hover_text("Redo: повторить отменённую правку · Ctrl+Y");
                     #[cfg(test)]
                     {
                         self.undo_rect = undo.rect;
@@ -870,11 +1494,12 @@ impl ViewerUi {
     }
 }
 
-/// A button with a half-circle arrow: left for Undo, right (mirrored) for Redo.
-fn history_button(ui: &mut egui::Ui, enabled: bool, label: &str, redo: bool) -> egui::Response {
+/// An icon button with a half-circle arrow: left for Undo, right (mirrored)
+/// for Redo.
+fn history_button(ui: &mut egui::Ui, enabled: bool, redo: bool) -> egui::Response {
     let response = ui.add_enabled(
         enabled,
-        egui::Button::new("").min_size(egui::vec2(88., 32.)),
+        egui::Button::new("").min_size(egui::vec2(40., 32.)),
     );
     let color = if enabled {
         ui.visuals().strong_text_color()
@@ -882,22 +1507,9 @@ fn history_button(ui: &mut egui::Ui, enabled: bool, label: &str, redo: bool) -> 
         ui.visuals().weak_text_color()
     };
     let painter = ui.painter();
-    let rect = response.rect;
-    let (icon, text, align) = if redo {
-        (
-            egui::pos2(rect.right() - 18., rect.center().y + 2.),
-            rect.left_center() + egui::vec2(12., 0.),
-            egui::Align2::LEFT_CENTER,
-        )
-    } else {
-        (
-            egui::pos2(rect.left() + 18., rect.center().y + 2.),
-            rect.right_center() - egui::vec2(12., 0.),
-            egui::Align2::RIGHT_CENTER,
-        )
-    };
+    let icon = response.rect.center() + egui::vec2(0., 2.);
     let flip = if redo { -1. } else { 1. };
-    let r = 6.5;
+    let r = 7.;
     // Upper half circle from the far side to the near side, ending in a
     // head that points down: ↶ for Undo, ↷ for Redo.
     let points: Vec<egui::Pos2> = (0..=14)
@@ -909,6 +1521,27 @@ fn history_button(ui: &mut egui::Ui, enabled: bool, label: &str, redo: bool) -> 
     let end = *points.last().expect("arc points");
     painter.add(egui::Shape::line(points, egui::Stroke::new(2., color)));
     triangle(painter, end + egui::vec2(0., 2.), 4.5, DOWN, color);
-    painter.text(text, align, label, egui::FontId::proportional(14.5), color);
     response
+}
+
+/// An eye: open (shown) or crossed out (hidden).
+fn paint_eye(painter: &egui::Painter, c: egui::Pos2, open: bool, color: Color32) {
+    let stroke = egui::Stroke::new(1.4, color);
+    let upper: Vec<egui::Pos2> = (0..=10)
+        .map(|i| {
+            let t = i as f32 / 10.;
+            c + egui::vec2(-7. + 14. * t, -4.5 * (std::f32::consts::PI * t).sin())
+        })
+        .collect();
+    let lower: Vec<egui::Pos2> = upper
+        .iter()
+        .map(|p| egui::pos2(p.x, 2. * c.y - p.y))
+        .collect();
+    painter.add(egui::Shape::line(upper, stroke));
+    painter.add(egui::Shape::line(lower, stroke));
+    if open {
+        painter.circle_filled(c, 2.2, color);
+    } else {
+        painter.line_segment([c + egui::vec2(-6., 5.), c + egui::vec2(6., -5.)], stroke);
+    }
 }

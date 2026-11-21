@@ -60,6 +60,15 @@ impl StagedScene<'_> {
     }
 }
 
+/// Work-Tree view override of one draw: hidden, or tinted with an sRGB
+/// colour at `TINT_ALPHA`. View only.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DrawOverride {
+    pub hidden: bool,
+    pub tint: Option<[u8; 3]>,
+}
+/// Opacity of a Work-Tree colour mark.
+pub const TINT_ALPHA: f32 = 0.45;
 /// ADR-0041 drag preview: view-projection including the preview transform,
 /// the eye and the lamp direction in the previewed model's frame.
 pub type ModelPreview = ([[f32; 4]; 4], [f32; 3], [f32; 3]);
@@ -101,6 +110,19 @@ pub struct Renderer {
     /// ADR-0040 owner panorama; replaced only after waiting for idle.
     skybox: Option<crate::sky::Skybox>,
     panorama_frames: u64,
+    /// ADR-0047: black environment the frame set points at without a
+    /// panorama, and frames lit by the panorama (smoke evidence).
+    environment_fallback: Option<crate::sky::Skybox>,
+    ibl_frames: u64,
+    /// Per-draw Work-Tree overrides (used when the length matches the scene).
+    overrides: Vec<DrawOverride>,
+    /// Point lamp: world position and reference distance.
+    lamp_position: Option<[f32; 4]>,
+    /// ADR-0048 object drag preview: matrix and the draws it moves.
+    node_preview: Option<([[f32; 4]; 4], Vec<usize>)>,
+    /// Object outline of this frame and frames that drew one.
+    outline: crate::outline::OutlineSettings,
+    outline_frames: u64,
     sample_textures: bool,
     sample_mr_maps: bool,
     sample_normal_maps: bool,
@@ -162,6 +184,13 @@ impl Renderer {
             environment_light_frames: 0,
             skybox: None,
             panorama_frames: 0,
+            environment_fallback: None,
+            ibl_frames: 0,
+            overrides: Vec::new(),
+            outline: Default::default(),
+            outline_frames: 0,
+            node_preview: None,
+            lamp_position: None,
             model_preview: None,
             channel: crate::lighting::Channel::Lit,
             wireframe: false,
@@ -199,7 +228,16 @@ impl Renderer {
             result.presented = device.create_fence(&vk::FenceCreateInfo::default(), None)?;
         }
         let shadow_map = crate::shadow::ShadowMap::new(result.gpu.clone())?;
-        result.frame = Some(FrameBinding::new(result.gpu.clone(), &shadow_map)?);
+        let fallback = crate::sky::Skybox::new(
+            result.gpu.clone(),
+            &crate::ibl::build(2, 1, vec![[0.; 3]; 2], 2)?,
+        )?;
+        result.frame = Some(FrameBinding::new(
+            result.gpu.clone(),
+            &shadow_map,
+            &fallback,
+        )?);
+        result.environment_fallback = Some(fallback);
         result.shadow_map = Some(shadow_map);
         result.recreate(size)?;
         Ok(result)
@@ -274,16 +312,87 @@ impl Renderer {
     pub fn environment_light_frames(&self) -> u64 {
         self.environment_light_frames
     }
-    /// ADR-0040: uploads the owner's panorama (or removes it with None). Waits
-    /// for idle first; on failure the previous panorama is already gone and
-    /// the preset sky is drawn.
-    pub fn set_skybox_image(&mut self, image: Option<&ad_document::TextureImage>) -> GpuResult<()> {
+    /// ADR-0040/0047: uploads the owner's panorama with its lighting data (or
+    /// removes it with None). Waits for idle first and points the frame set at
+    /// the black fallback before the old panorama goes; on failure the preset
+    /// sky is drawn and nothing is lit by a panorama.
+    pub fn set_environment_map(
+        &mut self,
+        map: Option<&crate::ibl::EnvironmentMap>,
+    ) -> GpuResult<()> {
         self.wait_idle()?;
+        let frame = self.frame.as_ref().expect("Frame binding initialized");
+        let fallback = self
+            .environment_fallback
+            .as_ref()
+            .expect("Environment fallback initialized");
+        // SAFETY: waited for idle; the fallback outlives every frame.
+        unsafe { frame.bind_environment(fallback) };
         self.skybox = None;
-        if let Some(image) = image {
-            self.skybox = Some(crate::sky::Skybox::new(self.gpu.clone(), image)?);
+        if let Some(map) = map {
+            let skybox = crate::sky::Skybox::new(self.gpu.clone(), map)?;
+            // SAFETY: still idle; the skybox is kept until the next replacement,
+            // which rebinds the fallback first.
+            unsafe { frame.bind_environment(&skybox) };
+            self.skybox = Some(skybox);
         }
         Ok(())
+    }
+    /// Point lamp at `position` with light equal to the sun-like lamp at
+    /// `reference` distance; None shines along the lamp direction.
+    pub fn set_lamp_position(&mut self, lamp: Option<([f32; 3], f32)>) {
+        self.lamp_position = lamp
+            .filter(|(p, r)| p.iter().all(|v| v.is_finite()) && r.is_finite() && *r > 0.)
+            .map(|([x, y, z], r)| [x, y, z, r]);
+    }
+    /// ADR-0048: while an object is dragged, move these draws by `matrix`.
+    pub fn set_node_preview(&mut self, preview: Option<([[f32; 4]; 4], Vec<usize>)>) {
+        self.node_preview = preview.filter(|(m, _)| m.iter().flatten().all(|v| v.is_finite()));
+    }
+    /// Selected (solid) and hovered (dashed) draws to outline.
+    pub fn set_outline(&mut self, outline: crate::outline::OutlineSettings) {
+        self.outline = outline;
+    }
+    /// Frames with an outline recorded (smoke evidence).
+    pub fn outline_frames(&self) -> u64 {
+        self.outline_frames
+    }
+    /// Work-Tree: hidden and tinted draws, one entry per scene draw (an
+    /// empty or mismatched list draws everything as it is).
+    pub fn set_draw_overrides(&mut self, overrides: Vec<DrawOverride>) {
+        self.overrides = overrides;
+    }
+    fn draw_override(&self, index: usize, draws: usize) -> DrawOverride {
+        if self.overrides.len() == draws {
+            self.overrides[index]
+        } else {
+            DrawOverride::default()
+        }
+    }
+    /// Largest 2D image side the GPU accepts (SkyBox quality limit).
+    pub fn max_image_side(&self) -> u32 {
+        // SAFETY: plain property query on the live physical device.
+        unsafe {
+            self.gpu
+                .surface
+                .context
+                .instance
+                .get_physical_device_properties(self.gpu.physical)
+                .limits
+                .max_image_dimension2_d
+        }
+    }
+    /// ADR-0047: the shown panorama lights PBR shading when the environment
+    /// light is on: (panorama, yaw, strength).
+    fn active_ibl(&self) -> Option<(&crate::sky::Skybox, f32, f32)> {
+        let light = self.environment_light?;
+        let yaw = self.sky.and_then(|sky| sky.panorama)?;
+        let skybox = self.skybox.as_ref()?;
+        (self.lighting.mode == ShadingMode::DirectPbr).then_some((skybox, yaw, light.strength))
+    }
+    /// Frames lit by the panorama (smoke evidence).
+    pub fn ibl_frames(&self) -> u64 {
+        self.ibl_frames
     }
     /// ADR-0041: while the model gizmo is dragged, draw the model with this
     /// view-projection, eye and lamp direction (already including the preview
@@ -449,7 +558,17 @@ impl Renderer {
                     .expect("UI painter initialized")
                     .update(frame, self.pool)?;
             }
-            let sky_light = crate::sky::EnvironmentLight::frame_colors(self.environment_light);
+            // ADR-0047: the panorama replaces the hemisphere approximation.
+            let ibl = self.active_ibl().map(|(skybox, yaw, strength)| {
+                let mut sh = [[0.; 4]; 9];
+                for (row, c) in sh.iter_mut().zip(skybox.sh) {
+                    *row = [c[0], c[1], c[2], 0.];
+                }
+                ([strength, skybox.max_lod, yaw, 1.], sh)
+            });
+            let sky_light = crate::sky::EnvironmentLight::frame_colors(
+                self.environment_light.filter(|_| ibl.is_none()),
+            );
             self.frame
                 .as_ref()
                 .expect("Frame binding initialized")
@@ -485,6 +604,18 @@ impl Renderer {
                             s.normal_offset,
                         ]
                     }),
+                    ibl: ibl.map_or([0.; 4], |i| i.0),
+                    sh: ibl.map_or([[0.; 4]; 9], |i| i.1),
+                    node_preview: self.node_preview.as_ref().map_or(
+                        [
+                            [1., 0., 0., 0.],
+                            [0., 1., 0., 0.],
+                            [0., 0., 1., 0.],
+                            [0., 0., 0., 1.],
+                        ],
+                        |p| p.0,
+                    ),
+                    light_position: self.lamp_position.unwrap_or([0.; 4]),
                     light_color: if self.lighting.enabled {
                         let [r, g, b] = self.lighting.color.map(crate::sky::srgb_to_linear);
                         [r, g, b, 1.]
@@ -537,7 +668,10 @@ impl Renderer {
                     0,
                     vk::IndexType::UINT32,
                 );
-                for draw in &scene.draws {
+                for (index, draw) in scene.draws.iter().enumerate() {
+                    if self.draw_override(index, scene.draws.len()).hidden {
+                        continue;
+                    }
                     device.cmd_draw_indexed(
                         self.command,
                         draw.index_count,
@@ -549,6 +683,108 @@ impl Renderer {
                 }
                 device.cmd_end_render_pass(self.command);
                 self.shadow_frames += 1;
+            }
+            let scene_rect = if let Some(frame) = ui.as_deref() {
+                frame.scene.and_then(|r| {
+                    r.clipped(&SurfaceSize {
+                        width: chain.extent.width,
+                        height: chain.extent.height,
+                    })
+                })
+            } else {
+                Some(ViewportRect {
+                    x: 0,
+                    y: 0,
+                    width: chain.extent.width,
+                    height: chain.extent.height,
+                })
+            };
+            // Object outline: the selected/hovered draws into the mask image.
+            let outline_on =
+                !self.outline.is_empty() && self.scene.is_some() && scene_rect.is_some();
+            if let (true, Some(target), Some(scene), Some(rect)) = (
+                outline_on,
+                chain.outline.as_ref(),
+                self.scene.as_ref(),
+                scene_rect,
+            ) {
+                target.begin(self.command);
+                device.cmd_bind_pipeline(
+                    self.command,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    target.mask_pipeline,
+                );
+                device.cmd_set_viewport(
+                    self.command,
+                    0,
+                    &[vk::Viewport {
+                        x: rect.x as f32,
+                        y: rect.y as f32,
+                        width: rect.width as f32,
+                        height: rect.height as f32,
+                        min_depth: 0.0,
+                        max_depth: 1.0,
+                    }],
+                );
+                device.cmd_set_scissor(
+                    self.command,
+                    0,
+                    &[vk::Rect2D {
+                        offset: vk::Offset2D {
+                            x: rect.x as i32,
+                            y: rect.y as i32,
+                        },
+                        extent: vk::Extent2D {
+                            width: rect.width,
+                            height: rect.height,
+                        },
+                    }],
+                );
+                device.cmd_bind_vertex_buffers(self.command, 0, &[scene.vertices.handle], &[0]);
+                device.cmd_bind_index_buffer(
+                    self.command,
+                    scene.indices.handle,
+                    0,
+                    vk::IndexType::UINT32,
+                );
+                let view_projection = self.model_preview.map_or(self.view_projection, |p| p.0);
+                for (draws, value) in [
+                    (&self.outline.selected, [1., 0., 0., 1.]),
+                    (&self.outline.hovered, [0., 1., 0., 1.]),
+                ] {
+                    let push = crate::outline::MaskPush {
+                        view_projection,
+                        value,
+                    };
+                    let bytes = std::slice::from_raw_parts(
+                        (&push as *const crate::outline::MaskPush).cast::<u8>(),
+                        std::mem::size_of::<crate::outline::MaskPush>(),
+                    );
+                    device.cmd_push_constants(
+                        self.command,
+                        target.mask_layout,
+                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                        0,
+                        bytes,
+                    );
+                    for &index in draws.iter() {
+                        let Some(draw) = scene.draws.get(index) else {
+                            continue;
+                        };
+                        if self.draw_override(index, scene.draws.len()).hidden {
+                            continue;
+                        }
+                        device.cmd_draw_indexed(
+                            self.command,
+                            draw.index_count,
+                            1,
+                            draw.index_start,
+                            0,
+                            0,
+                        );
+                    }
+                }
+                device.cmd_end_render_pass(self.command);
             }
             let area = vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
@@ -577,21 +813,6 @@ impl Renderer {
                     .clear_values(&clear),
                 vk::SubpassContents::INLINE,
             );
-            let scene_rect = if let Some(frame) = ui.as_deref() {
-                frame.scene.and_then(|r| {
-                    r.clipped(&SurfaceSize {
-                        width: chain.extent.width,
-                        height: chain.extent.height,
-                    })
-                })
-            } else {
-                Some(ViewportRect {
-                    x: 0,
-                    y: 0,
-                    width: chain.extent.width,
-                    height: chain.extent.height,
-                })
-            };
             if let (Some(scene), Some(rect)) = (self.scene.as_ref(), scene_rect) {
                 let pipeline = chain
                     .pipeline
@@ -633,7 +854,13 @@ impl Renderer {
                 if let (Some((settings, yaw)), Some(skybox), Some(sky)) =
                     (panorama, self.skybox.as_ref(), chain.sky_panorama.as_ref())
                 {
-                    let push = crate::sky::SkyPush::panorama(settings, yaw, !chain.encode_srgb);
+                    let push = crate::sky::SkyPush::panorama(
+                        settings,
+                        yaw,
+                        !chain.encode_srgb,
+                        skybox.hdr,
+                        self.lighting.exposure_ev,
+                    );
                     device.cmd_bind_pipeline(
                         self.command,
                         vk::PipelineBindPoint::GRAPHICS,
@@ -735,7 +962,18 @@ impl Renderer {
                         );
                         self.wire_frames += 1;
                     }
-                    for draw in &scene.draws {
+                    for (index, draw) in scene.draws.iter().enumerate() {
+                        let mark = self.draw_override(index, scene.draws.len());
+                        if mark.hidden {
+                            continue;
+                        }
+                        // Tint packed as r + 256 g + 65536 b (exact in f32).
+                        let (tint, tint_alpha) = mark.tint.map_or((0., 0.), |[r, g, b]| {
+                            (
+                                f32::from(r) + 256. * f32::from(g) + 65536. * f32::from(b),
+                                TINT_ALPHA,
+                            )
+                        });
                         let push = Push {
                             base_color: draw.base_color,
                             material: [
@@ -754,14 +992,23 @@ impl Renderer {
                                     chain.encode_srgb,
                                 ),
                                 draw.occlusion_strength,
-                                0.,
-                                0.,
+                                tint,
+                                tint_alpha,
                             ],
                             emissive: [
                                 draw.emissive_factor[0],
                                 draw.emissive_factor[1],
                                 draw.emissive_factor[2],
-                                0.,
+                                // ADR-0048: this draw follows the drag preview.
+                                if self
+                                    .node_preview
+                                    .as_ref()
+                                    .is_some_and(|p| p.1.contains(&index))
+                                {
+                                    1.
+                                } else {
+                                    0.
+                                },
                             ],
                         };
                         // mesh.frag bit 128: wireframe line colour.
@@ -834,6 +1081,42 @@ impl Renderer {
                     );
                     device.cmd_draw(self.command, 6, 1, 0, 0);
                     self.grid_frames += 1;
+                }
+                // Object outline over the scene (before the UI).
+                if let (true, Some(target)) = (outline_on, chain.outline.as_ref()) {
+                    let pipeline = if self.outline.color.is_none() {
+                        target.invert_pipeline
+                    } else {
+                        target.blend_pipeline
+                    };
+                    device.cmd_bind_pipeline(
+                        self.command,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        pipeline,
+                    );
+                    device.cmd_bind_descriptor_sets(
+                        self.command,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        target.layout,
+                        0,
+                        &[target.set],
+                        &[],
+                    );
+                    let push =
+                        crate::outline::OutlinePush::new(self.outline.color, !chain.encode_srgb);
+                    let bytes = std::slice::from_raw_parts(
+                        (&push as *const crate::outline::OutlinePush).cast::<u8>(),
+                        std::mem::size_of::<crate::outline::OutlinePush>(),
+                    );
+                    device.cmd_push_constants(
+                        self.command,
+                        target.layout,
+                        vk::ShaderStageFlags::FRAGMENT,
+                        0,
+                        bytes,
+                    );
+                    device.cmd_draw(self.command, 3, 1, 0, 0);
+                    self.outline_frames += 1;
                 }
             } else if ui.is_none() {
                 // Visible clear marker only until a real scene has been imported.
@@ -922,6 +1205,9 @@ impl Renderer {
                             self.pbr_frames += 1;
                             if self.environment_light.is_some() {
                                 self.environment_light_frames += 1;
+                            }
+                            if self.active_ibl().is_some() {
+                                self.ibl_frames += 1;
                             }
                             if self.sample_emission
                                 && self.scene.as_ref().is_some_and(|scene| scene.has_emission)

@@ -1,6 +1,9 @@
 #version 450
-// ADR-0040 skybox: the owner's equirectangular panorama (2:1) behind the
-// model. Same world ray as sky.frag; yaw (ground.w, radians) turns it around Y.
+// ADR-0040/0047 skybox: the owner's equirectangular panorama (2:1) behind the
+// model, stored as linear radiance (RGBA16F). Same world ray as sky.frag; yaw
+// (ground.w, radians) turns it around Y. HDR panoramas (horizon.x) are shown
+// at the exposure horizon.y (EV) with the mesh's Reinhard curve; LDR ones
+// exactly as their image.
 layout(location=0) in vec2 ndc;
 layout(location=0) out vec4 color;
 layout(set=0,binding=0) uniform texture2D panorama_image;
@@ -16,8 +19,12 @@ void main() {
     dir=vec3(c*dir.x-s*dir.z,dir.y,s*dir.x+c*dir.z);
     vec2 uv=vec2(atan(dir.x,-dir.z)/(2.0*PI)+0.5,acos(clamp(dir.y,-1.0,1.0))/PI);
     // Level 0 only: derivatives jump at the wrap seam and would pick a blurry mip.
-    vec3 rgb=textureLod(sampler2D(panorama_image,panorama_sampler),uv,0.0).rgb;
-    // Image values are display colours; decode when the swapchain encodes sRGB.
-    if (pc.zenith.w>0.5) {rgb=mix(rgb/12.92,pow((rgb+0.055)/1.055,vec3(2.4)),greaterThan(rgb,vec3(0.04045)));}
+    vec3 rgb=max(textureLod(sampler2D(panorama_image,panorama_sampler),uv,0.0).rgb,vec3(0.0));
+    if (pc.horizon.x>0.5) {
+        vec3 exposed=rgb*exp2(pc.horizon.y);
+        rgb=exposed/(vec3(1.0)+exposed);
+    }
+    // Linear values; encode here unless the swapchain encodes sRGB itself.
+    if (pc.zenith.w<0.5) {rgb=mix(12.92*rgb,1.055*pow(rgb,vec3(1.0/2.4))-0.055,greaterThan(rgb,vec3(0.0031308)));}
     color=vec4(rgb,1.0);
 }

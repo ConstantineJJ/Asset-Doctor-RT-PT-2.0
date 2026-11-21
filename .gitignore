@@ -16,3 +16,17 @@
 /DEPENDENCIES.md
 /tests/fixtures/README.md
 /tests/fixtures/manifest.json
+
+# SkyBox panoramas: only the bundled five (and their credits) are part of the
+# program; every other HDR/EXR stays local (owner rule 2026-11-22).
+*.hdr
+*.exr
+# The folder name itself ends in .HDR: keep the folder, ignore its files.
+!/assets/360.HDR/
+/assets/360.HDR/*
+!/assets/360.HDR/CREDITS.txt
+!/assets/360.HDR/qwantani_sunset_puresky_4k.hdr
+!/assets/360.HDR/ferndale_studio_06_4k.hdr
+!/assets/360.HDR/snowy_park_01_4k.hdr
+!/assets/360.HDR/tears_of_steel_bridge_2k.hdr
+!/assets/360.HDR/modern_buildings_night_2k.hdr
