@@ -204,6 +204,9 @@ pub struct ViewerUi {
     pub wireframe: bool,
     pub wireframe_supported: bool,
     pub show_axes: bool,
+    /// ADR-0044 lamp shadows on the model and the floor.
+    pub shadows: bool,
+    pub shadow_strength: f32,
     pub show_bounds: bool,
     pub helper_overlay: Option<crate::helpers::Overlay>,
     pub placement: ad_document::Placement,
@@ -305,6 +308,8 @@ impl Default for ViewerUi {
             wireframe: false,
             wireframe_supported: true,
             show_axes: false,
+            shadows: true,
+            shadow_strength: 0.7,
             show_bounds: false,
             helper_overlay: None,
             placement: ad_document::Placement::IDENTITY,
@@ -1033,6 +1038,10 @@ impl ViewerUi {
                             let _emission=ui.checkbox(&mut self.emission,"Свечение").on_hover_text("Собственный цвет поверхности из материала и карты. Без ореола и освещения соседних объектов.");
                             #[cfg(test)]
                             {self.emission_rect=_emission.rect;}
+                            ui.horizontal(|ui|{
+                                ui.checkbox(&mut self.shadows,"Тени").on_hover_text("Тень от лампы на модели и на полу. Только вид; при выключенной лампе теней нет.");
+                                ui.add_enabled(self.shadows,egui::Slider::new(&mut self.shadow_strength,0.0..=1.0).text("Сила тени"));
+                            });
                             egui::ComboBox::from_label("Пресет света").selected_text("Выбрать").show_ui(ui,|ui|{
                                 for preset in crate::lamp::LightPreset::ALL {
                                     if ui.selectable_label(false,preset.label()).clicked() {preset.apply(&mut self.lighting);}

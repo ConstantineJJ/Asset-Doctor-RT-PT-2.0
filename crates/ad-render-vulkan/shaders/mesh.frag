@@ -19,7 +19,26 @@ layout(set=1,binding=7) uniform sampler occlusion_sampler;
 layout(set=1,binding=8) uniform texture2D emissive_image;
 layout(set=1,binding=9) uniform sampler emissive_sampler;
 layout(location=0) out vec4 color;
-layout(set=0,binding=0,std140) uniform Frame { mat4 view_projection; vec4 eye_exposure; vec4 lighting; vec4 sky_zenith; vec4 sky_horizon; vec4 sky_ground; vec4 light_direction; vec4 light_color; } frame;
+layout(set=0,binding=0,std140) uniform Frame { mat4 view_projection; vec4 eye_exposure; vec4 lighting; vec4 sky_zenith; vec4 sky_horizon; vec4 sky_ground; vec4 light_direction; vec4 light_color; mat4 light_view_projection; vec4 shadow; } frame;
+layout(set=0,binding=1) uniform texture2D shadow_map;
+layout(set=0,binding=2) uniform sampler shadow_sampler;
+// ADR-0044: lit fraction from the lamp's depth map (3x3 PCF), 1 outside it.
+// shadow: x strength (0 = off), y depth bias, z texel size, w normal offset.
+float lit_fraction(vec3 world) {
+    if (frame.shadow.x<=0.0) {return 1.0;}
+    vec4 c=frame.light_view_projection*vec4(world,1.0);
+    vec3 n=c.xyz/c.w;
+    vec2 uv=n.xy*0.5+0.5;
+    if (uv.x<0.0 || uv.y<0.0 || uv.x>1.0 || uv.y>1.0 || n.z>1.0 || n.z<0.0) {return 1.0;}
+    float sum=0.0;
+    for (int x=-1;x<=1;x++) {
+        for (int y=-1;y<=1;y++) {
+            float depth=textureLod(sampler2D(shadow_map,shadow_sampler),uv+vec2(float(x),float(y))*frame.shadow.z,0.0).r;
+            sum+=(n.z-frame.shadow.y<=depth)?1.0:0.0;
+        }
+    }
+    return mix(1.0,sum/9.0,frame.shadow.x);
+}
 layout(push_constant) uniform Push { vec4 base_color; vec4 material; vec4 view; vec4 emissive; } pc;
 const float PI=3.14159265359;
 // Scale first so tiny/large derivative normals do not underflow/overflow in dot.
@@ -79,7 +98,7 @@ vec3 environment_light(vec3 base,vec3 n,vec3 v,float metal,float rough,vec3 f0) 
     vec3 reflected=mix(sky_color(reflect(-v,n).y),irradiance,rough);
     return ((vec3(1.0)-fresnel)*(1.0-metal)*base*irradiance+fresnel*reflected)*frame.sky_zenith.w;
 }
-vec3 direct_pbr(vec3 base,vec3 n,vec2 mr,vec3 v,float occlusion,vec3 emission) {
+vec3 direct_pbr(vec3 base,vec3 n,vec2 mr,vec3 v,float occlusion,vec3 emission,float lit) {
     vec3 l=frame.light_direction.xyz;
     vec3 h=unit_or(v+l,n);
     float nv=max(dot(n,v),0.00001);
@@ -98,7 +117,7 @@ vec3 direct_pbr(vec3 base,vec3 n,vec2 mr,vec3 v,float occlusion,vec3 emission) {
     vec3 diffuse=(vec3(1.0)-fresnel)*(1.0-metal)*base/PI;
     vec3 specular=fresnel*distribution*visibility;
     // Inspection fill is an explicit approximation; no environment is sampled.
-    vec3 radiance=(diffuse+specular)*nl*frame.lighting.x*frame.light_color.rgb+((1.0-metal)*base+f0)*frame.lighting.y*occlusion;
+    vec3 radiance=(diffuse+specular)*nl*frame.lighting.x*frame.light_color.rgb*lit+((1.0-metal)*base+f0)*frame.lighting.y*occlusion;
     if (frame.sky_zenith.w>0.0) {radiance+=environment_light(base,n,v,metal,rough,f0)*occlusion;}
     vec3 exposed=max((radiance+emission)*exp2(frame.eye_exposure.w),vec3(0.0));
     return exposed/(vec3(1.0)+exposed);
@@ -111,7 +130,10 @@ void main() {
     vec3 face=cross(px,py);
     vec3 n=face;
     n/=max(length(n),0.00000001);
-    vec3 light=vec3(0.25)+0.75*abs(dot(n,frame.light_direction.xyz))*frame.light_color.rgb;
+    // Normal offset towards the lamp side keeps lit faces out of their own shadow.
+    float toward=dot(n,frame.light_direction.xyz)>=0.0?1.0:-1.0;
+    float lit=lit_fraction(world_position+n*toward*frame.shadow.w);
+    vec3 light=vec3(0.25)+0.75*abs(dot(n,frame.light_direction.xyz))*frame.light_color.rgb*lit;
     vec4 base=pc.base_color*tint;
     uint flags=uint(pc.view.x);
     if ((flags&2u)!=0u) {base*=texture(sampler2D(base_color_image,base_color_sampler),uv);}
@@ -146,7 +168,7 @@ void main() {
             // Hardware SRGB decode of RGB; emission alpha never affects coverage.
             emission=pc.emissive.rgb*texture(sampler2D(emissive_image,emissive_sampler),emissive_uv).rgb;
         }
-        linear=direct_pbr(base.rgb,surface*side,mr,v,occlusion,emission);
+        linear=direct_pbr(base.rgb,surface*side,mr,v,occlusion,emission,lit);
         // ADR-0042 render channels: data values are shown as they are.
         uint channel=uint(frame.lighting.z+0.5);
         if (channel==1u) {linear=surface*side*0.5+0.5; raw=true;}

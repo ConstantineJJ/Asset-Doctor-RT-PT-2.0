@@ -7,6 +7,26 @@
 layout(location=0) in vec2 world_xz;
 layout(location=0) out vec4 color;
 layout(push_constant) uniform Push { mat4 view_projection; vec4 plane; vec4 style; vec4 color_a; vec4 color_b; } pc;
+layout(set=0,binding=0,std140) uniform Frame { mat4 view_projection; vec4 eye_exposure; vec4 lighting; vec4 sky_zenith; vec4 sky_horizon; vec4 sky_ground; vec4 light_direction; vec4 light_color; mat4 light_view_projection; vec4 shadow; } frame;
+layout(set=0,binding=1) uniform texture2D shadow_map;
+layout(set=0,binding=2) uniform sampler shadow_sampler;
+// ADR-0044: lit fraction from the lamp's depth map (3x3 PCF), 1 outside it.
+// shadow: x strength (0 = off), y depth bias, z texel size, w normal offset.
+float lit_fraction(vec3 world) {
+    if (frame.shadow.x<=0.0) {return 1.0;}
+    vec4 c=frame.light_view_projection*vec4(world,1.0);
+    vec3 n=c.xyz/c.w;
+    vec2 uv=n.xy*0.5+0.5;
+    if (uv.x<0.0 || uv.y<0.0 || uv.x>1.0 || uv.y>1.0 || n.z>1.0 || n.z<0.0) {return 1.0;}
+    float sum=0.0;
+    for (int x=-1;x<=1;x++) {
+        for (int y=-1;y<=1;y++) {
+            float depth=textureLod(sampler2D(shadow_map,shadow_sampler),uv+vec2(float(x),float(y))*frame.shadow.z,0.0).r;
+            sum+=(n.z-frame.shadow.y<=depth)?1.0:0.0;
+        }
+    }
+    return mix(1.0,sum/9.0,frame.shadow.x);
+}
 
 float lines(vec2 p, float step) {
     vec2 c=p/step;
@@ -129,6 +149,11 @@ void main() {
     alpha=max(alpha,x_axis*0.85);
     rgb=mix(rgb,vec3(0.25,0.45,0.95),z_axis);
     alpha=max(alpha,z_axis*0.85);
+    // ADR-0044: the lamp's shadow on the floor (darker, and visible even on
+    // the transparent studio grid).
+    float lit=lit_fraction(vec3(world_xz.x,pc.plane.y,world_xz.y));
+    rgb*=0.35+0.65*lit;
+    alpha=max(alpha,(1.0-lit)*0.55);
     float r=length(world_xz-vec2(pc.plane.x,pc.plane.z));
     float fade=1.0-smoothstep(0.55*pc.plane.w,pc.plane.w,r);
     color=vec4(rgb,alpha*fade*pc.style.w);

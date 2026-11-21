@@ -26,6 +26,8 @@ written from scratch in Rust with a Vulkan renderer. Engineering prototype.
   «Сохранить» writes the new root node transforms; primitives stay byte-exact);
   Сводка has numeric «Сдвиг X/Y/Z» and «Масштаб» fields plus «На пол» and
   «В центр»,
+- **Тени** (Сводка): the lamp casts a shadow on the model and the floor
+  (shadow map, soft edges), with «Сила тени»,
 - **Лампа**: a sun icon in the viewport — drag it to turn the light around the
   model, right click for its menu (reset, from above, from the camera, on/off,
   colour, temperature, hide); also in Сводка,

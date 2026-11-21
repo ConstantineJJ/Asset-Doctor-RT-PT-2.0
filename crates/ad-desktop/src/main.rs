@@ -198,6 +198,7 @@ impl App {
             let environment_light_frames = renderer.environment_light_frames();
             let panorama_frames = renderer.panorama_frames();
             let wire_frames = renderer.wire_frames();
+            let shadow_frames = renderer.shadow_frames();
             let wire_supported = renderer.wireframe_supported();
             let mr_frames = renderer.mr_frames;
             let normal_frames = renderer.normal_frames;
@@ -297,6 +298,10 @@ impl App {
                         self.ui.show_axes,
                         self.ui.show_bounds,
                         self.ui.helper_overlay.as_ref().map_or(0, |o| o.lines.len())
+                    );
+                    eprintln!(
+                        "shadow_smoke shadows={} lamp={} shadow_frames={shadow_frames}",
+                        self.ui.shadows, self.ui.lighting.enabled
                     );
                     let (azimuth, elevation) = lamp::angles(self.ui.lighting.direction);
                     eprintln!(
@@ -1788,7 +1793,7 @@ impl App {
         if actions.lamp_from_camera {
             self.ui.lighting.direction = self.camera.view_direction();
         }
-        renderer.set_grid(self.ui.floor.and_then(|theme| {
+        let floor_grid = self.ui.floor.and_then(|theme| {
             self.current.as_ref().and_then(|asset| {
                 // ADR-0041: the floor stays at the imported model's bottom,
                 // so a moved model is seen moving against it.
@@ -1800,7 +1805,28 @@ impl App {
                 )
                 .map(|grid| ad_render_vulkan::grid::GridSettings { theme, ..grid })
             })
-        }));
+        });
+        renderer.set_grid(floor_grid);
+        // ADR-0044: lamp shadow fitted to the model and its shadow on the floor.
+        renderer.set_shadow(
+            self.current
+                .as_ref()
+                .filter(|_| self.ui.shadows)
+                .and_then(|asset| {
+                    lamp::shadow_matrix(
+                        self.ui.lighting.direction,
+                        asset.snapshot().bounds,
+                        floor_grid.map(|g| g.floor_y),
+                        ad_render_vulkan::shadow::SIZE,
+                    )
+                })
+                .map(|(matrix, texel)| ad_render_vulkan::shadow::ShadowSettings {
+                    light_view_projection: matrix.to_cols_array_2d(),
+                    strength: self.ui.shadow_strength,
+                    bias: 0.0015,
+                    normal_offset: texel * 1.5,
+                }),
+        );
         let view_projection = self.camera.matrix(width, height);
         // ADR-0040 environment: sky only, lamps/exposure stay as they are.
         renderer.set_sky(Some(ad_render_vulkan::sky::SkySettings {
@@ -2372,6 +2398,7 @@ fn run() -> GpuResult<()> {
                     .ok_or("--channel needs a channel number from 0")?;
             }
             "--wireframe" => ui.wireframe = true,
+            "--no-shadows" => ui.shadows = false,
             "--helpers" => {
                 ui.show_axes = true;
                 ui.show_bounds = true;

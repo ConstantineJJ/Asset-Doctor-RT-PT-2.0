@@ -7,6 +7,60 @@ const STEP: f32 = 0.4;
 /// Elevation stays off the poles so the azimuth keeps a meaning.
 pub const MAX_ELEVATION: f32 = 89.;
 
+/// ADR-0044: orthographic lamp matrix (depth 0..1) that holds the model and,
+/// for a lamp above the floor, where its shadow falls on the floor plane.
+/// Returns the matrix and the world size of one shadow-map texel.
+pub fn shadow_matrix(
+    direction: [f32; 3],
+    bounds: ad_document::Bounds,
+    floor_y: Option<f32>,
+    texels: u32,
+) -> Option<(glam::Mat4, f32)> {
+    use glam::Vec3;
+    let light = Vec3::from_array(direction).try_normalize()?;
+    let (min, max) = (Vec3::from_array(bounds.min), Vec3::from_array(bounds.max));
+    if !min.is_finite() || !max.is_finite() {
+        return None;
+    }
+    let center = (min + max) * 0.5;
+    let radius = ((max - min).length() * 0.5).max(1e-4);
+    let mut points = Vec::with_capacity(16);
+    for i in 0..8 {
+        let corner = Vec3::new(
+            if i & 1 == 0 { min.x } else { max.x },
+            if i & 2 == 0 { min.y } else { max.y },
+            if i & 4 == 0 { min.z } else { max.z },
+        );
+        points.push(corner);
+        // Shadow of the corner on the floor, unless the lamp is too low.
+        if let Some(y) = floor_y
+            && light.y > 0.1
+        {
+            points.push(corner - light * ((corner.y - y) / light.y));
+        }
+    }
+    let up = if light.y.abs() > 0.99 {
+        Vec3::Z
+    } else {
+        Vec3::Y
+    };
+    let view = glam::camera::rh::view::look_at_mat4(center + light * radius * 4., center, up);
+    let (mut lo, mut hi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
+    for p in &points {
+        let v = view.transform_point3(*p);
+        lo = lo.min(v);
+        hi = hi.max(v);
+    }
+    let margin = radius * 0.02;
+    let (lo, hi) = (lo - Vec3::splat(margin), hi + Vec3::splat(margin));
+    // View space looks down -Z: near/far are the negated Z extremes.
+    let projection =
+        glam::camera::rh::proj::vulkan::orthographic(lo.x, hi.x, lo.y, hi.y, -hi.z, -lo.z);
+    let matrix = projection * view;
+    let texel = (hi.x - lo.x).max(hi.y - lo.y) / texels.max(1) as f32;
+    (matrix.is_finite() && texel.is_finite() && texel > 0.).then_some((matrix, texel))
+}
+
 /// ADR-0042 lighting presets: lamp direction, colour, key, fill and
 /// exposure in one choice. The shading mode and environment are untouched.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -151,6 +205,45 @@ mod tests {
         assert!((angles(from_angles(-120., 30.)).0 + 120.).abs() < 1e-3);
         let pole = from_angles(0., 95.);
         assert!((angles(pole).1 - MAX_ELEVATION).abs() < 1e-3);
+    }
+    #[test]
+    fn shadow_matrix_holds_the_model_and_its_floor_shadow() {
+        use glam::Vec3;
+        let bounds = ad_document::Bounds {
+            min: [-1., 0., -0.5],
+            max: [1., 2., 0.5],
+        };
+        for direction in [
+            ad_render_vulkan::lighting::DEFAULT_LAMP_DIRECTION,
+            from_angles(-120., 20.),
+            from_angles(0., MAX_ELEVATION),
+            from_angles(45., -30.),
+        ] {
+            let (m, texel) = shadow_matrix(direction, bounds, Some(0.), 2048).unwrap();
+            assert!(texel > 0.);
+            let inside = |p: Vec3| {
+                let c = m.project_point3(p);
+                c.x.abs() <= 1.0001 && c.y.abs() <= 1.0001 && (-1e-4..=1.0001).contains(&c.z)
+            };
+            for i in 0..8 {
+                let corner = Vec3::new(
+                    if i & 1 == 0 { -1. } else { 1. },
+                    if i & 2 == 0 { 0. } else { 2. },
+                    if i & 4 == 0 { -0.5 } else { 0.5 },
+                );
+                assert!(inside(corner), "{direction:?} corner {corner}");
+                let l = Vec3::from_array(direction).normalize();
+                if l.y > 0.1 {
+                    let on_floor = corner - l * (corner.y / l.y);
+                    assert!(inside(on_floor), "{direction:?} floor {on_floor}");
+                }
+            }
+            // Nearer to the lamp means smaller depth (standard Z).
+            let l = Vec3::from_array(direction).normalize();
+            let c = Vec3::new(0., 1., 0.);
+            assert!(m.project_point3(c + l * 0.3).z < m.project_point3(c).z);
+        }
+        assert!(shadow_matrix([0.; 3], bounds, None, 2048).is_none());
     }
     #[test]
     fn light_presets_are_valid_distinct_and_keep_the_shading_mode() {

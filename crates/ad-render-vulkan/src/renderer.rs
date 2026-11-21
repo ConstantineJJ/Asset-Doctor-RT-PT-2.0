@@ -74,6 +74,10 @@ pub struct Renderer {
     scene_fault: Option<SceneFault>,
     overlay: Option<Overlay>,
     frame: Option<FrameBinding>,
+    /// ADR-0044 lamp shadow map (created before the frame set that samples it).
+    shadow_map: Option<crate::shadow::ShadowMap>,
+    shadow: Option<crate::shadow::ShadowSettings>,
+    shadow_frames: u64,
     view_projection: [[f32; 4]; 4],
     /// ADR-0040 floor grid; None hides it.
     grid: Option<crate::grid::GridSettings>,
@@ -138,6 +142,9 @@ impl Renderer {
             lighting: ViewLighting::default(),
             overlay: None,
             frame: None,
+            shadow_map: None,
+            shadow: None,
+            shadow_frames: 0,
             view_projection: [
                 [1., 0., 0., 0.],
                 [0., 1., 0., 0.],
@@ -188,7 +195,9 @@ impl Renderer {
             )?;
             result.presented = device.create_fence(&vk::FenceCreateInfo::default(), None)?;
         }
-        result.frame = Some(FrameBinding::new(result.gpu.clone())?);
+        let shadow_map = crate::shadow::ShadowMap::new(result.gpu.clone())?;
+        result.frame = Some(FrameBinding::new(result.gpu.clone(), &shadow_map)?);
+        result.shadow_map = Some(shadow_map);
         result.recreate(size)?;
         Ok(result)
     }
@@ -293,6 +302,18 @@ impl Renderer {
     /// Frames with the wireframe overlay recorded (smoke evidence).
     pub fn wire_frames(&self) -> u64 {
         self.wire_frames
+    }
+    /// Shadows act only with a lit lamp.
+    fn active_shadow(&self) -> Option<crate::shadow::ShadowSettings> {
+        self.shadow.filter(|_| self.lighting.enabled)
+    }
+    /// ADR-0044: lamp shadows for the next frames; None turns them off.
+    pub fn set_shadow(&mut self, shadow: Option<crate::shadow::ShadowSettings>) {
+        self.shadow = shadow.filter(crate::shadow::ShadowSettings::valid);
+    }
+    /// Frames with a recorded shadow pass (smoke evidence).
+    pub fn shadow_frames(&self) -> u64 {
+        self.shadow_frames
     }
     pub fn has_skybox(&self) -> bool {
         self.skybox.is_some()
@@ -446,6 +467,17 @@ impl Renderer {
                         self.lighting.direction[2],
                         0.,
                     ],
+                    light_view_projection: self
+                        .active_shadow()
+                        .map_or([[0.; 4]; 4], |s| s.light_view_projection),
+                    shadow: self.active_shadow().map_or([0.; 4], |s| {
+                        [
+                            s.strength,
+                            s.bias,
+                            1. / crate::shadow::SIZE as f32,
+                            s.normal_offset,
+                        ]
+                    }),
                     light_color: if self.lighting.enabled {
                         let [r, g, b] = self.lighting.color.map(crate::sky::srgb_to_linear);
                         [r, g, b, 1.]
@@ -469,6 +501,48 @@ impl Renderer {
                 &vk::CommandBufferBeginInfo::default()
                     .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             )?;
+            // ADR-0044: the lamp's depth map before the main pass.
+            if let (Some(shadow), Some(map), Some(scene)) = (
+                self.active_shadow(),
+                self.shadow_map.as_ref(),
+                self.scene.as_ref(),
+            ) {
+                map.begin(self.command);
+                device.cmd_bind_pipeline(
+                    self.command,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    map.pipeline,
+                );
+                let matrix = shadow.light_view_projection;
+                let bytes =
+                    std::slice::from_raw_parts((&matrix as *const [[f32; 4]; 4]).cast::<u8>(), 64);
+                device.cmd_push_constants(
+                    self.command,
+                    map.layout,
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    bytes,
+                );
+                device.cmd_bind_vertex_buffers(self.command, 0, &[scene.vertices.handle], &[0]);
+                device.cmd_bind_index_buffer(
+                    self.command,
+                    scene.indices.handle,
+                    0,
+                    vk::IndexType::UINT32,
+                );
+                for draw in &scene.draws {
+                    device.cmd_draw_indexed(
+                        self.command,
+                        draw.index_count,
+                        1,
+                        draw.index_start,
+                        0,
+                        0,
+                    );
+                }
+                device.cmd_end_render_pass(self.command);
+                self.shadow_frames += 1;
+            }
             let area = vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
                 extent: chain.extent,
@@ -742,6 +816,14 @@ impl Renderer {
                         vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                         0,
                         bytes,
+                    );
+                    device.cmd_bind_descriptor_sets(
+                        self.command,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        pipeline.layout,
+                        0,
+                        &[self.frame.as_ref().expect("Frame binding initialized").set],
+                        &[],
                     );
                     device.cmd_draw(self.command, 6, 1, 0, 0);
                     self.grid_frames += 1;

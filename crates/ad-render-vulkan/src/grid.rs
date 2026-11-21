@@ -181,6 +181,9 @@ impl GridPush {
 pub(crate) struct GridPipeline {
     pub handle: vk::Pipeline,
     pub layout: vk::PipelineLayout,
+    /// ADR-0044: set 0 is the frame set (uniform + shadow map), so the floor
+    /// receives the lamp's shadow.
+    frame_layout: crate::frame::FrameLayout,
     gpu: Arc<Gpu>,
 }
 impl GridPipeline {
@@ -196,6 +199,7 @@ impl GridPipeline {
         let mut pipeline = Self {
             handle: vk::Pipeline::null(),
             layout: vk::PipelineLayout::null(),
+            frame_layout: crate::frame::FrameLayout::new(gpu.clone())?,
             gpu,
         };
         // SAFETY: create-info arrays and shader modules live through creation;
@@ -206,8 +210,11 @@ impl GridPipeline {
                 offset: 0,
                 size: std::mem::size_of::<GridPush>() as u32,
             }];
+            let sets = [pipeline.frame_layout.handle];
             pipeline.layout = pipeline.gpu.device.create_pipeline_layout(
-                &vk::PipelineLayoutCreateInfo::default().push_constant_ranges(&ranges),
+                &vk::PipelineLayoutCreateInfo::default()
+                    .set_layouts(&sets)
+                    .push_constant_ranges(&ranges),
                 None,
             )?;
             let stages = [
