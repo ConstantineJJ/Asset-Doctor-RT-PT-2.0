@@ -19,7 +19,7 @@ layout(set=1,binding=7) uniform sampler occlusion_sampler;
 layout(set=1,binding=8) uniform texture2D emissive_image;
 layout(set=1,binding=9) uniform sampler emissive_sampler;
 layout(location=0) out vec4 color;
-layout(set=0,binding=0,std140) uniform Frame { mat4 view_projection; vec4 eye_exposure; vec4 lighting; vec4 sky_zenith; vec4 sky_horizon; vec4 sky_ground; vec4 light_direction; vec4 light_color; mat4 light_view_projection; vec4 shadow; vec4 ibl; vec4 sh[9]; } frame;
+layout(set=0,binding=0,std140) uniform Frame { mat4 view_projection; vec4 eye_exposure; vec4 lighting; vec4 sky_zenith; vec4 sky_horizon; vec4 sky_ground; vec4 light_direction; vec4 light_color; mat4 light_view_projection; vec4 shadow; vec4 ibl; vec4 sh[9]; mat4 node_preview; vec4 light_position; } frame;
 // ADR-0047 environment panorama (linear RGBA16F, prefiltered levels).
 layout(set=0,binding=3) uniform texture2D environment_image;
 layout(set=0,binding=4) uniform sampler environment_sampler;
@@ -136,8 +136,20 @@ vec3 image_light(vec3 base,vec3 n,vec3 v,float metal,float rough,vec3 f0,float o
     vec3 diffuse=(vec3(1.0)-specular_weight)*(1.0-metal)*base*irradiance/PI;
     return (diffuse+prefiltered*specular_weight)*occlusion*frame.ibl.x;
 }
+// Point lamp (w > 0): direction towards it and inverse-square falloff,
+// 1 at the reference distance w; otherwise the sun-like direction.
+vec3 lamp_direction(vec3 world) {
+    if (frame.light_position.w<=0.0) {return frame.light_direction.xyz;}
+    return unit_or(frame.light_position.xyz-world,frame.light_direction.xyz);
+}
+float lamp_falloff(vec3 world) {
+    if (frame.light_position.w<=0.0) {return 1.0;}
+    vec3 d=frame.light_position.xyz-world;
+    return min(frame.light_position.w*frame.light_position.w/max(dot(d,d),1e-12),16.0);
+}
 vec3 direct_pbr(vec3 base,vec3 n,vec2 mr,vec3 v,float occlusion,vec3 emission,float lit) {
-    vec3 l=frame.light_direction.xyz;
+    vec3 l=lamp_direction(world_position);
+    lit*=lamp_falloff(world_position);
     vec3 h=unit_or(v+l,n);
     float nv=max(dot(n,v),0.00001);
     float nl=max(dot(n,l),0.0);
@@ -179,9 +191,10 @@ void main() {
     vec3 n=face;
     n/=max(length(n),0.00000001);
     // Normal offset towards the lamp side keeps lit faces out of their own shadow.
-    float toward=dot(n,frame.light_direction.xyz)>=0.0?1.0:-1.0;
+    vec3 to_lamp=lamp_direction(world_position);
+    float toward=dot(n,to_lamp)>=0.0?1.0:-1.0;
     float lit=lit_fraction(world_position+n*toward*frame.shadow.w);
-    vec3 light=vec3(0.25)+0.75*abs(dot(n,frame.light_direction.xyz))*frame.light_color.rgb*lit;
+    vec3 light=vec3(0.25)+0.75*abs(dot(n,to_lamp))*frame.light_color.rgb*lit*lamp_falloff(world_position);
     vec4 base=pc.base_color*tint;
     uint flags=uint(pc.view.x);
     if ((flags&2u)!=0u) {base*=texture(sampler2D(base_color_image,base_color_sampler),uv);}

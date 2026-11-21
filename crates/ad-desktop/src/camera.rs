@@ -173,6 +173,7 @@ impl Camera {
         (reverse * projection * rh::view::look_at_mat4(eye, self.center, self.up()))
             .to_cols_array_2d()
     }
+    #[cfg(test)]
     /// ADR-0040 lamp gizmo: screen position (0..1, y down) of the point
     /// `distance` model radii from the centre along `direction`; None when it
     /// is behind the camera.

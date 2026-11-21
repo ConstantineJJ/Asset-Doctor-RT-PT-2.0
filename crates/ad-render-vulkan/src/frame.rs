@@ -28,6 +28,9 @@ pub(crate) struct FrameData {
     pub sh: [[f32; 4]; 9],
     /// ADR-0048 object drag preview: applied to draws whose push asks for it.
     pub node_preview: [[f32; 4]; 4],
+    /// Point lamp: world position and reference distance (w = 0: the lamp
+    /// shines along `light_direction` like the sun).
+    pub light_position: [f32; 4],
 }
 impl FrameData {
     fn bytes(&self) -> &[u8] {
@@ -240,7 +243,8 @@ mod tests {
     use super::*;
     #[test]
     fn std140_frame_offsets_and_data_bytes_match_glsl() {
-        assert_eq!(std::mem::size_of::<FrameData>(), 480);
+        assert_eq!(std::mem::size_of::<FrameData>(), 496);
+        assert_eq!(std::mem::offset_of!(FrameData, light_position), 480);
         assert_eq!(std::mem::offset_of!(FrameData, node_preview), 416);
         assert_eq!(std::mem::offset_of!(FrameData, ibl), 256);
         assert_eq!(std::mem::offset_of!(FrameData, sh), 272);

@@ -1928,6 +1928,16 @@ impl App {
             max: hi.to_array(),
         })
     }
+    /// Point lamp frame: model centre and radius (half the box diagonal).
+    fn lamp_frame(&self) -> Option<([f32; 3], f32)> {
+        let bounds = self.current.as_ref()?.snapshot().bounds;
+        let (min, max) = (
+            glam::Vec3::from_array(bounds.min),
+            glam::Vec3::from_array(bounds.max),
+        );
+        let radius = ((max - min).length() * 0.5).max(1e-4);
+        (min.is_finite() && max.is_finite()).then(|| (((min + max) * 0.5).to_array(), radius))
+    }
     /// SkyBox width: the chosen quality within what the GPU accepts.
     fn skybox_width(&self) -> u32 {
         let limit = self
@@ -2263,19 +2273,29 @@ impl App {
             .map_or(ad_document::Placement::IDENTITY, |a| {
                 a.document().placement()
             });
-        self.ui.lamp_gizmo = self.current.as_ref().and_then(|_| {
+        // Point lamp around the model centre at its distance (model radii).
+        let lamp_frame = self.lamp_frame();
+        self.ui.lamp_gizmo = lamp_frame.and_then(|(centre, radius)| {
             let camera = &self.camera;
-            let guides = lamp::guides(self.ui.lighting.direction, |d| {
-                camera.project_direction(d, LAMP_DISTANCE, view_w, view_h)
+            let distance = self.ui.lighting.distance;
+            let point = |d: [f32; 3], k: f32| {
+                (glam::Vec3::from_array(centre) + glam::Vec3::from_array(d) * radius * k).to_array()
+            };
+            let mut guides = lamp::guides(self.ui.lighting.direction, |d| {
+                camera.project(point(d, distance), view_w, view_h)
             });
-            Some(viewer_ui::LampGizmo {
-                lamp: camera.project_direction(
-                    self.ui.lighting.direction,
-                    LAMP_DISTANCE,
+            let here =
+                camera.project(point(self.ui.lighting.direction, distance), view_w, view_h)?;
+            guides.distance = camera
+                .project(
+                    point(self.ui.lighting.direction, distance + 0.1),
                     view_w,
                     view_h,
-                )?,
-                center: camera.project_direction([0., 1., 0.], 0., view_w, view_h)?,
+                )
+                .map(|p| [(p[0] - here[0]) / 0.1, (p[1] - here[1]) / 0.1]);
+            Some(viewer_ui::LampGizmo {
+                lamp: here,
+                center: camera.project(centre, view_w, view_h)?,
                 guides: Some(std::sync::Arc::new(guides)),
             })
         });
@@ -2312,11 +2332,23 @@ impl App {
         renderer.set_outline(outline);
         let (width, height) = frame.scene.map_or((1, 1), |r| (r.width, r.height));
         self.last_view = (width, height);
-        if let Some([dx, dy]) = actions.lamp_drag {
+        if let (Some([dx, dy]), Some((centre, radius))) = (actions.lamp_drag, lamp_frame) {
             let camera = &self.camera;
+            let distance = self.ui.lighting.distance;
             self.ui.lighting.direction = lamp::drag(self.ui.lighting.direction, dx, dy, |d| {
-                camera.project_direction(d, LAMP_DISTANCE, width, height)
+                camera.project(
+                    (glam::Vec3::from_array(centre)
+                        + glam::Vec3::from_array(d) * radius * distance)
+                        .to_array(),
+                    width,
+                    height,
+                )
             });
+        }
+        if let Some(step) = actions.lamp_distance {
+            let range = ad_render_vulkan::lighting::LAMP_DISTANCES;
+            self.ui.lighting.distance =
+                (self.ui.lighting.distance + step).clamp(*range.start(), *range.end());
         }
         if let Some([turn_azimuth, turn_elevation]) = actions.lamp_turn {
             let (azimuth, elevation) = lamp::angles(self.ui.lighting.direction);
@@ -2342,8 +2374,14 @@ impl App {
                 .as_ref()
                 .filter(|_| self.ui.shadows)
                 .and_then(|asset| {
-                    lamp::shadow_matrix(
-                        self.ui.lighting.direction,
+                    // Point lamp: a perspective shadow from the lamp itself.
+                    let (centre, radius) = lamp_frame?;
+                    let position = glam::Vec3::from_array(centre)
+                        + glam::Vec3::from_array(self.ui.lighting.direction)
+                            * radius
+                            * self.ui.lighting.distance;
+                    lamp::point_shadow_matrix(
+                        position.to_array(),
                         asset.snapshot().bounds,
                         floor_grid.map(|g| g.floor_y),
                         ad_render_vulkan::shadow::SIZE,
@@ -2352,10 +2390,20 @@ impl App {
                 .map(|(matrix, texel)| ad_render_vulkan::shadow::ShadowSettings {
                     light_view_projection: matrix.to_cols_array_2d(),
                     strength: self.ui.shadow_strength,
-                    bias: 0.0015,
+                    bias: 0.0005,
                     normal_offset: texel * 1.5,
                 }),
         );
+        renderer.set_lamp_position(lamp_frame.map(|(centre, radius)| {
+            (
+                (glam::Vec3::from_array(centre)
+                    + glam::Vec3::from_array(self.ui.lighting.direction)
+                        * radius
+                        * self.ui.lighting.distance)
+                    .to_array(),
+                radius * ad_render_vulkan::lighting::DEFAULT_LAMP_DISTANCE,
+            )
+        }));
         let view_projection = self.camera.matrix(width, height);
         // ADR-0040 environment: sky only, lamps/exposure stay as they are.
         renderer.set_sky(Some(ad_render_vulkan::sky::SkySettings {
@@ -2987,9 +3035,6 @@ struct PickCache {
     bounds: Vec<(glam::Vec3, glam::Vec3)>,
     parents: Vec<Option<usize>>,
 }
-
-/// ADR-0040: the lamp gizmo sits this many model radii from the centre.
-const LAMP_DISTANCE: f32 = 1.25;
 
 fn edit_name(kind: EditKind) -> &'static str {
     match kind {

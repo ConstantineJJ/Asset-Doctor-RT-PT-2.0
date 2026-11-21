@@ -553,6 +553,11 @@ impl ViewerUi {
             ui.color_edit_button_rgb(&mut self.lighting.color);
             ui.checkbox(&mut self.lamp_icon, "Значок лампы").on_hover_text("Значок лампы во вьюпорте: тяните его или его стрелки, чтобы повернуть свет; правая кнопка — меню.");
         });
+        ui.add(
+            egui::Slider::new(&mut self.lighting.distance, ad_render_vulkan::lighting::LAMP_DISTANCES)
+                .text("Расстояние"),
+        )
+        .on_hover_text("Расстояние от центра модели в её размерах (радиусах). Ближе — ярче и с более резким перепадом света; тень расходится от лампы. 2,5 — как прежняя лампа.");
         let (mut azimuth, mut elevation) = crate::lamp::angles(self.lighting.direction);
         let turned = ui
             .add(egui::Slider::new(&mut azimuth, -180.0..=180.0).text("Азимут"))

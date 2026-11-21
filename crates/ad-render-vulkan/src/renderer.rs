@@ -116,6 +116,8 @@ pub struct Renderer {
     ibl_frames: u64,
     /// Per-draw Work-Tree overrides (used when the length matches the scene).
     overrides: Vec<DrawOverride>,
+    /// Point lamp: world position and reference distance.
+    lamp_position: Option<[f32; 4]>,
     /// ADR-0048 object drag preview: matrix and the draws it moves.
     node_preview: Option<([[f32; 4]; 4], Vec<usize>)>,
     /// Object outline of this frame and frames that drew one.
@@ -188,6 +190,7 @@ impl Renderer {
             outline: Default::default(),
             outline_frames: 0,
             node_preview: None,
+            lamp_position: None,
             model_preview: None,
             channel: crate::lighting::Channel::Lit,
             wireframe: false,
@@ -334,6 +337,13 @@ impl Renderer {
             self.skybox = Some(skybox);
         }
         Ok(())
+    }
+    /// Point lamp at `position` with light equal to the sun-like lamp at
+    /// `reference` distance; None shines along the lamp direction.
+    pub fn set_lamp_position(&mut self, lamp: Option<([f32; 3], f32)>) {
+        self.lamp_position = lamp
+            .filter(|(p, r)| p.iter().all(|v| v.is_finite()) && r.is_finite() && *r > 0.)
+            .map(|([x, y, z], r)| [x, y, z, r]);
     }
     /// ADR-0048: while an object is dragged, move these draws by `matrix`.
     pub fn set_node_preview(&mut self, preview: Option<([[f32; 4]; 4], Vec<usize>)>) {
@@ -605,6 +615,7 @@ impl Renderer {
                         ],
                         |p| p.0,
                     ),
+                    light_position: self.lamp_position.unwrap_or([0.; 4]),
                     light_color: if self.lighting.enabled {
                         let [r, g, b] = self.lighting.color.map(crate::sky::srgb_to_linear);
                         [r, g, b, 1.]

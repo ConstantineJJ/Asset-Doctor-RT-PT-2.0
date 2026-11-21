@@ -66,6 +66,7 @@ impl ViewerUi {
                 "direction": l.direction,
                 "color": l.color,
                 "kelvin": self.lamp_kelvin,
+                "distance": l.distance,
                 "icon": self.lamp_icon,
             },
             "exposure_ev": l.exposure_ev,
@@ -184,6 +185,13 @@ impl ViewerUi {
                 "kelvin",
                 1500.0..=10000.0,
                 &mut self.lamp_kelvin,
+                &mut bad,
+            );
+            number(
+                lamp,
+                "distance",
+                ad_render_vulkan::lighting::LAMP_DISTANCES,
+                &mut lighting.distance,
                 &mut bad,
             );
             let vector = |key: &str| -> Option<[f32; 3]> {

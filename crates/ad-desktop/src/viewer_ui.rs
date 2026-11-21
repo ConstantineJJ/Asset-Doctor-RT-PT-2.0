@@ -78,8 +78,10 @@ pub struct Actions {
     pub lamp_drag: Option<[f32; 2]>,
     /// Lamp context menu: point the lamp from the camera.
     pub lamp_from_camera: bool,
-    /// Lamp handles: degrees of azimuth and elevation to turn this frame.
+    /// Lamp handles: degrees of azimuth and elevation to turn this frame,
+    /// and model radii to move the lamp closer (−) or farther (+).
     pub lamp_turn: Option<[f32; 2]>,
+    pub lamp_distance: Option<f32>,
     /// ADR-0041 model gizmo: handle dragged by (dx, dy) in viewport units
     /// (0..1 of its width/height), released this frame, or reset requested.
     pub model_drag: Option<(crate::model_gizmo::Handle, [f32; 2])>,
@@ -129,6 +131,7 @@ enum LampPart {
     Icon,
     Azimuth,
     Elevation,
+    Distance,
 }
 /// Repair history as shown by the UI; filled by the application on demand.
 #[derive(Default)]
@@ -1048,7 +1051,7 @@ impl ViewerUi {
                     path(&guides.orbit, true, azimuth_color.gamma_multiply(0.45));
                     path(&guides.arc, false, elevation_color.gamma_multiply(0.45));
                 }
-                None => {}
+                Some(LampPart::Distance) | None => {}
             }
             for (part, tangent, color, hint) in [
                 (
@@ -1062,6 +1065,12 @@ impl ViewerUi {
                     guides.elevation,
                     elevation_color,
                     "Тяните — поднять или опустить лампу (высота); азимут не меняется.",
+                ),
+                (
+                    LampPart::Distance,
+                    guides.distance,
+                    Color32::from_rgb(200, 120, 245),
+                    "Тяните — приблизить или отдалить лампу (расстояние до модели); ближе — ярче.",
                 ),
             ] {
                 let Some(t) = tangent else {
@@ -1117,10 +1126,13 @@ impl ViewerUi {
                             let d = response.drag_delta();
                             let turn = crate::lamp::handle_turn([d.x, d.y], [t_px.x, t_px.y]);
                             if turn != 0. {
-                                actions.lamp_turn = Some(match part {
-                                    LampPart::Azimuth => [turn, 0.],
-                                    _ => [0., turn],
-                                });
+                                match part {
+                                    LampPart::Azimuth => actions.lamp_turn = Some([turn, 0.]),
+                                    LampPart::Distance => {
+                                        actions.lamp_distance = Some(turn.clamp(-1., 1.));
+                                    }
+                                    _ => actions.lamp_turn = Some([0., turn]),
+                                }
                             }
                         }
                         response.on_hover_text(hint);
@@ -1579,6 +1591,7 @@ mod tests {
                 key: 7.,
                 fill: 0.8,
                 direction: [0., 1., 0.],
+                distance: 4.,
                 color: [1., 0.5, 0.2],
                 enabled: false,
             },
@@ -2234,6 +2247,7 @@ FORMAT=32-bit_rle_rgbe
                 arc: [None; crate::lamp::ARC_POINTS],
                 azimuth: Some([0.01, 0.]),
                 elevation: Some([0., -0.01]),
+                distance: None,
             })),
         });
         let size = (1400., 1000.);
