@@ -9,6 +9,8 @@ use winit::{event::WindowEvent, window::Window};
 
 #[path = "panels.rs"]
 mod panels;
+#[path = "view_settings.rs"]
+pub mod view_settings;
 
 /// Drop-down menus of the top bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -229,6 +231,8 @@ pub struct ViewerUi {
     /// ADR-0040 skybox: loaded file name, shown or not, yaw in degrees and the
     /// colours it lights the model with.
     pub skybox_name: Option<String>,
+    /// File of the shown skybox (view settings load it again next run).
+    pub skybox_path: Option<std::path::PathBuf>,
     pub skybox_on: bool,
     pub skybox_yaw: f32,
     pub skybox_light: Option<[[f32; 3]; 3]>,
@@ -366,6 +370,7 @@ impl Default for ViewerUi {
             environment_light: false,
             environment_strength: 1.,
             skybox_name: None,
+            skybox_path: None,
             skybox_on: false,
             skybox_yaw: 0.,
             skybox_light: None,

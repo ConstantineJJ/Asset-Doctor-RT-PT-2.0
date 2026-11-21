@@ -100,6 +100,14 @@ struct App {
     mouse_drag: Option<input::Action>,
     /// Bindings file (None in smoke runs without --bindings: never written).
     bindings_path: Option<PathBuf>,
+    /// View settings file (None in smoke runs without --view-settings), the
+    /// settings last read or written, and a change waiting to settle.
+    view_settings_path: Option<PathBuf>,
+    view_saved: serde_json::Value,
+    view_pending: Option<(serde_json::Value, Instant)>,
+    /// A skybox restored from the settings keeps its saved «on» flag.
+    skybox_restore_on: Option<bool>,
+    smoke_view_change: bool,
     smoke_input: bool,
     input_smoke_done: bool,
     cursor: Option<(f64, f64)>,
@@ -188,6 +196,7 @@ impl App {
         if self.closed {
             return;
         }
+        self.save_view_settings(true);
         self.closed = true;
         self.imports.cancel();
         if let Some(renderer) = self.renderer.take() {
@@ -1501,7 +1510,14 @@ impl App {
                 }
                 Ok(Err(error)) => {
                     self.skybox_job = None;
-                    self.ui.set_status(error, true);
+                    if self.skybox_restore_on.take().is_some() {
+                        self.ui.set_status(
+                            format!("Скайбокс прошлого запуска не загружен: {error}"),
+                            true,
+                        );
+                    } else {
+                        self.ui.set_status(error, true);
+                    }
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => (),
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -1533,12 +1549,15 @@ impl App {
                             .set_status(format!("Скайбокс: {}", loaded.name), false);
                     }
                     self.ui.skybox_name = Some(loaded.name);
+                    self.ui.skybox_path = Some(loaded.path);
                     self.ui.skybox_light = Some(loaded.light);
-                    self.ui.skybox_on = true;
+                    self.ui.skybox_on = self.skybox_restore_on.take().unwrap_or(true);
                 }
                 Err(error) => {
                     self.ui.skybox_name = None;
+                    self.ui.skybox_path = None;
                     self.ui.skybox_light = None;
+                    self.skybox_restore_on = None;
                     self.ui
                         .set_status(format!("Скайбокс не загружен: {error}"), true);
                 }
@@ -1604,6 +1623,41 @@ impl App {
             }
             A::Orbit | A::Pan => (),
         }
+    }
+    /// Writes the view settings once a change has settled for a second
+    /// (`now`: at exit, at once). A failure is a warning and is not retried
+    /// until the next change.
+    fn save_view_settings(&mut self, now: bool) {
+        let Some(path) = self.view_settings_path.clone() else {
+            return;
+        };
+        let current = self.ui.view_settings();
+        if current == self.view_saved {
+            self.view_pending = None;
+            return;
+        }
+        let due = match &self.view_pending {
+            Some((pending, since)) if *pending == current => {
+                now || since.elapsed() >= std::time::Duration::from_secs(1)
+            }
+            _ => {
+                self.view_pending = Some((current.clone(), Instant::now()));
+                now
+            }
+        };
+        if !due {
+            return;
+        }
+        match viewer_ui::view_settings::save(&path, &current) {
+            Ok(()) => eprintln!("view_settings_saved ok=true"),
+            Err(error) => {
+                eprintln!("view_settings_saved ok=false");
+                self.ui
+                    .set_status(format!("Настройки вида не сохранены: {error}"), true);
+            }
+        }
+        self.view_saved = current;
+        self.view_pending = None;
     }
     /// Writes changed bindings; a failure is a warning, the change stays.
     fn save_bindings(&mut self) {
@@ -1786,6 +1840,12 @@ impl App {
             return Ok(());
         }
         self.refresh_edit_ui();
+        if self.smoke_view_change && self.current.is_some() {
+            self.smoke_view_change = false;
+            self.ui.show_axes = !self.ui.show_axes;
+            eprintln!("view_settings_changed axes={}", self.ui.show_axes);
+        }
+        self.save_view_settings(false);
         // ADR-0040 lamp gizmo: lamp 1.25 model radii from the centre.
         let (view_w, view_h) = self.last_view;
         // ADR-0041 model gizmo at the (previewed) bottom centre.
@@ -1950,6 +2010,7 @@ impl App {
         }
         if actions.skybox_remove {
             self.ui.skybox_name = None;
+            self.ui.skybox_path = None;
             self.ui.skybox_light = None;
             self.ui.skybox_on = false;
             if let Some(renderer) = self.renderer.as_mut() {
@@ -2411,7 +2472,46 @@ fn run() -> GpuResult<()> {
     let mut history_path = None;
     let mut smoke_repair = ad_heal::RepairKind::DuplicateTriangles;
     let mut ui = viewer_ui::ViewerUi::default();
-    let mut args = std::env::args().skip(1);
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    // View settings first, so command-line options still win. Smoke runs
+    // never read or write the owner's file (only --view-settings).
+    let smoke_run = argv.iter().any(|a| a.starts_with("--smoke"));
+    let view_settings_path = argv
+        .iter()
+        .position(|a| a == "--view-settings")
+        .map(|i| {
+            argv.get(i + 1)
+                .map(PathBuf::from)
+                .ok_or("--view-settings needs a file path")
+        })
+        .transpose()?
+        .or_else(|| {
+            if smoke_run {
+                None
+            } else {
+                viewer_ui::view_settings::default_path()
+            }
+        });
+    let mut view_warnings = Vec::new();
+    let mut restore_skybox = None;
+    if let Some(path) = view_settings_path.as_ref() {
+        let (value, warnings) = viewer_ui::view_settings::load(path);
+        view_warnings.extend(warnings);
+        if let Some(value) = value {
+            restore_skybox = ui.apply_view_settings(&value, &mut view_warnings);
+        }
+        eprintln!(
+            "view_settings_loaded warnings={} floor={:?} environment={} wireframe={} tab={:?} skybox={}",
+            view_warnings.len(),
+            ui.floor.map(|f| f.label()),
+            ui.environment.label(),
+            ui.wireframe,
+            ui.tab,
+            restore_skybox.is_some()
+        );
+    }
+    let mut smoke_view_change = false;
+    let mut args = argv.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--require-validation" => validation = true,
@@ -2465,6 +2565,10 @@ fn run() -> GpuResult<()> {
                 ))
             }
             "--smoke-input" => smoke_input = true,
+            "--view-settings" => {
+                args.next();
+            }
+            "--smoke-view-change" => smoke_view_change = true,
             "--channel" => {
                 ui.channel = args
                     .next()
@@ -2608,6 +2712,17 @@ fn run() -> GpuResult<()> {
         }
         ui.bindings = bindings;
     }
+    if !view_warnings.is_empty() {
+        ui.set_status(
+            format!("Настройки вида: {}", view_warnings.join("; ")),
+            true,
+        );
+    }
+    let view_saved = ui.view_settings();
+    let (skybox_job, skybox_restore_on) = match restore_skybox {
+        Some((path, on)) if pending_skybox.is_none() => (Some(skybox::spawn(path)), Some(on)),
+        _ => (None, None),
+    };
     let mut app = App {
         renderer: None,
         window: None,
@@ -2630,6 +2745,11 @@ fn run() -> GpuResult<()> {
         mouse: None,
         mouse_drag: None,
         bindings_path,
+        view_settings_path,
+        view_saved,
+        view_pending: None,
+        skybox_restore_on,
+        smoke_view_change,
         smoke_input,
         input_smoke_done: false,
         cursor: None,
@@ -2657,7 +2777,7 @@ fn run() -> GpuResult<()> {
         model_turning: None,
         smoke_place,
         place_smoke_done: false,
-        skybox_job: None,
+        skybox_job,
         pending_skybox,
         working_path: None,
         pending_path: None,

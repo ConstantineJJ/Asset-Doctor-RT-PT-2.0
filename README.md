@@ -60,6 +60,11 @@ written from scratch in Rust with a Vulkan renderer. Engineering prototype.
 - **История ремонта** (Здоровье → Ремонт): past repairs, Undo/Redo and saves
   from all runs, stored in `%LOCALAPPDATA%\AssetDoctorRTPT\repair-history.jsonl`;
   clearly separate from the current model's diagnostics.
+- **View settings** are kept between runs (ADR-0046): shading, channel and
+  maps, grid and helpers, lamp, exposure, shadows, environment, floor, your
+  skybox file and the layout, in
+  `%LOCALAPPDATA%\AssetDoctorRTPT\view-settings.json`; the model, its
+  placement and the camera are not part of it.
 - **Сохранить** (Ctrl+S) replaces the working file after a one-time
   confirmation and the same verification; a file changed by another program
   is never overwritten.
