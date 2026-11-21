@@ -1,5 +1,5 @@
-//! Owner layout of 2026-11-21: top bar with drop-down menus (▼) and
-//! collapsible sections, a lamp switch, the right block with tabs
+//! Owner layout of 2026-11-21: top bar with drop-down menus (▼) without
+//! nested foldable groups, a lamp switch, the right block with tabs
 //! («Здоровье», «Инфо», «Rigging» later), the scene tree under its button in
 //! the viewport's top-left corner and Undo/Redo in its bottom-right corner.
 use super::{Actions, HealthPage, Tab, TopMenu, ViewerUi};
@@ -12,6 +12,17 @@ const DOWN: egui::Vec2 = egui::vec2(0., 1.);
 const UP: egui::Vec2 = egui::vec2(0., -1.);
 const RIGHT: egui::Vec2 = egui::vec2(1., 0.);
 const LAMP_ON: Color32 = Color32::from_rgb(255, 210, 60);
+/// View menus of the top bar, left to right (ADR-0045 amendment).
+const VIEW_MENUS: [(TopMenu, &str, &str); 8] = [
+    (TopMenu::View, "Вид", "Вид"),
+    (TopMenu::Grid, "Сетка и помощники", "Сетка"),
+    (TopMenu::Light, "Освещение", "Освещение"),
+    (TopMenu::Lamp, "Лампа", "Лампа"),
+    (TopMenu::Exposure, "Экспозиция и сила света", "Экспозиция"),
+    (TopMenu::Scene, "Сцена", "Сцена"),
+    (TopMenu::Sky, "Небо и скайбокс", "Небо"),
+    (TopMenu::Model, "Модель", "Модель"),
+];
 
 impl ViewerUi {
     pub(super) fn top_bar(
@@ -42,19 +53,11 @@ impl ViewerUi {
                                 .color(Color32::from_rgb(240, 68, 78)),
                         );
                     }
-                    if width > 1450. {
+                    if width > 1850. {
                         ui.strong("ASSET DOCTOR");
                         ui.separator();
                     }
-                    self.menu_button(ui, TopMenu::Settings, "Настройки");
-                    if width >= 560. {
-                        ui.separator();
-                        self.menu_button(ui, TopMenu::View, "Вид");
-                        self.menu_button(ui, TopMenu::Light, "Освещение");
-                        self.menu_button(ui, TopMenu::Scene, "Сцена");
-                        self.menu_button(ui, TopMenu::Model, "Модель");
-                        self.lamp_switch(ui);
-                    }
+                    let _ = self.menu_button(ui, TopMenu::Settings, "Настройки");
                     ui.separator();
                     let idle = !loading && self.edit.busy.is_none();
                     if width >= 900. {
@@ -93,23 +96,49 @@ impl ViewerUi {
                     if width >= 330. {
                         self.help |= ui.button("Справка").clicked();
                     }
-                    if width >= 1250. {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if width >= 1400.
+                            && ui
                                 .add_enabled(!loading, egui::Button::new("Очередь ремонтов…"))
                                 .on_hover_text("Выполнить все доступные ремонты по очереди с проверкой после каждого шага.")
                                 .clicked()
-                            {
-                                self.show_queue = true;
-                            }
-                        });
-                    }
+                        {
+                            self.show_queue = true;
+                        }
+                        if width >= 560. {
+                            self.view_menus(ui, width < 2100.);
+                        }
+                    });
                 });
             });
     }
 
+    /// The view menus and the lamp switch, in the right part of the top bar:
+    /// their right edge meets the viewport's right edge (last frame) when
+    /// there is room, otherwise they follow «Очередь ремонтов…».
+    /// `short`: narrow windows use the short names (full name on hover).
+    fn view_menus(&mut self, ui: &mut egui::Ui, short: bool) {
+        let free = ui.available_rect_before_wrap();
+        let edge = self.scene.right() - 8.;
+        if self.scene.is_positive()
+            && edge < free.right()
+            && edge - self.menu_group_width > free.left() + 8.
+        {
+            ui.add_space(free.right() - edge);
+        }
+        let start = ui.available_rect_before_wrap().right();
+        self.lamp_switch(ui);
+        for (menu, label, brief) in VIEW_MENUS.into_iter().rev() {
+            let response = self.menu_button(ui, menu, if short { brief } else { label });
+            if short && brief != label {
+                response.on_hover_text(label);
+            }
+        }
+        self.menu_group_width = start - ui.available_rect_before_wrap().right();
+    }
+
     /// A top-bar button with a filled triangle that opens its menu.
-    fn menu_button(&mut self, ui: &mut egui::Ui, menu: TopMenu, label: &str) {
+    fn menu_button(&mut self, ui: &mut egui::Ui, menu: TopMenu, label: &str) -> egui::Response {
         let open = self.menu == Some(menu);
         let response = ui.add(
             egui::Button::selectable(open, format!("{label}      ")).min_size(egui::vec2(0., 28.)),
@@ -133,6 +162,7 @@ impl ViewerUi {
         if self.menu == Some(menu) {
             self.menu_anchor = response.rect;
         }
+        response
     }
 
     /// Yellow lamp: the lamp shines; grey and black: it is off. Click toggles.
@@ -203,23 +233,29 @@ impl ViewerUi {
             self.menu = None;
             return;
         }
-        let area = egui::Area::new(egui::Id::new("top_menu"))
+        // One area per menu, sized by its own content every frame: no size
+        // remembered from another menu and no inner scrolling.
+        let _ = height;
+        let area = egui::Area::new(egui::Id::new(("top_menu", menu)))
             .order(egui::Order::Foreground)
+            .constrain(true)
             .fixed_pos(self.menu_anchor.left_bottom() + egui::vec2(0., 6.))
             .show(context, |ui| {
                 egui::Frame::popup(ui.style())
                     .inner_margin(10.)
                     .show(ui, |ui| {
                         ui.set_width(350.);
-                        egui::ScrollArea::vertical()
-                            .max_height((height - 130.).max(160.))
-                            .show(ui, |ui| match menu {
-                                TopMenu::Settings => self.settings_menu(ui),
-                                TopMenu::View => self.view_menu(ui),
-                                TopMenu::Light => self.light_menu(ui, actions),
-                                TopMenu::Scene => self.scene_menu(ui, actions),
-                                TopMenu::Model => self.model_menu(ui, asset, actions),
-                            });
+                        match menu {
+                            TopMenu::Settings => self.settings_menu(ui),
+                            TopMenu::View => self.view_menu(ui),
+                            TopMenu::Grid => self.grid_menu(ui),
+                            TopMenu::Light => self.light_menu(ui),
+                            TopMenu::Lamp => self.lamp_menu(ui, actions),
+                            TopMenu::Exposure => self.exposure_menu(ui),
+                            TopMenu::Scene => self.scene_menu(ui),
+                            TopMenu::Sky => self.sky_menu(ui, actions),
+                            TopMenu::Model => self.model_menu(ui, asset, actions),
+                        }
                     });
             });
         let rect = area.response.rect;
@@ -240,186 +276,114 @@ impl ViewerUi {
         }
     }
 
-    /// Collapsible section header with a filled triangle (▶ closed, ▼ open).
-    fn section(&mut self, ui: &mut egui::Ui, key: &'static str, title: &str) -> bool {
-        let open = self.sections.contains(key);
-        let (rect, response) =
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), 26.), egui::Sense::click());
-        let painter = ui.painter();
-        if response.hovered() {
-            painter.rect_filled(rect, 4., ui.visuals().widgets.hovered.weak_bg_fill);
-        }
-        let color = ui.visuals().strong_text_color();
-        triangle(
-            painter,
-            rect.left_center() + egui::vec2(10., 0.),
-            5.,
-            if open { DOWN } else { RIGHT },
-            color,
-        );
-        painter.text(
-            rect.left_center() + egui::vec2(22., 0.),
-            egui::Align2::LEFT_CENTER,
-            title,
-            egui::FontId::proportional(14.5),
-            color,
-        );
-        if response.clicked() {
-            if open {
-                self.sections.remove(key);
-            } else {
-                self.sections.insert(key);
-            }
-        }
-        self.sections.contains(key)
+    /// A plain (not foldable) group title inside a menu.
+    fn heading(ui: &mut egui::Ui, title: &str) {
+        ui.add_space(4.);
+        ui.label(RichText::new(title).strong().size(14.5));
     }
 
     fn settings_menu(&mut self, ui: &mut egui::Ui) {
-        if self.section(ui, "controls", "Управление") {
-            ui.indent("controls", |ui| {
-                ui.weak(
-                    "Клавиши и кнопки мыши, включая боковые: переназначение, конфликты, сброс.",
-                );
-                if ui.button("Клавиши и мышь…").clicked() {
-                    self.show_controls = true;
-                    self.menu = None;
-                }
-            });
+        Self::heading(ui, "Управление");
+        ui.weak("Клавиши и кнопки мыши, включая боковые: переназначение, конфликты, сброс.");
+        if ui.button("Клавиши и мышь…").clicked() {
+            self.show_controls = true;
+            self.menu = None;
         }
     }
 
     fn view_menu(&mut self, ui: &mut egui::Ui) {
-        if self.section(ui, "shading", "Шейдинг") {
-            ui.indent("shading", |ui| {
-                egui::ComboBox::from_id_salt("shading_mode")
-                    .selected_text(match self.lighting.mode {
-                        ShadingMode::BaseColor => "Базовый вид",
-                        ShadingMode::DirectPbr => "PBR · направленный свет",
-                    })
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.lighting.mode, ShadingMode::BaseColor, "Базовый вид");
-                        ui.selectable_value(&mut self.lighting.mode, ShadingMode::DirectPbr, "PBR · направленный свет");
-                    });
-                egui::ComboBox::from_label("Канал")
-                    .selected_text(self.channel.label())
-                    .show_ui(ui, |ui| {
-                        for channel in ad_render_vulkan::lighting::Channel::ALL {
-                            ui.selectable_value(&mut self.channel, channel, channel.label());
-                        }
-                    })
-                    .response
-                    .on_hover_text("Что показывать на модели: обычное освещение или один канал данных (нормали, UV, карты материала). Только вид.");
-                ui.checkbox(&mut self.textures, "Базовые текстуры")
-                    .on_hover_text("Включить выборку встроенных PNG/JPEG. Исходные материалы не изменяются.");
-                let pbr = self.lighting.mode == ShadingMode::DirectPbr;
-                if !pbr {
-                    ui.weak("Карты материала действуют в режиме PBR.");
+        egui::ComboBox::from_id_salt("shading_mode")
+            .selected_text(match self.lighting.mode {
+                ShadingMode::BaseColor => "Базовый вид",
+                ShadingMode::DirectPbr => "PBR · направленный свет",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    &mut self.lighting.mode,
+                    ShadingMode::BaseColor,
+                    "Базовый вид",
+                );
+                ui.selectable_value(
+                    &mut self.lighting.mode,
+                    ShadingMode::DirectPbr,
+                    "PBR · направленный свет",
+                );
+            });
+        egui::ComboBox::from_label("Канал")
+            .selected_text(self.channel.label())
+            .show_ui(ui, |ui| {
+                for channel in ad_render_vulkan::lighting::Channel::ALL {
+                    ui.selectable_value(&mut self.channel, channel, channel.label());
                 }
-                ui.add_enabled_ui(pbr, |ui| {
-                    let _maps = ui.checkbox(&mut self.mr_maps, "Карты металла/шероховатости").on_hover_text("Включить карты параметров материала. Не зависит от переключателя базовых текстур; исходник не изменяется.");
-                    #[cfg(test)]
-                    {
-                        self.mr_maps_rect = _maps.rect;
-                    }
-                    let _normal = ui.checkbox(&mut self.normal_maps, "Карты нормалей").on_hover_text("Детали поверхности из линейной RGB-карты. Источник и геометрия не изменяются.");
-                    #[cfg(test)]
-                    {
-                        self.normal_maps_rect = _normal.rect;
-                    }
-                    let _ao = ui.checkbox(&mut self.ao_maps, "Окклюзия · AO").on_hover_text("Затемнение заполняющего света из карты материала. Направленный свет не меняется.");
-                    #[cfg(test)]
-                    {
-                        self.ao_maps_rect = _ao.rect;
-                    }
-                    let _emission = ui.checkbox(&mut self.emission, "Свечение").on_hover_text("Собственный цвет поверхности из материала и карты. Без ореола и освещения соседних объектов.");
-                    #[cfg(test)]
-                    {
-                        self.emission_rect = _emission.rect;
-                    }
-                });
-            });
+            })
+            .response
+            .on_hover_text("Что показывать на модели: обычное освещение или один канал данных (нормали, UV, карты материала). Только вид.");
+        ui.checkbox(&mut self.textures, "Базовые текстуры")
+            .on_hover_text(
+                "Включить выборку встроенных PNG/JPEG. Исходные материалы не изменяются.",
+            );
+        let pbr = self.lighting.mode == ShadingMode::DirectPbr;
+        if !pbr {
+            ui.weak("Карты материала действуют в режиме PBR.");
         }
-        if self.section(ui, "grid", "Сетка и помощники") {
-            ui.indent("grid", |ui| {
-                ui.add_enabled(self.wireframe_supported, egui::Checkbox::new(&mut self.wireframe, "Топологическая сетка (каркас)"))
-                    .on_hover_text("Рёбра треугольников поверх модели.")
-                    .on_disabled_hover_text("Видеокарта не поддерживает отрисовку линиями (fillModeNonSolid).");
-                ui.checkbox(&mut self.show_axes, "Оси").on_hover_text("Мировые оси из начала координат: X красная, Y зелёная, Z синяя; отрицательные половины тусклее.");
-                ui.checkbox(&mut self.show_bounds, "Габариты").on_hover_text("Ограничивающий бокс модели и её размеры (ширина x высота x глубина, в единицах файла).");
-            });
-        }
+        ui.add_enabled_ui(pbr, |ui| {
+            let _maps = ui.checkbox(&mut self.mr_maps, "Карты металла/шероховатости").on_hover_text("Включить карты параметров материала. Не зависит от переключателя базовых текстур; исходник не изменяется.");
+            #[cfg(test)]
+            {
+                self.mr_maps_rect = _maps.rect;
+            }
+            let _normal = ui.checkbox(&mut self.normal_maps, "Карты нормалей").on_hover_text("Детали поверхности из линейной RGB-карты. Источник и геометрия не изменяются.");
+            #[cfg(test)]
+            {
+                self.normal_maps_rect = _normal.rect;
+            }
+            let _ao = ui.checkbox(&mut self.ao_maps, "Окклюзия · AO").on_hover_text("Затемнение заполняющего света из карты материала. Направленный свет не меняется.");
+            #[cfg(test)]
+            {
+                self.ao_maps_rect = _ao.rect;
+            }
+            let _emission = ui.checkbox(&mut self.emission, "Свечение").on_hover_text("Собственный цвет поверхности из материала и карты. Без ореола и освещения соседних объектов.");
+            #[cfg(test)]
+            {
+                self.emission_rect = _emission.rect;
+            }
+        });
     }
 
-    fn light_menu(&mut self, ui: &mut egui::Ui, actions: &mut Actions) {
+    fn grid_menu(&mut self, ui: &mut egui::Ui) {
+        ui.add_enabled(
+            self.wireframe_supported,
+            egui::Checkbox::new(&mut self.wireframe, "Топологическая сетка (каркас)"),
+        )
+        .on_hover_text("Рёбра треугольников поверх модели.")
+        .on_disabled_hover_text("Видеокарта не поддерживает отрисовку линиями (fillModeNonSolid).");
+        ui.checkbox(&mut self.show_axes, "Оси").on_hover_text("Мировые оси из начала координат: X красная, Y зелёная, Z синяя; отрицательные половины тусклее.");
+        ui.checkbox(&mut self.show_bounds, "Габариты").on_hover_text("Ограничивающий бокс модели и её размеры (ширина x высота x глубина, в единицах файла).");
+    }
+
+    fn light_menu(&mut self, ui: &mut egui::Ui) {
         let pbr = self.lighting.mode == ShadingMode::DirectPbr;
-        if self.section(ui, "lamp", "Лампа") {
-            ui.indent("lamp", |ui| {
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut self.lighting.enabled, "Лампа включена").on_hover_text("Выключенная лампа не светит; остаются заполнение и свет окружения.");
-                    if ui.add(egui::Slider::new(&mut self.lamp_kelvin, 1500.0..=10000.0).text("K")).on_hover_text("Цветовая температура лампы: меньше — теплее, больше — холоднее.").changed() {
-                        self.lighting.color = crate::lamp::kelvin_to_rgb(self.lamp_kelvin);
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Цвет лампы");
-                    ui.color_edit_button_rgb(&mut self.lighting.color);
-                    ui.checkbox(&mut self.lamp_icon, "Значок лампы").on_hover_text("Значок лампы во вьюпорте: тяните его или его стрелки, чтобы повернуть свет; правая кнопка — меню.");
-                });
-                let (mut azimuth, mut elevation) = crate::lamp::angles(self.lighting.direction);
-                let turned = ui.add(egui::Slider::new(&mut azimuth, -180.0..=180.0).text("Азимут")).changed();
-                let raised = ui.add(egui::Slider::new(&mut elevation, -crate::lamp::MAX_ELEVATION..=crate::lamp::MAX_ELEVATION).text("Высота")).changed();
-                if turned || raised {
-                    self.lighting.direction = crate::lamp::from_angles(azimuth, elevation);
-                }
-                ui.horizontal(|ui| {
-                    if ui.button("Сбросить положение").clicked() {
-                        self.lighting.direction = ad_render_vulkan::lighting::DEFAULT_LAMP_DIRECTION;
-                    }
-                    if ui.button("Свет сверху").clicked() {
-                        self.lighting.direction = crate::lamp::from_angles(azimuth, crate::lamp::MAX_ELEVATION);
-                    }
-                    actions.lamp_from_camera |= ui.button("От камеры").clicked();
-                });
-            });
-        }
-        if self.section(ui, "shadows", "Тени") {
-            ui.indent("shadows", |ui| {
-                ui.checkbox(&mut self.shadows, "Тени").on_hover_text("Тень от лампы на модели и на полу. Только вид; при выключенной лампе теней нет.");
-                ui.add_enabled(self.shadows, egui::Slider::new(&mut self.shadow_strength, 0.0..=1.0).text("Сила тени"));
-            });
-        }
-        if self.section(ui, "exposure", "Экспозиция и сила света") {
-            ui.indent("exposure", |ui| {
-                if !pbr {
-                    ui.weak("Действует в режиме PBR (меню «Вид»).");
-                }
-                ui.add_enabled_ui(pbr, |ui| {
-                    egui::ComboBox::from_label("Пресет света").selected_text("Выбрать").show_ui(ui, |ui| {
-                        for preset in crate::lamp::LightPreset::ALL {
-                            if ui.selectable_label(false, preset.label()).clicked() {
-                                preset.apply(&mut self.lighting);
-                            }
-                        }
-                    }).response.on_hover_text("Задаёт лампу, основной свет, заполнение и экспозицию одним выбором. Окружение и режим не меняются.");
-                    ui.add(egui::Slider::new(&mut self.lighting.exposure_ev, -6.0..=6.0).text("Экспозиция · EV"));
-                    ui.add(egui::Slider::new(&mut self.lighting.key, 0.0..=8.0).text("Основной свет"));
-                    ui.add(egui::Slider::new(&mut self.lighting.fill, 0.0..=1.0).text("Заполнение"));
-                });
-            });
-        }
-        if self.section(ui, "ambient", "Свет окружения") {
-            ui.indent("ambient", |ui| {
-                if !pbr {
-                    ui.weak("Действует в режиме PBR (меню «Вид»).");
-                }
-                ui.add_enabled_ui(pbr, |ui| {
-                    ui.checkbox(&mut self.environment_light, "Свет окружения").on_hover_text("Модель дополнительно освещается цветами выбранного окружения (небо сверху, земля снизу). Это приближение, не HDR/IBL.");
-                    ui.add_enabled(self.environment_light, egui::Slider::new(&mut self.environment_strength, 0.0..=ad_render_vulkan::sky::EnvironmentLight::MAX_STRENGTH).text("Сила"));
-                });
-            });
-        }
+        Self::heading(ui, "Тени");
+        ui.checkbox(&mut self.shadows, "Тени").on_hover_text(
+            "Тень от лампы на модели и на полу. Только вид; при выключенной лампе теней нет.",
+        );
+        ui.add_enabled(
+            self.shadows,
+            egui::Slider::new(&mut self.shadow_strength, 0.0..=1.0).text("Сила тени"),
+        );
         ui.separator();
-        let reset = ui.button("Сбросить освещение");
+        Self::heading(ui, "Свет окружения");
+        if !pbr {
+            ui.weak("Действует в режиме PBR (меню «Вид»).");
+        }
+        ui.add_enabled_ui(pbr, |ui| {
+            ui.checkbox(&mut self.environment_light, "Свет окружения").on_hover_text("Модель дополнительно освещается цветами выбранного окружения (небо сверху, земля снизу). Это приближение, не HDR/IBL.");
+            ui.add_enabled(self.environment_light, egui::Slider::new(&mut self.environment_strength, 0.0..=ad_render_vulkan::sky::EnvironmentLight::MAX_STRENGTH).text("Сила"));
+        });
+        ui.separator();
+        let reset = ui.button("Сбросить освещение").on_hover_text(
+            "Лампа, экспозиция, основной свет и заполнение — по умолчанию, режим PBR.",
+        );
         #[cfg(test)]
         {
             self.reset_lighting_rect = reset.rect;
@@ -432,43 +396,111 @@ impl ViewerUi {
         }
     }
 
-    fn scene_menu(&mut self, ui: &mut egui::Ui, actions: &mut Actions) {
-        if self.section(ui, "floor", "Пол") {
-            ui.indent("floor", |ui| {
-                for theme in ad_render_vulkan::grid::FloorTheme::ALL {
-                    if ui.radio(self.floor == Some(theme), theme.label()).clicked() {
-                        self.floor = Some(theme);
-                        self.last_floor = theme;
-                    }
-                }
-                if ui.radio(self.floor.is_none(), "Без поверхности").clicked() {
-                    self.floor = None;
-                }
-                ui.weak("Пол на уровне нижней точки модели в исходном положении. Только вид. G — скрыть или вернуть.");
-            });
+    fn lamp_menu(&mut self, ui: &mut egui::Ui, actions: &mut Actions) {
+        ui.checkbox(&mut self.lighting.enabled, "Лампа включена")
+            .on_hover_text("Выключенная лампа не светит; остаются заполнение и свет окружения.");
+        if ui
+            .add(egui::Slider::new(&mut self.lamp_kelvin, 1500.0..=10000.0).text("Температура, K"))
+            .on_hover_text("Цветовая температура лампы: меньше — теплее, больше — холоднее.")
+            .changed()
+        {
+            self.lighting.color = crate::lamp::kelvin_to_rgb(self.lamp_kelvin);
         }
-        if self.section(ui, "sky", "Небо и скайбокс") {
-            ui.indent("sky", |ui| {
-                egui::ComboBox::from_label("Окружение").selected_text(self.environment.label()).show_ui(ui, |ui| {
-                    for preset in ad_render_vulkan::sky::Environment::ALL {
-                        ui.selectable_value(&mut self.environment, preset, preset.label());
+        ui.horizontal(|ui| {
+            ui.label("Цвет лампы");
+            ui.color_edit_button_rgb(&mut self.lighting.color);
+            ui.checkbox(&mut self.lamp_icon, "Значок лампы").on_hover_text("Значок лампы во вьюпорте: тяните его или его стрелки, чтобы повернуть свет; правая кнопка — меню.");
+        });
+        let (mut azimuth, mut elevation) = crate::lamp::angles(self.lighting.direction);
+        let turned = ui
+            .add(egui::Slider::new(&mut azimuth, -180.0..=180.0).text("Азимут"))
+            .changed();
+        let raised = ui
+            .add(
+                egui::Slider::new(
+                    &mut elevation,
+                    -crate::lamp::MAX_ELEVATION..=crate::lamp::MAX_ELEVATION,
+                )
+                .text("Высота"),
+            )
+            .changed();
+        if turned || raised {
+            self.lighting.direction = crate::lamp::from_angles(azimuth, elevation);
+        }
+        ui.horizontal(|ui| {
+            if ui.button("Сбросить положение").clicked() {
+                self.lighting.direction = ad_render_vulkan::lighting::DEFAULT_LAMP_DIRECTION;
+            }
+            if ui.button("Свет сверху").clicked() {
+                self.lighting.direction =
+                    crate::lamp::from_angles(azimuth, crate::lamp::MAX_ELEVATION);
+            }
+            actions.lamp_from_camera |= ui.button("От камеры").clicked();
+        });
+    }
+
+    fn exposure_menu(&mut self, ui: &mut egui::Ui) {
+        let pbr = self.lighting.mode == ShadingMode::DirectPbr;
+        if !pbr {
+            ui.weak("Действует в режиме PBR (меню «Вид»).");
+        }
+        ui.add_enabled_ui(pbr, |ui| {
+            egui::ComboBox::from_label("Пресет света").selected_text("Выбрать").show_ui(ui, |ui| {
+                for preset in crate::lamp::LightPreset::ALL {
+                    if ui.selectable_label(false, preset.label()).clicked() {
+                        preset.apply(&mut self.lighting);
                     }
-                }).response.on_hover_text("Фон-небо за моделью. Только вид: лампы, экспозиция и подсветка не меняются.");
-                ui.horizontal(|ui| {
-                    if ui.button("Скайбокс...").on_hover_text("Выбрать свою панораму PNG/JPEG 2:1 (равнопромежуточную). Файл только читается; в модель и экспорт не попадает.").clicked() {
-                        actions.skybox_load = true;
-                    }
-                    if let Some(name) = self.skybox_name.clone() {
-                        ui.checkbox(&mut self.skybox_on, name).on_hover_text("Показать панораму вместо фона-неба. Свет окружения берёт её цвета.");
-                        if ui.button("Убрать").clicked() {
-                            actions.skybox_remove = true;
-                        }
-                    }
-                });
-                if self.skybox_name.is_some() && self.skybox_on {
-                    ui.add(egui::Slider::new(&mut self.skybox_yaw, 0.0..=360.0).text("Поворот").suffix(" град."));
                 }
-            });
+            }).response.on_hover_text("Задаёт лампу, основной свет, заполнение и экспозицию одним выбором. Окружение и режим не меняются.");
+            ui.add(egui::Slider::new(&mut self.lighting.exposure_ev, -6.0..=6.0).text("Экспозиция · EV"));
+            ui.add(egui::Slider::new(&mut self.lighting.key, 0.0..=8.0).text("Основной свет"));
+            ui.add(egui::Slider::new(&mut self.lighting.fill, 0.0..=1.0).text("Заполнение"));
+        });
+    }
+
+    fn scene_menu(&mut self, ui: &mut egui::Ui) {
+        Self::heading(ui, "Пол");
+        for theme in ad_render_vulkan::grid::FloorTheme::ALL {
+            if ui.radio(self.floor == Some(theme), theme.label()).clicked() {
+                self.floor = Some(theme);
+                self.last_floor = theme;
+            }
+        }
+        if ui.radio(self.floor.is_none(), "Без поверхности").clicked() {
+            self.floor = None;
+        }
+        ui.weak("Пол на уровне нижней точки модели в исходном положении. Только вид. G — скрыть или вернуть.");
+    }
+
+    fn sky_menu(&mut self, ui: &mut egui::Ui, actions: &mut Actions) {
+        egui::ComboBox::from_label("Окружение")
+            .selected_text(self.environment.label())
+            .show_ui(ui, |ui| {
+                for preset in ad_render_vulkan::sky::Environment::ALL {
+                    ui.selectable_value(&mut self.environment, preset, preset.label());
+                }
+            })
+            .response
+            .on_hover_text(
+                "Фон-небо за моделью. Только вид: лампы, экспозиция и подсветка не меняются.",
+            );
+        ui.horizontal(|ui| {
+            if ui.button("Скайбокс...").on_hover_text("Выбрать свою панораму PNG/JPEG 2:1 (равнопромежуточную). Файл только читается; в модель и экспорт не попадает.").clicked() {
+                actions.skybox_load = true;
+            }
+            if let Some(name) = self.skybox_name.clone() {
+                ui.checkbox(&mut self.skybox_on, name).on_hover_text("Показать панораму вместо фона-неба. Свет окружения берёт её цвета.");
+                if ui.button("Убрать").clicked() {
+                    actions.skybox_remove = true;
+                }
+            }
+        });
+        if self.skybox_name.is_some() && self.skybox_on {
+            ui.add(
+                egui::Slider::new(&mut self.skybox_yaw, 0.0..=360.0)
+                    .text("Поворот")
+                    .suffix(" град."),
+            );
         }
     }
 
@@ -482,20 +514,16 @@ impl ViewerUi {
             ui.label("Откройте модель.");
             return;
         };
-        if self.section(ui, "gizmo", "Гизмо") {
-            ui.indent("gizmo", |ui| {
-                ui.checkbox(&mut self.model_gizmo_on, "Гизмо модели").on_hover_text("Стрелки X/Y/Z сдвигают модель, кольца поворачивают её вокруг Y и X, квадрат масштабирует равномерно — всё от нижней точки центра. Каждое отпускание — одна правка: Ctrl+Z отменит, «Сохранить» запишет в файл.");
-                if ui.add_enabled(!self.placement.is_identity(), egui::Button::new("Сбросить положение")).clicked() {
-                    actions.model_reset = true;
-                }
-            });
-        }
-        if self.section(ui, "place", "Положение, поворот, масштаб") {
-            ui.indent("place", |ui| {
-                let snapshot = asset.snapshot();
-                self.placement_fields_ui(ui, snapshot.bounds, snapshot.source_bounds, actions);
-            });
-        }
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.model_gizmo_on, "Гизмо модели").on_hover_text("Стрелки X/Y/Z сдвигают модель, кольца поворачивают её вокруг Y и X, квадрат масштабирует равномерно — всё от нижней точки центра. Каждое отпускание — одна правка: Ctrl+Z отменит, «Сохранить» запишет в файл.");
+            if ui.add_enabled(!self.placement.is_identity(), egui::Button::new("Сбросить положение")).clicked() {
+                actions.model_reset = true;
+            }
+        });
+        ui.separator();
+        Self::heading(ui, "Положение, поворот, масштаб");
+        let snapshot = asset.snapshot();
+        self.placement_fields_ui(ui, snapshot.bounds, snapshot.source_bounds, actions);
     }
 
     pub(super) fn right_panel(

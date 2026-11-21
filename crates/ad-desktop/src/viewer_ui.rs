@@ -11,12 +11,16 @@ use winit::{event::WindowEvent, window::Window};
 mod panels;
 
 /// Drop-down menus of the top bar.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TopMenu {
     Settings,
     View,
+    Grid,
     Light,
+    Lamp,
+    Exposure,
     Scene,
+    Sky,
     Model,
 }
 /// Tabs of the right block («Rigging» comes later).
@@ -270,11 +274,11 @@ pub struct ViewerUi {
     pub emission: bool,
     pub lighting: ViewLighting,
     /// Owner layout (2026-11-21): open top menu, its button, all menu
-    /// buttons of this frame, open sections, right tab and health page.
+    /// buttons of this frame and their width, right tab and health page.
     menu: Option<TopMenu>,
     menu_anchor: egui::Rect,
     menu_buttons: Vec<egui::Rect>,
-    sections: std::collections::BTreeSet<&'static str>,
+    menu_group_width: f32,
     pub tab: Tab,
     health_page: HealthPage,
     carousel: crate::diagnostic_ui::Carousel,
@@ -392,11 +396,7 @@ impl Default for ViewerUi {
             menu: None,
             menu_anchor: egui::Rect::NOTHING,
             menu_buttons: Vec::new(),
-            sections: [
-                "controls", "shading", "grid", "lamp", "shadows", "floor", "sky", "gizmo", "place",
-            ]
-            .into_iter()
-            .collect(),
+            menu_group_width: 0.,
             tab: Tab::Health,
             health_page: HealthPage::Analysis,
             carousel: Default::default(),
@@ -1648,41 +1648,98 @@ mod tests {
     #[test]
     fn menus_open_with_their_triangle_button_and_close_outside() {
         let mut ui = ViewerUi::default();
-        let (out, _, _) = ui.layout(raw(1200., 900.), None, false);
-        out.drop_without_applying_deltas();
-        let menus: Vec<_> = ui.menu_rects.iter().map(|(m, _)| *m).collect();
+        let size = (1900., 900.);
+        warm(&mut ui, None, size);
+        let mut menus = ui.menu_rects.clone();
+        menus.sort_by(|a, b| a.1.left().total_cmp(&b.1.left()));
+        let order: Vec<_> = menus.iter().map(|(m, _)| *m).collect();
         assert_eq!(
-            menus,
+            order,
             [
                 TopMenu::Settings,
                 TopMenu::View,
+                TopMenu::Grid,
                 TopMenu::Light,
+                TopMenu::Lamp,
+                TopMenu::Exposure,
                 TopMenu::Scene,
+                TopMenu::Sky,
                 TopMenu::Model
             ]
         );
-        let view = ui.menu_rects[1].1;
-        click(&mut ui, None, view, (1200., 900.));
+        let rect_of = |m: TopMenu| menus.iter().find(|(x, _)| *x == m).unwrap().1;
+        // The view group sits in the right part, ending at the viewport edge.
+        assert!(
+            rect_of(TopMenu::View).left() > ui.open_rect.right(),
+            "{menus:?}"
+        );
+        let end = ui.lamp_switch_rect.right();
+        assert!(
+            end <= ui.scene.right() && end > ui.scene.right() - 30.,
+            "{end} {:?}",
+            ui.scene
+        );
+        let view = rect_of(TopMenu::View);
+        click(&mut ui, None, view, size);
         assert_eq!(ui.menu, Some(TopMenu::View));
         // Another menu button switches menus.
-        let light = ui.menu_rects[2].1;
-        click(&mut ui, None, light, (1200., 900.));
-        assert_eq!(ui.menu, Some(TopMenu::Light));
-        // A section header folds and unfolds.
-        assert!(ui.sections.contains("lamp"));
+        let lamp = rect_of(TopMenu::Lamp);
+        click(&mut ui, None, lamp, size);
+        assert_eq!(ui.menu, Some(TopMenu::Lamp));
         // A press in the viewport closes the menu.
-        let (out, rect, _) = ui.layout(raw(1200., 900.), None, false);
+        let (out, rect, _) = ui.layout(raw(size.0, size.1), None, false);
         out.drop_without_applying_deltas();
         let empty = egui::Rect::from_center_size(
             rect.right_bottom() - egui::vec2(300., 120.),
             egui::vec2(2., 2.),
         );
-        click(&mut ui, None, empty, (1200., 900.));
+        click(&mut ui, None, empty, size);
         assert_eq!(ui.menu, None);
         // Settings holds the controls window.
-        let settings = ui.menu_rects[0].1;
-        click(&mut ui, None, settings, (1200., 900.));
+        let settings = rect_of(TopMenu::Settings);
+        click(&mut ui, None, settings, size);
         assert_eq!(ui.menu, Some(TopMenu::Settings));
+    }
+    /// Each menu shows all its items at once, also after switching menus.
+    #[test]
+    fn every_menu_unfolds_to_its_full_height_without_scrolling() {
+        let asset = fixture("Pbr_Factors.glb");
+        let mut ui = ViewerUi::default();
+        let size = (1900., 1000.);
+        warm(&mut ui, Some(&asset), size);
+        let mut rounds = [Vec::new(), Vec::new()];
+        for heights in &mut rounds {
+            for menu in [
+                TopMenu::Settings,
+                TopMenu::View,
+                TopMenu::Grid,
+                TopMenu::Light,
+                TopMenu::Lamp,
+                TopMenu::Exposure,
+                TopMenu::Scene,
+                TopMenu::Sky,
+                TopMenu::Model,
+            ] {
+                ui.menu = Some(menu);
+                warm(&mut ui, Some(&asset), size);
+                let area = ui
+                    .context
+                    .memory(|m| m.area_rect(egui::Id::new(("top_menu", menu))))
+                    .unwrap();
+                assert!(area.height() > 50., "{menu:?}: {area:?}");
+                heights.push((menu, area.height()));
+            }
+        }
+        // Same height the second time round: no size left from another menu.
+        assert_eq!(rounds[0], rounds[1]);
+        // «Сцена» shows the whole floor list (about 18 points per radio).
+        let scene = rounds[0]
+            .iter()
+            .find(|(m, _)| *m == TopMenu::Scene)
+            .unwrap()
+            .1;
+        let floors = ad_render_vulkan::grid::FloorTheme::ALL.len() + 1;
+        assert!(scene > floors as f32 * 16., "{scene}");
     }
     #[test]
     fn lamp_switch_toggles_the_lamp_and_tree_unfolds_from_its_button() {

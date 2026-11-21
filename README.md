@@ -8,8 +8,10 @@ written from scratch in Rust with a Vulkan renderer. Engineering prototype.
 - Opens self-contained static **GLB** files and renders them with Vulkan:
   base color, vertex colors, optional direct PBR with metallic/roughness,
   normal, occlusion and emission maps.
-- Layout (ADR-0045): top bar with «Настройки», drop-down menus «Вид»,
-  «Освещение», «Сцена», «Модель» (triangle buttons, foldable sections) and a
+- Layout (ADR-0045): top bar with «Настройки» and file buttons on the left,
+  and on the right the drop-down menus «Вид», «Сетка и помощники»,
+  «Освещение», «Лампа», «Экспозиция и сила света», «Сцена», «Небо и
+  скайбокс», «Модель» (triangle buttons, every item shown at once) and a
   lamp switch; the right block has tabs «Здоровье» (finding cards turned by
   arrows, keys or a swipe; repair list, queue, history) and «Инфо»;
   «Дерево» unfolds from the viewport's top-left corner; «Undo» / «Redo» sit
@@ -19,7 +21,7 @@ written from scratch in Rust with a Vulkan renderer. Engineering prototype.
   light, checker, tiles, grass, dry grass, countryside, sand, asphalt,
   cobblestone, red brick, moon, Mars, lake, snow, clay, moss, blue and purple
   studio — or no surface,
-- **Канал / Каркас / Оси / Габариты** (Вид): show normals, UV, base colour,
+- **Канал** (Вид) / **Каркас / Оси / Габариты** (Сетка и помощники): show normals, UV, base colour,
   metal, roughness, AO or emission instead of lighting; triangle edges over the
   model; world axes and the bounding box with its size; «Пресет света» sets the
   lamp, key, fill and exposure in one choice,
@@ -38,7 +40,7 @@ written from scratch in Rust with a Vulkan renderer. Engineering prototype.
   model, its blue arrows turn only the azimuth and the orange ones only the
   height; right click for its menu (reset, from above, from the camera, on/off,
   colour, temperature, hide); also in «Освещение» and the lamp switch,
-- **Окружение** (Сцена): sky background — dark studio, day, sunset, night,
+- **Окружение** (Небо и скайбокс): sky background — dark studio, day, sunset, night,
   overcast, light studio; optional «Свет окружения» lights the model from the
   sky in PBR; «Скайбокс...» shows your own 2:1 PNG/JPEG panorama (read
   only, with yaw); view only, lamps and exposure stay as they are, at the model's lowest point with the step scaled to the model and
