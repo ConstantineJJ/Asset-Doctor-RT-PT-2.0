@@ -8,35 +8,42 @@ written from scratch in Rust with a Vulkan renderer. Engineering prototype.
 - Opens self-contained static **GLB** files and renders them with Vulkan:
   base color, vertex colors, optional direct PBR with metallic/roughness,
   normal, occlusion and emission maps.
-- Scene tree, summary and camera: left drag orbit, right/middle drag pan,
+- Layout (ADR-0045): top bar with «Настройки», drop-down menus «Вид»,
+  «Освещение», «Сцена», «Модель» (triangle buttons, foldable sections) and a
+  lamp switch; the right block has tabs «Здоровье» (finding cards turned by
+  arrows, keys or a swipe; repair list, queue, history) and «Инфо»;
+  «Дерево» unfolds from the viewport's top-left corner; «Undo» / «Redo» sit
+  in its bottom-right corner. Camera: left drag orbit, right/middle drag pan,
   wheel zoom, **F** frame, **Esc** cancel loading, **H** help.
-- **Пол** (Сводка): 20 procedural floors for contrast — studio grid, matte,
+- **Пол** (Сцена): 20 procedural floors for contrast — studio grid, matte,
   light, checker, tiles, grass, dry grass, countryside, sand, asphalt,
   cobblestone, red brick, moon, Mars, lake, snow, clay, moss, blue and purple
   studio — or no surface,
-- **Канал / Каркас / Оси / Габариты** (Сводка): show normals, UV, base colour,
+- **Канал / Каркас / Оси / Габариты** (Вид): show normals, UV, base colour,
   metal, roughness, AO or emission instead of lighting; triangle edges over the
   model; world axes and the bounding box with its size; «Пресет света» sets the
   lamp, key, fill and exposure in one choice,
-- **Управление…** (Сводка): every key and mouse button, side buttons included,
+- **Клавиши и мышь…** (Настройки): every key and mouse button, side buttons included,
   can be rebound (two chords per action, conflicts refused or moved, reset);
   saved to `%LOCALAPPDATA%\AssetDoctorRTPT\input-bindings.json`,
-- **Гизмо модели**: X/Y/Z arrows move the model, the centre square scales it
-  uniformly from the bottom centre; each release is one edit (Ctrl+Z undoes it,
-  «Сохранить» writes the new root node transforms; primitives stay byte-exact);
-  Сводка has numeric «Сдвиг X/Y/Z» and «Масштаб» fields plus «На пол» and
-  «В центр»,
-- **Тени** (Сводка): the lamp casts a shadow on the model and the floor
+- **Гизмо модели**: X/Y/Z arrows move the model, the red and green rings turn
+  it about X and Y, the centre square scales it uniformly — all from the
+  bottom centre; each release is one edit (Ctrl+Z undoes it, «Сохранить»
+  writes the new root node transforms; primitives stay byte-exact, extras and
+  extensions are kept); the «Модель» menu has numeric «Сдвиг X/Y/Z»,
+  «Поворот Y/X» and «Масштаб» fields plus «На пол» and «В центр»,
+- **Тени** (Освещение): the lamp casts a shadow on the model and the floor
   (shadow map, soft edges), with «Сила тени»,
 - **Лампа**: a sun icon in the viewport — drag it to turn the light around the
-  model, right click for its menu (reset, from above, from the camera, on/off,
-  colour, temperature, hide); also in Сводка,
-- **Окружение** (Сводка): sky background — dark studio, day, sunset, night,
+  model, its blue arrows turn only the azimuth and the orange ones only the
+  height; right click for its menu (reset, from above, from the camera, on/off,
+  colour, temperature, hide); also in «Освещение» and the lamp switch,
+- **Окружение** (Сцена): sky background — dark studio, day, sunset, night,
   overcast, light studio; optional «Свет окружения» lights the model from the
   sky in PBR; «Скайбокс...» shows your own 2:1 PNG/JPEG panorama (read
   only, with yaw); view only, lamps and exposure stay as they are, at the model's lowest point with the step scaled to the model and
   red X / blue Z axes; **G** hides it or brings back the last theme. View only.
-- **Диагностика**: geometry and UV checks G001–G012 (zero-area and duplicate
+- **Здоровье → Анализ и диагностика**: geometry and UV checks G001–G012 (zero-area and duplicate
   triangles, unused vertices, missing/zero normals, boundary and non-manifold
   edges, connected groups, missing UV0, zero UV area, UV outside 0…1, exact
   duplicate vertices).
@@ -48,7 +55,7 @@ written from scratch in Rust with a Vulkan renderer. Engineering prototype.
 - **Очередь ремонтов**: runs every available repair one by one, re-analysing
   after each step; refused steps are skipped with their reason, a regression
   or failure stops it, and each step can be undone separately.
-- **История ремонта** (in the queue window): past repairs, Undo/Redo and saves
+- **История ремонта** (Здоровье → Ремонт): past repairs, Undo/Redo and saves
   from all runs, stored in `%LOCALAPPDATA%\AssetDoctorRTPT\repair-history.jsonl`;
   clearly separate from the current model's diagnostics.
 - **Сохранить** (Ctrl+S) replaces the working file after a one-time

@@ -156,6 +156,55 @@ pub fn from_angles(azimuth: f32, elevation: f32) -> [f32; 3] {
 /// Moves the lamp for a pointer drag of (dx, dy) logical points. `project`
 /// maps a direction to the gizmo's screen position (0..1, y down); each axis
 /// turns the way that moves the gizmo with the pointer.
+/// Points of the lamp's azimuth orbit and elevation arc on screen.
+pub const ORBIT_POINTS: usize = 48;
+pub const ARC_POINTS: usize = 25;
+/// Lamp handles (ADR-0040 amendment): degrees for a drag (pixels) along a
+/// handle whose screen motion is `tangent_px` pixels per degree. A nearly
+/// edge-on handle still turns, at most 2 degrees per pixel and 20 per event.
+pub fn handle_turn(drag: [f32; 2], tangent_px: [f32; 2]) -> f32 {
+    let length2 = tangent_px[0] * tangent_px[0] + tangent_px[1] * tangent_px[1];
+    if length2 < 1e-9 {
+        return 0.;
+    }
+    ((drag[0] * tangent_px[0] + drag[1] * tangent_px[1]) / length2.max(0.25)).clamp(-20., 20.)
+}
+/// Screen guides for the lamp handles: the horizontal orbit at the current
+/// elevation, the vertical arc at the current azimuth and the screen motion
+/// (viewport units) per degree of azimuth and of elevation at the lamp.
+pub struct Guides {
+    pub orbit: [Option<[f32; 2]>; ORBIT_POINTS],
+    pub arc: [Option<[f32; 2]>; ARC_POINTS],
+    pub azimuth: Option<[f32; 2]>,
+    pub elevation: Option<[f32; 2]>,
+}
+pub fn guides(d: [f32; 3], project: impl Fn([f32; 3]) -> Option<[f32; 2]>) -> Guides {
+    let (azimuth, elevation) = angles(d);
+    let here = project(from_angles(azimuth, elevation));
+    let per_degree = |other: Option<[f32; 2]>, sign: f32| {
+        let (a, b) = (here?, other?);
+        Some([(b[0] - a[0]) * sign, (b[1] - a[1]) * sign])
+    };
+    let up = elevation + 1. <= MAX_ELEVATION;
+    Guides {
+        orbit: std::array::from_fn(|i| {
+            project(from_angles(
+                i as f32 * 360. / ORBIT_POINTS as f32,
+                elevation,
+            ))
+        }),
+        arc: std::array::from_fn(|i| {
+            let e = -MAX_ELEVATION + i as f32 * 2. * MAX_ELEVATION / (ARC_POINTS - 1) as f32;
+            project(from_angles(azimuth, e))
+        }),
+        azimuth: per_degree(project(from_angles(azimuth + 1., elevation)), 1.),
+        elevation: if up {
+            per_degree(project(from_angles(azimuth, elevation + 1.)), 1.)
+        } else {
+            per_degree(project(from_angles(azimuth, elevation - 1.)), -1.)
+        },
+    }
+}
 pub fn drag(
     d: [f32; 3],
     dx: f32,
@@ -194,6 +243,46 @@ mod tests {
     use super::*;
     use crate::camera::Camera;
     use ad_document::Bounds;
+    #[test]
+    fn handles_turn_only_their_own_angle_with_the_pointer() {
+        let mut camera = Camera::default();
+        camera.fit(Bounds {
+            min: [-1., 0., -1.],
+            max: [1., 2., 1.],
+        });
+        let (w, h) = (1200u32, 760u32);
+        let d = from_angles(30., 25.);
+        let project = |v: [f32; 3]| camera.project_direction(v, 1.25, w, h);
+        let g = guides(d, project);
+        assert!(g.orbit.iter().filter(|p| p.is_some()).count() > ORBIT_POINTS / 2);
+        assert!(g.arc.iter().all(Option::is_some));
+        for (tangent, which) in [(g.azimuth.unwrap(), 0), (g.elevation.unwrap(), 1)] {
+            let px = [tangent[0] * w as f32, tangent[1] * h as f32];
+            // Dragging 10 handle-lengths along the handle turns 10 degrees.
+            let turn = handle_turn([px[0] * 10., px[1] * 10.], px);
+            assert!((turn - 10.).abs() < 1e-3, "{which}: {turn}");
+            // A perpendicular drag does not turn.
+            assert!(handle_turn([-px[1] * 10., px[0] * 10.], px).abs() < 1e-3);
+            let (mut a, mut e) = angles(d);
+            if which == 0 {
+                a += turn;
+            } else {
+                e += turn;
+            }
+            let moved = project(from_angles(a, e)).unwrap();
+            let start = project(d).unwrap();
+            // The lamp moved along the handle, not elsewhere.
+            let shift = [
+                (moved[0] - start[0]) * w as f32,
+                (moved[1] - start[1]) * h as f32,
+            ];
+            let along = (shift[0] * px[0] + shift[1] * px[1])
+                / (px[0].hypot(px[1]) * shift[0].hypot(shift[1]));
+            assert!(along > 0.95, "{which}: {along}");
+        }
+        assert_eq!(handle_turn([5., 5.], [0., 0.]), 0.);
+        assert!(handle_turn([1000., 0.], [0.01, 0.]) <= 20.);
+    }
     #[test]
     fn angles_round_trip_and_default_lamp_is_kept() {
         let d = ad_render_vulkan::lighting::DEFAULT_LAMP_DIRECTION;

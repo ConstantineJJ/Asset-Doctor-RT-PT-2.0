@@ -586,11 +586,18 @@ fn placement_export_writes_root_transforms_in_their_own_form() {
     assert!(crate::compare_reimported(&read, &doc, &c).is_err());
 }
 
+/// ADR-0041 amendment: a placement-only export keeps extras, extensions and
+/// unknown members verbatim, writes a turned root rotation and proves the
+/// reimport; changing geometry of such a file stays refused.
 #[test]
-fn placement_export_is_refused_for_opaque_metadata() {
+fn placement_export_keeps_opaque_metadata_and_writes_rotation() {
     use ad_document::Placement;
     let (mut j, b) = tiny();
     j["nodes"][0]["extras"] = serde_json::json!({"note":"keep"});
+    j["nodes"][0]["extensions"] = serde_json::json!({"EXT_custom":{"a":1}});
+    j["extensionsUsed"] = serde_json::json!(["EXT_custom"]);
+    j["asset"]["extras"] = serde_json::json!({"author":"test"});
+    j["unknownTopLevel"] = serde_json::json!([1, 2]);
     let source = bytes(j, b);
     let mut doc = import_glb(
         Arc::from(source.as_slice()),
@@ -601,22 +608,66 @@ fn placement_export_is_refused_for_opaque_metadata() {
     )
     .unwrap();
     let c = Cancellation::default();
-    let plan = doc
-        .prepare_placement(
-            doc.tag(),
-            Placement::IDENTITY.then([0.; 3], 2., [0.; 3]),
-            &c,
-        )
-        .unwrap();
+    let before = doc.snapshot(ImportLimits::default(), &c).unwrap();
+    let turn = [0., (0.3f32).sin(), 0., (0.3f32).cos()];
+    let placement = Placement::IDENTITY.transformed([0.; 3], 2., turn, [1., 0., -0.5]);
+    let plan = doc.prepare_placement(doc.tag(), placement, &c).unwrap();
     {
         let candidate = plan.candidate(&doc, &c).unwrap();
         let view = doc.candidate_view(candidate, &c).unwrap();
-        assert!(
+        assert_eq!(
             preflight_changed_export(&view, ExportLimits::default(), ImportLimits::default(), &c)
-                .is_err()
+                .unwrap(),
+            0
         );
     }
     doc.apply_triangle_removal(plan, ImportLimits::default(), &c)
         .unwrap();
-    assert!(export(&doc).is_err());
+    let verified = export(&doc).unwrap();
+    let out = verified.bytes();
+    let n = u32::from_le_bytes(out[12..16].try_into().unwrap()) as usize;
+    let json: serde_json::Value = serde_json::from_slice(&out[20..20 + n]).unwrap();
+    assert_eq!(
+        json["nodes"][0]["extras"],
+        serde_json::json!({"note":"keep"})
+    );
+    assert_eq!(
+        json["nodes"][0]["extensions"],
+        serde_json::json!({"EXT_custom":{"a":1}})
+    );
+    assert_eq!(json["extensionsUsed"], serde_json::json!(["EXT_custom"]));
+    assert_eq!(
+        json["asset"]["extras"],
+        serde_json::json!({"author":"test"})
+    );
+    assert_eq!(json["unknownTopLevel"], serde_json::json!([1, 2]));
+    assert_eq!(json["nodes"][0]["rotation"].as_array().unwrap().len(), 4);
+    let read = import_glb(
+        out.clone(),
+        "read".into(),
+        ad_document::DocumentId(12),
+        ImportLimits::default(),
+        &c,
+    )
+    .unwrap();
+    crate::compare_reimported(&doc, &read, &c).unwrap();
+    let saved = read.snapshot(ImportLimits::default(), &c).unwrap();
+    for (a, b) in before.positions.iter().zip(&saved.positions) {
+        let want = placement.apply(*a);
+        assert!(
+            want.iter().zip(b).all(|(w, g)| (w - g).abs() < 1e-4),
+            "{want:?} vs {b:?}"
+        );
+    }
+    // Animations or skins could drive the root transforms: refused.
+    for key in ["animations", "skins"] {
+        let meta = serde_json::json!({"nodes": [], key: [{}]});
+        assert!(crate::metadata::placement_only(&meta, &c).is_err(), "{key}");
+    }
+    let empty = serde_json::json!({"nodes": [], "animations": [], "skins": []});
+    crate::metadata::placement_only(&empty, &c).unwrap();
+    // A geometry change of the same file still needs certified metadata.
+    let mut changed = fixture(&source);
+    remove(&mut changed, 0);
+    assert!(export(&changed).is_err());
 }

@@ -1,57 +1,78 @@
 //! ADR-0041 model gizmo: axis arrows move the model, the centre square scales
-//! it uniformly about the bottom centre. While dragging, the change is only a
-//! renderer preview; releasing prepares one placement edit (one Undo step).
+//! it uniformly and two rings turn it about the vertical (Y) and horizontal
+//! (X) axes, all about the bottom centre. While dragging, the change is only
+//! a renderer preview; releasing prepares one placement edit (one Undo step).
 use crate::camera::Camera;
 use ad_document::{Bounds, Placement};
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Quat, Vec3};
 
 /// Pointer travel (pixels) that doubles or halves the scale.
 const SCALE_PIXELS: f32 = 140.;
+/// Points of one rotation ring on screen.
+pub const RING_POINTS: usize = 48;
+/// The rings the gizmo offers: X (slot 0) and Y (slot 1).
+pub const RING_AXES: [usize; 2] = [0, 1];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Handle {
     Axis(usize),
     Scale,
+    /// Turn about world axis 0 (X) or 1 (Y).
+    Rotate(usize),
 }
 
-/// Preview of one drag: scale `factor` about `pivot`, then move by `offset`.
+/// Preview of one drag: `x' = factor * rotation(x - pivot) + pivot + offset`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Delta {
     pub pivot: [f32; 3],
     pub factor: f32,
+    pub rotation: [f32; 4],
     pub offset: [f32; 3],
+    /// Radians turned by a ring drag (moves the ring's knob).
+    pub turned: f32,
 }
 impl Delta {
     pub fn new(pivot: [f32; 3]) -> Self {
         Self {
             pivot,
             factor: 1.,
+            rotation: Placement::IDENTITY.rotation,
             offset: [0.; 3],
+            turned: 0.,
         }
     }
     pub fn is_noop(&self) -> bool {
-        self.factor == 1. && self.offset == [0.; 3]
+        self.factor == 1. && self.offset == [0.; 3] && self.rotation == Placement::IDENTITY.rotation
     }
     pub fn matrix(&self) -> Mat4 {
         let pivot = Vec3::from_array(self.pivot);
         Mat4::from_translation(pivot + Vec3::from_array(self.offset))
+            * Mat4::from_quat(Quat::from_array(self.rotation))
             * Mat4::from_scale(Vec3::splat(self.factor))
             * Mat4::from_translation(-pivot)
     }
     /// The placement this drag publishes on release.
     pub fn placement(&self, current: Placement) -> Placement {
-        current.then(self.pivot, self.factor, self.offset)
+        current.transformed(self.pivot, self.factor, self.rotation, self.offset)
     }
 }
 
 /// Preview that turns the `current` placement into `target` (numeric
-/// fields): scale about the world origin, then move.
+/// fields): scale and turn about the world origin, then move.
 pub fn between(current: Placement, target: Placement) -> Delta {
     let factor = target.scale / current.scale;
+    let turn = if target.rotation == current.rotation {
+        Quat::IDENTITY
+    } else {
+        (target.quat() * current.quat().inverse()).normalize()
+    };
+    let moved = turn * Vec3::from_array(current.translation) * factor;
     Delta {
         pivot: [0.; 3],
         factor,
-        offset: [0, 1, 2].map(|a| target.translation[a] - factor * current.translation[a]),
+        rotation: turn.to_array(),
+        offset: [0, 1, 2].map(|a| target.translation[a] - moved[a]),
+        turned: 0.,
     }
 }
 /// «На пол»: moves the model so its lowest point is at Y = 0.
@@ -69,6 +90,58 @@ pub fn centred(current: Placement, bounds: Bounds) -> Placement {
     p
 }
 
+/// Numeric fields (ADR-0041): what the owner edits, measured at the
+/// imported model's bottom centre `p0`, so turning and scaling (both about
+/// that point) never change «Сдвиг».
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fields {
+    /// Where the imported bottom centre moved, relative to where it was.
+    pub offset: [f32; 3],
+    /// Turn about Y and X in degrees (Euler Y-X-Z; Z is kept as it is).
+    pub yaw: f32,
+    pub pitch: f32,
+    pub scale: f32,
+}
+impl Fields {
+    pub fn of(placement: Placement, source: Bounds) -> Self {
+        let p0 = pivot(source);
+        let placed = placement.apply(p0);
+        let (yaw, pitch, _) = placement.quat().to_euler(glam::EulerRot::YXZ);
+        Self {
+            offset: [0, 1, 2].map(|a| placed[a] - p0[a]),
+            yaw: yaw.to_degrees(),
+            pitch: pitch.to_degrees(),
+            scale: placement.scale,
+        }
+    }
+    /// The placement that shows these fields, starting from `current`.
+    pub fn placement(self, current: Placement, source: Bounds) -> Placement {
+        let was = Self::of(current, source);
+        let p0 = pivot(source);
+        let mut p = current;
+        if self.yaw != was.yaw || self.pitch != was.pitch {
+            let (_, _, roll) = current.quat().to_euler(glam::EulerRot::YXZ);
+            let target = Quat::from_euler(
+                glam::EulerRot::YXZ,
+                self.yaw.to_radians(),
+                self.pitch.to_radians(),
+                roll,
+            );
+            let turn = (target * current.quat().inverse()).normalize();
+            p = p.transformed(p.apply(p0), 1., turn.to_array(), [0.; 3]);
+        }
+        if self.scale != was.scale && self.scale > 0. {
+            p = p.then(p.apply(p0), self.scale / p.scale, [0.; 3]);
+            p.scale = self.scale;
+        }
+        let placed = p.apply(p0);
+        for a in 0..3 {
+            p.translation[a] += p0[a] + self.offset[a] - placed[a];
+        }
+        p
+    }
+}
+
 /// Bottom centre of the bounds: X/Z centre, lowest Y.
 pub fn pivot(bounds: Bounds) -> [f32; 3] {
     [
@@ -83,6 +156,44 @@ pub fn handle_length(bounds: Bounds) -> f32 {
         .map(|a| bounds.max[a] - bounds.min[a])
         .fold(0f32, f32::max);
     (extent * 0.45).max(1e-6)
+}
+/// Rotation ring radius in world units.
+pub fn ring_radius(bounds: Bounds) -> f32 {
+    handle_length(bounds) * 1.25
+}
+fn axis_vector(axis: usize) -> Vec3 {
+    [Vec3::X, Vec3::Y, Vec3::Z][axis.min(2)]
+}
+/// Unit vector of a ring at parameter `angle`: the Y ring lies in the XZ
+/// plane, the X ring in the YZ plane.
+fn ring_vector(axis: usize, angle: f32) -> Vec3 {
+    let (s, c) = angle.sin_cos();
+    if axis == 0 {
+        Vec3::new(0., c, s)
+    } else {
+        Vec3::new(c, 0., s)
+    }
+}
+/// Ring parameter of the point nearest to the eye: where the knob starts.
+pub fn knob_angle(axis: usize, center: [f32; 3], eye: [f32; 3]) -> f32 {
+    let d = Vec3::from_array(eye) - Vec3::from_array(center);
+    if axis == 0 {
+        d.z.atan2(d.y)
+    } else {
+        d.z.atan2(d.x)
+    }
+}
+/// World position of a ring knob after turning `turned` radians.
+pub fn knob(axis: usize, center: [f32; 3], radius: f32, base: f32, turned: f32) -> [f32; 3] {
+    (Vec3::from_array(center)
+        + Quat::from_axis_angle(axis_vector(axis), turned) * ring_vector(axis, base) * radius)
+        .to_array()
+}
+/// World motion of a knob per radian of positive turn.
+pub fn knob_tangent(axis: usize, center: [f32; 3], knob: [f32; 3]) -> [f32; 3] {
+    axis_vector(axis)
+        .cross(Vec3::from_array(knob) - Vec3::from_array(center))
+        .to_array()
 }
 
 /// Moves along `axis` so the arrow tip follows the pointer: the drag (pixels)
@@ -103,30 +214,69 @@ pub fn drag_scale(delta: &mut Delta, current: Placement, drag_y: f32) {
         delta.factor = factor;
     }
 }
+/// Turns about `axis` so the knob follows the pointer along its ring:
+/// `tangent_px` is the knob's screen motion (pixels) per radian. An edge-on
+/// ring still turns, at most one radian per 40 pixels.
+pub fn drag_turn(delta: &mut Delta, axis: usize, drag: [f32; 2], tangent_px: [f32; 2]) {
+    let length2 = tangent_px[0] * tangent_px[0] + tangent_px[1] * tangent_px[1];
+    if length2 < 1e-6 {
+        return;
+    }
+    let length2 = length2.max(40. * 40.);
+    let step = ((drag[0] * tangent_px[0] + drag[1] * tangent_px[1]) / length2).clamp(-0.5, 0.5);
+    delta.turned += step;
+    delta.rotation = Quat::from_axis_angle(axis_vector(axis), delta.turned)
+        .normalize()
+        .to_array();
+}
 
 /// Screen positions (viewport 0..1, y down) of the gizmo for this frame.
+/// `turning`: the ring being dragged, whose knob follows the preview.
 pub fn screen(
     camera: &Camera,
     bounds: Bounds,
     preview: Option<&Delta>,
+    turning: Option<usize>,
     width: u32,
     height: u32,
 ) -> Option<crate::viewer_ui::ModelGizmo> {
-    let mut origin = pivot(bounds);
-    let mut len = handle_length(bounds);
-    if let Some(p) = preview {
-        origin = (Vec3::from_array(origin) + Vec3::from_array(p.offset)).to_array();
-        len *= p.factor;
-    }
+    let base = pivot(bounds);
+    let identity = Delta::new(base);
+    let d = preview.unwrap_or(&identity);
+    let origin = d
+        .matrix()
+        .transform_point3(Vec3::from_array(base))
+        .to_array();
+    let len = handle_length(bounds) * d.factor;
+    let radius = ring_radius(bounds) * d.factor;
     let project = |p: [f32; 3]| camera.project(p, width, height);
     let ends = [0, 1, 2].map(|axis| {
         let mut end = origin;
         end[axis] += len;
         project(end)
     });
+    let eye = camera.eye(width, height);
+    let mut rings = [[None; RING_POINTS]; 2];
+    let mut knobs = [None; 2];
+    for (slot, axis) in RING_AXES.into_iter().enumerate() {
+        for (i, point) in rings[slot].iter_mut().enumerate() {
+            let a = i as f32 / RING_POINTS as f32 * std::f32::consts::TAU;
+            *point = project(knob(axis, origin, radius, a, 0.));
+        }
+        let turned = if turning == Some(axis) { d.turned } else { 0. };
+        knobs[slot] = project(knob(
+            axis,
+            origin,
+            radius,
+            knob_angle(axis, origin, eye),
+            turned,
+        ));
+    }
     Some(crate::viewer_ui::ModelGizmo {
         pivot: project(origin)?,
         ends,
+        rings,
+        knobs,
     })
 }
 
@@ -175,6 +325,7 @@ mod tests {
         let target = Placement {
             scale: 3.,
             translation: [-4., 2., 7.],
+            ..Placement::IDENTITY
         };
         let d = between(current, target);
         let got = d.placement(current);
@@ -206,7 +357,7 @@ mod tests {
         let (w, h) = (1200, 760);
         let mut d = Delta::new(pivot(cube()));
         let len = handle_length(cube());
-        let g = screen(&camera, cube(), None, w, h).unwrap();
+        let g = screen(&camera, cube(), None, None, w, h).unwrap();
         for axis in 0..3 {
             let end = g.ends[axis].unwrap();
             let axis_px = [
@@ -233,5 +384,82 @@ mod tests {
         let mut t = Delta::new([0.; 3]);
         drag_scale(&mut t, tiny, 50.);
         assert_eq!(t.factor, 1., "never below the minimum scale");
+    }
+    fn near(a: [f32; 3], b: [f32; 3], eps: f32) -> bool {
+        a.iter().zip(b).all(|(x, y)| (x - y).abs() < eps)
+    }
+    #[test]
+    fn turning_a_ring_matches_the_published_placement_and_keeps_the_pivot() {
+        let mut camera = Camera::default();
+        camera.fit(cube());
+        let (w, h) = (1200, 760);
+        let current = Placement::IDENTITY.then([0.; 3], 1.5, [0.5, 0., 0.]);
+        for axis in RING_AXES {
+            let mut d = Delta::new(pivot(cube()));
+            // Drag along the knob tangent: the turn has the drag's sign.
+            drag_turn(&mut d, axis, [60., 0.], [120., 0.]);
+            assert!((d.turned - 0.5).abs() < 1e-6, "{}", d.turned);
+            drag_turn(&mut d, axis, [0., 60.], [120., 0.]);
+            assert!(
+                (d.turned - 0.5).abs() < 1e-6,
+                "perpendicular drag does not turn"
+            );
+            assert!(!d.is_noop());
+            let placed = d.placement(current);
+            assert!(placed.valid());
+            for p in [[0., 0., 0.], [1., 2., 3.], [-4., 0.5, 2.]] {
+                let via = d
+                    .matrix()
+                    .transform_point3(Vec3::from_array(current.apply(p)));
+                assert!(near(via.to_array(), placed.apply(p), 1e-4));
+            }
+            let fixed = d.matrix().transform_point3(Vec3::from_array(pivot(cube())));
+            assert!(near(fixed.to_array(), pivot(cube()), 1e-5));
+            let g = screen(&camera, cube(), Some(&d), Some(axis), w, h).unwrap();
+            let slot = RING_AXES.iter().position(|a| *a == axis).unwrap();
+            assert!(g.knobs[slot].is_some());
+            assert!(g.rings[slot].iter().filter(|p| p.is_some()).count() > RING_POINTS / 2);
+        }
+        // The knob moves along its tangent for a small positive turn.
+        let c = pivot(cube());
+        let r = ring_radius(cube());
+        let a = knob(1, c, r, 0.3, 0.);
+        let b = knob(1, c, r, 0.3, 0.01);
+        let t = Vec3::from_array(knob_tangent(1, c, a));
+        let moved = (Vec3::from_array(b) - Vec3::from_array(a)) / 0.01;
+        assert!((moved - t).length() < 1e-2 * r.max(1.), "{moved} vs {t}");
+    }
+    #[test]
+    fn numeric_fields_round_trip_and_turning_keeps_the_offset() {
+        let source = cube();
+        let current = Placement::IDENTITY.then([0.; 3], 2., [1., 0.5, -2.]);
+        let f = Fields::of(current, source);
+        assert!((f.scale - 2.).abs() < 1e-6);
+        let back = f.placement(current, source);
+        assert!(near(back.translation, current.translation, 1e-5));
+        let mut turned = f;
+        turned.yaw = 30.;
+        turned.pitch = -20.;
+        let p = turned.placement(current, source);
+        let g = Fields::of(p, source);
+        assert!(
+            (g.yaw - 30.).abs() < 1e-3 && (g.pitch + 20.).abs() < 1e-3,
+            "{g:?}"
+        );
+        assert!(near(g.offset, f.offset, 1e-4), "{g:?} vs {f:?}");
+        assert!((g.scale - 2.).abs() < 1e-6);
+        let mut moved = g;
+        moved.offset = [3., 0., 1.];
+        moved.scale = 0.5;
+        let q = moved.placement(p, source);
+        let h = Fields::of(q, source);
+        assert!(near(h.offset, [3., 0., 1.], 1e-4), "{h:?}");
+        assert!((h.scale - 0.5).abs() < 1e-6 && (h.yaw - 30.).abs() < 1e-3);
+        // Previewing numeric targets with rotation is exact.
+        let d = between(current, q);
+        let got = d.placement(current);
+        assert!((got.scale - q.scale).abs() < 1e-6);
+        assert!(near(got.translation, q.translation, 1e-4));
+        assert!(got.quat().angle_between(q.quat()) < 1e-4);
     }
 }

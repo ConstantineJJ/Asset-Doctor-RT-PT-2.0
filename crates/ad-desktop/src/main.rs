@@ -135,6 +135,8 @@ struct App {
     /// ADR-0041 gizmo drag preview, kept until its placement edit finishes.
     model_preview: Option<model_gizmo::Delta>,
     model_pending: bool,
+    /// Ring being turned (its knob follows the preview).
+    model_turning: Option<usize>,
     /// Smoke: place, Undo, Redo, then a verified export of the placement.
     smoke_place: bool,
     place_smoke_done: bool,
@@ -575,7 +577,8 @@ impl App {
         }
         self.editing = false;
         // ADR-0041: the drag preview ends with its edit, applied or refused.
-        if std::mem::take(&mut self.model_pending) {
+        let placing = std::mem::take(&mut self.model_pending);
+        if placing {
             self.model_preview = None;
         }
         let prepare_ms = self.edit_started.elapsed().as_millis();
@@ -628,7 +631,11 @@ impl App {
                     return Err(error.into());
                 }
                 self.ui.set_status(
-                    format!("Правка не подготовлена, модель прежняя: {error}"),
+                    if placing {
+                        format!("Модель не перемещена, положение прежнее: {error}")
+                    } else {
+                        format!("Правка не подготовлена, модель прежняя: {error}")
+                    },
                     true,
                 );
                 return Ok(());
@@ -829,17 +836,44 @@ impl App {
             let mut delta = model_gizmo::Delta::new(model_gizmo::pivot(bounds));
             delta.factor = 1.5;
             delta.offset = [model_gizmo::handle_length(bounds), 0., 0.];
+            // A quarter turn about Y keeps the placed bounds exact below.
+            delta.turned = std::f32::consts::FRAC_PI_2;
+            delta.rotation = glam::Quat::from_rotation_y(delta.turned).to_array();
             let placement = delta.placement(asset.document().placement());
             eprintln!(
-                "place_smoke_target scale={} translation={:?}",
-                placement.scale, placement.translation
+                "place_smoke_target scale={} rotation={:?} translation={:?}",
+                placement.scale, placement.rotation, placement.translation
             );
             self.edit_mesh = Some(MeshId(0));
             // Then «В центр» + «На пол» on the placed bounds, as the buttons do.
-            let placed = ad_document::Bounds {
-                min: placement.apply(bounds.min),
-                max: placement.apply(bounds.max),
+            let mut placed = ad_document::Bounds {
+                min: [f32::INFINITY; 3],
+                max: [f32::NEG_INFINITY; 3],
             };
+            for i in 0..8 {
+                let corner = [
+                    if i & 1 == 0 {
+                        bounds.min[0]
+                    } else {
+                        bounds.max[0]
+                    },
+                    if i & 2 == 0 {
+                        bounds.min[1]
+                    } else {
+                        bounds.max[1]
+                    },
+                    if i & 4 == 0 {
+                        bounds.min[2]
+                    } else {
+                        bounds.max[2]
+                    },
+                ];
+                let p = placement.apply(corner);
+                for a in 0..3 {
+                    placed.min[a] = placed.min[a].min(p[a]);
+                    placed.max[a] = placed.max[a].max(p[a]);
+                }
+            }
             let grounded = model_gizmo::on_floor(model_gizmo::centred(placement, placed), placed);
             self.edit_queue = VecDeque::from([
                 EditKind::Place(placement),
@@ -919,9 +953,10 @@ impl App {
             (b.min[2] + b.max[2]) * 0.5
         );
         eprintln!(
-            "place_export_verified revision={} scale={} translation={:?} bytes={} source_bytes={}",
+            "place_export_verified revision={} scale={} rotation={:?} translation={:?} bytes={} source_bytes={}",
             document.revision(),
             placement.scale,
+            placement.rotation,
             placement.translation,
             verified.bytes().len(),
             document.source().len()
@@ -1645,9 +1680,34 @@ impl App {
                 .model_preview
                 .get_or_insert_with(|| model_gizmo::Delta::new(model_gizmo::pivot(bounds)));
             let drag = [nx * width as f32, ny * height as f32];
+            let camera = &self.camera;
+            let px = |p: [f32; 3]| {
+                camera
+                    .project(p, width, height)
+                    .map(|[x, y]| [x * width as f32, y * height as f32])
+            };
             match handle {
+                model_gizmo::Handle::Rotate(axis) => {
+                    self.model_turning = Some(axis);
+                    let origin = delta
+                        .matrix()
+                        .transform_point3(glam::Vec3::from_array(delta.pivot));
+                    let origin = origin.to_array();
+                    let radius = model_gizmo::ring_radius(bounds) * delta.factor;
+                    let base = model_gizmo::knob_angle(axis, origin, camera.eye(width, height));
+                    let knob = model_gizmo::knob(axis, origin, radius, base, delta.turned);
+                    let tangent = model_gizmo::knob_tangent(axis, origin, knob);
+                    // Screen motion per radian, from a small step along the tangent.
+                    let step = 1e-3;
+                    let ahead = [0, 1, 2].map(|a| knob[a] + tangent[a] * step);
+                    if let (Some(a), Some(b)) = (px(knob), px(ahead)) {
+                        let tangent_px = [(b[0] - a[0]) / step, (b[1] - a[1]) / step];
+                        model_gizmo::drag_turn(delta, axis, drag, tangent_px);
+                    }
+                }
                 model_gizmo::Handle::Axis(axis) => {
-                    if let Some(g) = model_gizmo::screen(&self.camera, bounds, None, width, height)
+                    if let Some(g) =
+                        model_gizmo::screen(&self.camera, bounds, None, None, width, height)
                         && let Some(end) = g.ends[axis]
                     {
                         let axis_px = [
@@ -1660,6 +1720,9 @@ impl App {
                 }
                 model_gizmo::Handle::Scale => model_gizmo::drag_scale(delta, current, drag[1]),
             }
+        }
+        if actions.model_drag_end {
+            self.model_turning = None;
         }
         if actions.model_drag_end && !self.model_pending {
             match self.model_preview {
@@ -1731,6 +1794,7 @@ impl App {
                 &self.camera,
                 asset.snapshot().bounds,
                 self.model_preview.as_ref(),
+                self.model_turning,
                 view_w,
                 view_h,
             )
@@ -1754,16 +1818,19 @@ impl App {
                 a.document().placement()
             });
         self.ui.lamp_gizmo = self.current.as_ref().and_then(|_| {
+            let camera = &self.camera;
+            let guides = lamp::guides(self.ui.lighting.direction, |d| {
+                camera.project_direction(d, LAMP_DISTANCE, view_w, view_h)
+            });
             Some(viewer_ui::LampGizmo {
-                lamp: self.camera.project_direction(
+                lamp: camera.project_direction(
                     self.ui.lighting.direction,
                     LAMP_DISTANCE,
                     view_w,
                     view_h,
                 )?,
-                center: self
-                    .camera
-                    .project_direction([0., 1., 0.], 0., view_w, view_h)?,
+                center: camera.project_direction([0., 1., 0.], 0., view_w, view_h)?,
+                guides: Some(std::sync::Arc::new(guides)),
             })
         });
         let (mut frame, actions) = self
@@ -1790,20 +1857,21 @@ impl App {
                 camera.project_direction(d, LAMP_DISTANCE, width, height)
             });
         }
+        if let Some([turn_azimuth, turn_elevation]) = actions.lamp_turn {
+            let (azimuth, elevation) = lamp::angles(self.ui.lighting.direction);
+            self.ui.lighting.direction =
+                lamp::from_angles(azimuth + turn_azimuth, elevation + turn_elevation);
+        }
         if actions.lamp_from_camera {
             self.ui.lighting.direction = self.camera.view_direction();
         }
         let floor_grid = self.ui.floor.and_then(|theme| {
             self.current.as_ref().and_then(|asset| {
                 // ADR-0041: the floor stays at the imported model's bottom,
-                // so a moved model is seen moving against it.
-                let placement = asset.document().placement();
-                let bounds = asset.snapshot().bounds;
-                ad_render_vulkan::grid::grid_for_bounds(
-                    placement.unapply(bounds.min),
-                    placement.unapply(bounds.max),
-                )
-                .map(|grid| ad_render_vulkan::grid::GridSettings { theme, ..grid })
+                // so a moved or turned model is seen moving against it.
+                let bounds = asset.snapshot().source_bounds;
+                ad_render_vulkan::grid::grid_for_bounds(bounds.min, bounds.max)
+                    .map(|grid| ad_render_vulkan::grid::GridSettings { theme, ..grid })
             })
         });
         renderer.set_grid(floor_grid);
@@ -1844,12 +1912,19 @@ impl App {
             }
         }));
         renderer.set_camera(view_projection, self.camera.eye(width, height))?;
+        let lamp_direction = self.ui.lighting.direction;
         renderer.set_model_preview(self.model_preview.map(|delta| {
             let m = delta.matrix();
+            let inverse = m.inverse();
             (
                 (glam::Mat4::from_cols_array_2d(&view_projection) * m).to_cols_array_2d(),
-                m.inverse()
+                inverse
                     .transform_point3(glam::Vec3::from_array(self.camera.eye(width, height)))
+                    .to_array(),
+                // The lamp in the previewed model's frame: it does not turn.
+                inverse
+                    .transform_vector3(glam::Vec3::from_array(lamp_direction))
+                    .normalize_or_zero()
                     .to_array(),
             )
         }));
@@ -2579,6 +2654,7 @@ fn run() -> GpuResult<()> {
         last_view: (1, 1),
         model_preview: None,
         model_pending: false,
+        model_turning: None,
         smoke_place,
         place_smoke_done: false,
         skybox_job: None,

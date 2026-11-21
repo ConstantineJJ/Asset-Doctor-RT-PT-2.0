@@ -60,6 +60,9 @@ impl StagedScene<'_> {
     }
 }
 
+/// ADR-0041 drag preview: view-projection including the preview transform,
+/// the eye and the lamp direction in the previewed model's frame.
+pub type ModelPreview = ([[f32; 4]; 4], [f32; 3], [f32; 3]);
 /// One in-flight frame for the lifecycle experiment. No asset/document ownership.
 pub struct Renderer {
     swapchain: Option<Swapchain>,
@@ -90,7 +93,7 @@ pub struct Renderer {
     environment_light_frames: u64,
     /// ADR-0041 drag preview: view-projection and eye used for the model only
     /// (floor and sky keep the camera's).
-    model_preview: Option<([[f32; 4]; 4], [f32; 3])>,
+    model_preview: Option<ModelPreview>,
     /// ADR-0042 render channel and wireframe overlay.
     channel: crate::lighting::Channel,
     wireframe: bool,
@@ -283,10 +286,16 @@ impl Renderer {
         Ok(())
     }
     /// ADR-0041: while the model gizmo is dragged, draw the model with this
-    /// view-projection and eye (already including the preview move/scale).
-    pub fn set_model_preview(&mut self, preview: Option<([[f32; 4]; 4], [f32; 3])>) {
-        self.model_preview =
-            preview.filter(|(m, e)| m.iter().flatten().chain(e.iter()).all(|v| v.is_finite()));
+    /// view-projection, eye and lamp direction (already including the preview
+    /// move, turn and scale, so the light stays put while the model turns).
+    pub fn set_model_preview(&mut self, preview: Option<ModelPreview>) {
+        self.model_preview = preview.filter(|(m, e, l)| {
+            m.iter()
+                .flatten()
+                .chain(e.iter())
+                .chain(l.iter())
+                .all(|v| v.is_finite())
+        });
     }
     /// ADR-0042: show a data channel instead of lit shading.
     pub fn set_channel(&mut self, channel: crate::lighting::Channel) {
@@ -461,12 +470,10 @@ impl Renderer {
                     sky_zenith: sky_light[0],
                     sky_horizon: sky_light[1],
                     sky_ground: sky_light[2],
-                    light_direction: [
-                        self.lighting.direction[0],
-                        self.lighting.direction[1],
-                        self.lighting.direction[2],
-                        0.,
-                    ],
+                    light_direction: {
+                        let d = self.model_preview.map_or(self.lighting.direction, |p| p.2);
+                        [d[0], d[1], d[2], 0.]
+                    },
                     light_view_projection: self
                         .active_shadow()
                         .map_or([[0.; 4]; 4], |s| s.light_view_projection),
