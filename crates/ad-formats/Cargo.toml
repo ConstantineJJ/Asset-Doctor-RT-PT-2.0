@@ -5,7 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-ad-document = { path = "../ad-document", version = "=2.5.1" }
+ad-document = { path = "../ad-document", version = "=2.5.2" }
 gltf = { version = "=1.4.1", default-features = false, features = ["utils", "names", "extras"] }
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg"] }
 serde = "=1.0.229"

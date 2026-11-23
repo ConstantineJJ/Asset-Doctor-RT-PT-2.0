@@ -8,7 +8,7 @@ publish.workspace = true
 ash = "=0.38.0"
 ash-window = "=0.13.0"
 raw-window-handle = "=0.6.2"
-ad-document = { path = "../ad-document", version = "=2.5.1" }
+ad-document = { path = "../ad-document", version = "=2.5.2" }
 egui = { version = "=0.36.2", default-features = false }
 egui-ash-renderer = { version = "=0.13.0", default-features = false }
 
