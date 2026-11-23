@@ -1,4 +1,6 @@
-//! Verified new-path GLB storage; no dialogs, renderer or history ownership.
+//! Verified GLB storage; no dialogs, renderer or history ownership.
+#[cfg(windows)]
+mod replace;
 use ad_document::{
     AssetDocument, AssetError, AssetResult, Cancellation, DocumentStamp, DocumentTag, ErrorCode,
 };
@@ -172,7 +174,7 @@ fn save_copy_with(
         destination,
         cancel,
         hook,
-        |staging, destination| fs::hard_link(staging, destination).map_err(io_error),
+        |staging, destination| fs::hard_link(&staging.path, destination).map_err(io_error),
     )
     .map(|(receipt, ())| receipt)
 }
@@ -188,29 +190,16 @@ pub struct Replaced {
 pub fn discard_backup(backup: &Path) -> AssetResult<()> {
     fs::remove_file(backup).map_err(io_error)
 }
+#[cfg(windows)]
 fn conflict() -> AssetError {
     AssetError::new(
         ErrorCode::Conflict,
         "The working file changed on disk since it was opened or saved; it was not overwritten",
     )
 }
-/// True when the file holds exactly `expected` (bounded read).
-fn holds(path: &Path, expected: &[u8]) -> AssetResult<bool> {
-    let file = File::open(path).map_err(io_error)?;
-    let mut bytes = Vec::new();
-    Read::take(file, expected.len() as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(io_error)?;
-    Ok(bytes == expected)
-}
 
-/// «Сохранить» (ADR-0035): replaces an existing absolute .glb working file
-/// with verified bytes. `on_disk` is what the program believes the file holds
-/// (the bytes it opened or last saved); any difference refuses the overwrite.
-/// The same staging, write-through and readback as Save Copy run first. Then
-/// the original is renamed to a sibling backup and the staged file is linked
-/// in its place; if linking fails the backup is renamed back. Any failure
-/// before that point leaves the working file untouched.
+/// Replace an existing working GLB, keeping the displaced file until the
+/// caller has independently reimported the save (ADR-0035).
 pub fn save_replace(
     verified: &VerifiedGlb,
     document: &AssetDocument,
@@ -230,61 +219,38 @@ fn save_replace_with(
     cancel: &Cancellation,
     hook: impl FnMut(Stage, &mut File) -> AssetResult<()>,
 ) -> AssetResult<Replaced> {
-    if !destination.is_file() {
-        return Err(AssetError::new(
-            ErrorCode::Io,
-            "«Сохранить» requires an existing working .glb file",
-        ));
-    }
-    if !holds(destination, on_disk)? {
-        return Err(conflict());
-    }
-    let (receipt, backup) = save_with(
-        verified,
-        document,
-        destination,
-        cancel,
-        hook,
-        |staging, destination| {
-            // Re-check just before the swap: no silent overwrite of outside edits.
-            if !holds(destination, on_disk)? {
-                return Err(conflict());
-            }
-            let backup = backup_path(destination)?;
-            fs::rename(destination, &backup).map_err(io_error)?;
-            if let Err(error) = fs::hard_link(staging, destination) {
-                return Err(match fs::rename(&backup, destination) {
-                    Ok(()) => io_error(error),
-                    Err(restore) => AssetError::new(
-                        ErrorCode::Io,
-                        format!(
-                            "«Сохранить» failed ({error}) and the original could not be put back ({restore}); it is kept at {}",
-                            backup.display()
-                        ),
-                    ),
-                });
-            }
-            Ok(backup)
-        },
-    )?;
-    Ok(Replaced { receipt, backup })
-}
-fn backup_path(destination: &Path) -> AssetResult<PathBuf> {
-    let name = destination
-        .file_name()
-        .ok_or_else(|| AssetError::new(ErrorCode::Io, "Missing destination filename"))?
-        .to_string_lossy()
-        .into_owned();
-    for n in 0..64 {
-        let path = destination.with_file_name(format!(".{name}.asset-doctor-backup-{n}"));
-        if !path.exists() {
-            return Ok(path);
+    #[cfg(windows)]
+    {
+        verified.verify_current(document, cancel)?;
+        if destination.is_absolute()
+            && destination
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("glb"))
+            && !destination.try_exists().map_err(io_error)?
+        {
+            replace::recover_missing(destination, on_disk, cancel)?;
         }
+        replace::verify_expected(destination, on_disk, cancel)?;
+        let (receipt, backup) = save_with(
+            verified,
+            document,
+            destination,
+            cancel,
+            hook,
+            |staging, destination| {
+                replace::publish(staging, destination, on_disk, verified.bytes(), cancel)
+            },
+        )?;
+        Ok(Replaced { receipt, backup })
     }
-    Err(AssetError::new(
-        ErrorCode::Io,
-        "Too many old «Сохранить» backups beside the working file",
-    ))
+    #[cfg(not(windows))]
+    {
+        let _ = (verified, document, destination, on_disk, cancel, hook);
+        Err(AssetError::new(
+            ErrorCode::Unsupported,
+            "Replacing a working GLB requires Windows",
+        ))
+    }
 }
 
 fn save_with<T>(
@@ -293,7 +259,7 @@ fn save_with<T>(
     destination: &Path,
     cancel: &Cancellation,
     mut hook: impl FnMut(Stage, &mut File) -> AssetResult<()>,
-    publish: impl FnOnce(&Path, &Path) -> AssetResult<T>,
+    publish: impl FnOnce(&mut Staging, &Path) -> AssetResult<T>,
 ) -> AssetResult<(SavedCopy, T)> {
     verified.verify_current(document, cancel)?;
     if !destination.is_absolute()
@@ -346,8 +312,8 @@ fn save_with<T>(
         }
         hook(Stage::Ready, file)?;
         verified.verify_current(document, cancel)?;
-        // Publication commit point. There are no fallible/cancellation checks below.
-        publish(&staging.path, &destination)
+        // The publisher owns cancellation and recovery at the commit point.
+        publish(&mut staging, &destination)
     })();
     let cleanup = staging.cleanup();
     match result {
