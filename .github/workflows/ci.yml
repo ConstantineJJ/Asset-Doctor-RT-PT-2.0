@@ -2,11 +2,25 @@ name: Windows foundation
 on:
   push:
   pull_request:
+  # ADR-0049: a release is published only by a manual run with publish = true,
+  # after the owner approves it.
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish GitHub release v<Cargo version> (owner approved)'
+        type: boolean
+        default: false
+      notes:
+        description: 'Release notes (shown in the program update window)'
+        type: string
+        default: ''
 permissions:
   contents: read
 jobs:
   windows-msvc:
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.package.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - name: Install pinned Rust components
@@ -23,18 +37,53 @@ jobs:
         run: cargo deny check
       - name: Build Windows executable
         run: cargo build --workspace --release --locked
-      # The program looks for its bundled panoramas in assets/360.HDR next to
-      # the executable, so the artifact is the program folder.
-      - name: Stage program folder
+      # The program folder: the program, its updater and the bundled
+      # panoramas it looks for in assets/360.HDR next to the executable.
+      # The zip and its SHA-256 are the release assets the updater uses.
+      - name: Package program folder
+        id: package
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force dist/assets | Out-Null
-          Copy-Item target/release/AssetDoctorRTPT.exe, target/release/ad-render-vulkan.exe dist/
-          Copy-Item -Recurse assets/360.HDR dist/assets/
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(\d+\.\d+\.\d+)"').Matches[0].Groups[1].Value
+          if (-not $version) { throw 'No workspace version in Cargo.toml.' }
+          New-Item -ItemType Directory -Force dist/AssetDoctorRTPT/assets, release | Out-Null
+          Copy-Item target/release/AssetDoctorRTPT.exe, target/release/AssetDoctorRTPT-Updater.exe dist/AssetDoctorRTPT/
+          Copy-Item -Recurse assets/360.HDR dist/AssetDoctorRTPT/assets/
           Get-ChildItem -Recurse dist | Select-Object FullName, Length
+          $zip = 'release/AssetDoctorRTPT-win-x64.zip'
+          Compress-Archive -Path 'dist/AssetDoctorRTPT/*' -DestinationPath $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  AssetDoctorRTPT-win-x64.zip" | Set-Content release/AssetDoctorRTPT-win-x64.sha256 -Encoding ascii
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "AD RT-PT v$version  sha256=$hash"
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-msvc-foundation
-          path: dist/
+          name: AssetDoctorRTPT-win-x64
+          path: release/
           if-no-files-found: error
       # Hosted build agents do not certify Vulkan presentation or installed UI.
+
+  release:
+    needs: windows-msvc
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: AssetDoctorRTPT-win-x64
+          path: release
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.windows-msvc.outputs.version }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          $tag = "v$env:VERSION"
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) { throw "Release $tag already exists." }
+          $notes = if ($env:NOTES) { $env:NOTES } else { "AD RT-PT $tag" }
+          gh release create $tag release/AssetDoctorRTPT-win-x64.zip release/AssetDoctorRTPT-win-x64.sha256 `
+            --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "AD RT-PT $tag" --notes $notes
