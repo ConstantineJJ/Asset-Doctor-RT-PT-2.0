@@ -26,6 +26,7 @@ mod saving;
 mod skybox;
 mod skybox_library;
 mod ui_model;
+mod updates;
 mod viewer_ui;
 mod worker;
 
@@ -131,6 +132,12 @@ struct App {
     /// Picking: draw boxes and node parents of the shown snapshot; where the
     /// left button went down (a click selects).
     pick_cache: Option<PickCache>,
+    /// ADR-0049 updates: background check/download, the start marker the
+    /// updater waits for, and the exit for an update.
+    updates: updates::Updates,
+    update_ok_file: Option<PathBuf>,
+    exit_after_start: bool,
+    exit_for_update: bool,
     /// Pointer position (pixels) waiting for the hover pick of the next
     /// frame: one pick per frame however many moves arrive.
     hover_request: Option<(f64, f64)>,
@@ -1183,6 +1190,63 @@ impl App {
         }
         if self.smoke_queue {
             self.queue_smoke_done = true;
+        }
+    }
+    /// ADR-0049: start-up state of updates (after an update or a rollback)
+    /// and the quiet start-up check.
+    fn start_updates(
+        &mut self,
+        smoke_update: bool,
+        updated: (Option<String>, Option<String>),
+        failed: Option<String>,
+        smoke_run: bool,
+    ) {
+        self.updates.auto_install = smoke_update;
+        if smoke_update {
+            // The restarted program closes after its first frame.
+            self.updates.restart_args.push("--exit-after-start".into());
+        }
+        if let (Some(from), Some(to)) = updated {
+            eprintln!("update_restarted from={from} to={to}");
+            self.ui
+                .set_status(format!("Обновлено с v{from} до {to}"), false);
+            if let Ok(root) = ad_update::updates_root(self.updates.root.as_deref()) {
+                ad_update::stage::prune(&root, 1);
+            }
+        }
+        if let Some(reason) = failed {
+            eprintln!("update_rolled_back reason={reason}");
+            self.ui
+                .set_status(format!("Обновление не установлено: {reason}"), true);
+        }
+        let allowed = if smoke_run {
+            smoke_update
+        } else {
+            !self.exit_after_start
+        };
+        if allowed && (self.ui.update.check_on_start || smoke_update) {
+            self.updates.check(&mut self.ui.update, true);
+        }
+    }
+    /// Background update results; a staged update starts the updater and
+    /// closes the program.
+    fn poll_updates(&mut self) {
+        self.ui.update.can_install = !self.is_dirty();
+        let Some(staged) = self.updates.poll(&mut self.ui.update) else {
+            return;
+        };
+        if self.is_dirty() {
+            self.ui.update.phase = updates::Phase::Failed(
+                "есть несохранённые правки: сохраните модель и повторите".into(),
+            );
+            return;
+        }
+        match self.updates.launch(&staged) {
+            Ok(()) => {
+                self.ui.update.phase = updates::Phase::Installing;
+                self.exit_for_update = true;
+            }
+            Err(error) => self.ui.update.phase = updates::Phase::Failed(error),
         }
     }
     fn is_dirty(&self) -> bool {
@@ -2506,6 +2570,24 @@ impl App {
         if actions.skybox_load {
             self.pending_skybox_choose = true;
         }
+        if actions.update_check {
+            self.updates.check(&mut self.ui.update, false);
+        }
+        if actions.update_cancel {
+            self.updates.cancel(&mut self.ui.update);
+        }
+        if actions.update_install
+            && let updates::Phase::Available(release) = self.ui.update.phase.clone()
+        {
+            if self.is_dirty() {
+                self.ui.set_status(
+                    "Обновление: сначала сохраните модель или отмените правки",
+                    true,
+                );
+            } else {
+                self.updates.install(&mut self.ui.update, release);
+            }
+        }
         if let Some(path) = actions.skybox_open.clone() {
             self.skybox_job = Some(skybox::spawn(path, self.skybox_width()));
             self.ui.set_status("Загрузка скайбокса...", false);
@@ -2656,6 +2738,22 @@ impl App {
             self.start_overwrite();
         }
         self.poll_skybox();
+        self.poll_updates();
+        if self.exit_for_update {
+            self.finish(event_loop);
+            return Ok(());
+        }
+        // The first frame is on screen: tell the updater this version starts.
+        if self.renderer.as_ref().is_some_and(|r| r.frames > 0) {
+            if let Some(marker) = self.update_ok_file.take() {
+                let written = std::fs::write(&marker, env!("CARGO_PKG_VERSION"));
+                eprintln!("update_ok_written ok={}", written.is_ok());
+            }
+            if self.exit_after_start {
+                self.finish(event_loop);
+                return Ok(());
+            }
+        }
         self.advance_input_smoke();
         self.save_bindings();
         if std::mem::take(&mut self.pending_save) {
@@ -3132,6 +3230,26 @@ fn run() -> GpuResult<()> {
     let mut initial_view = None;
     let mut smoke_work_tree = false;
     let mut smoke_select = false;
+    // ADR-0049 updates. The updater passes these on to the restarted
+    // program so that a smoke run keeps using its own files.
+    let mut updates = updates::Updates::default();
+    let mut smoke_update = false;
+    let mut update_ok_file = None;
+    let mut exit_after_start = false;
+    let mut updated = (None, None);
+    let mut update_failed = None;
+    for key in [
+        "--view-settings",
+        "--history",
+        "--bindings",
+        "--updates-root",
+    ] {
+        if let Some(i) = argv.iter().position(|a| a == key)
+            && let Some(value) = argv.get(i + 1)
+        {
+            updates.restart_args.extend([key.to_owned(), value.clone()]);
+        }
+    }
     let mut args = argv.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -3288,6 +3406,26 @@ fn run() -> GpuResult<()> {
                     args.next().ok_or("--history needs a file path")?,
                 ))
             }
+            "--update-feed" => {
+                updates.feed = ad_update::Feed::Local(PathBuf::from(
+                    args.next().ok_or("--update-feed needs a folder")?,
+                ))
+            }
+            "--updates-root" => {
+                updates.root = Some(PathBuf::from(
+                    args.next().ok_or("--updates-root needs a folder")?,
+                ))
+            }
+            "--smoke-update" => smoke_update = true,
+            "--update-ok-file" => {
+                update_ok_file = Some(PathBuf::from(
+                    args.next().ok_or("--update-ok-file needs a path")?,
+                ))
+            }
+            "--updated-from" => updated.0 = args.next(),
+            "--updated-to" => updated.1 = args.next(),
+            "--update-failed" => update_failed = args.next(),
+            "--exit-after-start" => exit_after_start = true,
             "--smoke-repair" => {
                 smoke_repair = match args.next().as_deref() {
                     Some("g001") => ad_heal::RepairKind::DegenerateTriangles,
@@ -3413,6 +3551,10 @@ fn run() -> GpuResult<()> {
         object_drag: None,
         press_right: None,
         pick_cache: None,
+        updates,
+        update_ok_file,
+        exit_after_start,
+        exit_for_update: false,
         hover_request: None,
         press: None,
         smoke_select,
@@ -3487,6 +3629,7 @@ fn run() -> GpuResult<()> {
         smoke_repair,
         ui,
     };
+    app.start_updates(smoke_update, updated, update_failed, smoke_run);
     event_loop.run_app(&mut app)?;
     if let Some(error) = app.error {
         return Err(error.into());

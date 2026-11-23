@@ -88,6 +88,7 @@ impl ViewerUi {
             })),
             "model_gizmo": self.model_gizmo_on,
             "log_to_file": self.log_to_file,
+            "check_updates": self.update.check_on_start,
             "outline": self.outline_on,
             "outline_color": self.outline_color,
             "layout": {
@@ -295,6 +296,12 @@ impl ViewerUi {
         }
         flag(value, "model_gizmo", &mut self.model_gizmo_on, &mut bad);
         flag(value, "log_to_file", &mut self.log_to_file, &mut bad);
+        flag(
+            value,
+            "check_updates",
+            &mut self.update.check_on_start,
+            &mut bad,
+        );
         flag(value, "outline", &mut self.outline_on, &mut bad);
         match value.get("outline_color") {
             None => {}

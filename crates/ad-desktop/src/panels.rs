@@ -351,7 +351,7 @@ impl ViewerUi {
                     .show(ui, |ui| {
                         ui.set_width(350.);
                         match menu {
-                            TopMenu::Settings => self.settings_menu(ui),
+                            TopMenu::Settings => self.settings_menu(ui, actions),
                             TopMenu::View => self.view_menu(ui),
                             TopMenu::Grid => self.grid_menu(ui),
                             TopMenu::Light => self.light_menu(ui),
@@ -387,7 +387,7 @@ impl ViewerUi {
         ui.label(RichText::new(title).strong().size(14.5));
     }
 
-    fn settings_menu(&mut self, ui: &mut egui::Ui) {
+    fn settings_menu(&mut self, ui: &mut egui::Ui, actions: &mut Actions) {
         Self::heading(ui, "Управление");
         ui.weak("Клавиши и кнопки мыши, включая боковые: переназначение, конфликты, сброс.");
         if ui.button("Клавиши и мышь…").clicked() {
@@ -431,6 +431,9 @@ impl ViewerUi {
             self.help = true;
             self.menu = None;
         }
+        ui.separator();
+        Self::heading(ui, "Обновления");
+        self.update_settings(ui, actions);
     }
 
     fn view_menu(&mut self, ui: &mut egui::Ui) {
