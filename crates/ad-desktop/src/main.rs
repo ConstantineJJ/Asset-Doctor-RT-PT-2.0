@@ -598,6 +598,13 @@ impl App {
         Ok(())
     }
     fn request_edit(&mut self, kind: EditKind) -> bool {
+        self.request_edit_with_clip(kind, None)
+    }
+    fn request_edit_with_clip(
+        &mut self,
+        kind: EditKind,
+        clip: Option<ad_document::ClipEdit>,
+    ) -> bool {
         let Some(asset) = self.current.as_ref() else {
             return false;
         };
@@ -610,11 +617,12 @@ impl App {
             self.ui.set_status(error.to_string(), false);
             return false;
         }
-        let ticket = self.edits.request(EditInput {
+        let input = EditInput {
             session: asset.session.clone(),
             base: asset.generation.stamp.clone(),
             kind,
-        });
+        };
+        let ticket = self.edits.request_with_clip(input, clip);
         self.editing = true;
         self.edit_started = Instant::now();
         self.edit_busy = match kind {
@@ -628,6 +636,7 @@ impl App {
             EditKind::Node(ad_document::NodeOp::Local(..)) => "Перемещение объекта…",
             EditKind::Node(ad_document::NodeOp::Detach(_)) => "Удаление объекта…",
             EditKind::Animation(edits::AnimationEdit::Key(_), _) => "Проверка ключа и экспорта GLB…",
+            EditKind::Animation(edits::AnimationEdit::Clip, _) => "Проверка клипа и экспорта GLB…",
             EditKind::Undo | EditKind::Animation(edits::AnimationEdit::Undo, _) => "Подготовка отмены правки…",
             EditKind::Redo | EditKind::Animation(edits::AnimationEdit::Redo, _) => "Подготовка повтора правки…",
         }
@@ -2398,7 +2407,7 @@ impl App {
                 guides: Some(std::sync::Arc::new(guides)),
             })
         });
-        let (mut frame, actions) = self
+        let (mut frame, mut actions) = self
             .ui
             .frame(&window, self.current.as_ref(), self.importing);
         if actions.cancel {
@@ -2619,6 +2628,16 @@ impl App {
         }
         if let Some(preview) = actions.animation_preview {
             self.playback.preview(preview);
+        }
+        if let Some(clip_edit) = actions.clip_edit.take() {
+            let controls = self.playback.controls;
+            self.request_edit_with_clip(
+                EditKind::Animation(
+                    edits::AnimationEdit::Clip,
+                    controls.clip.map(|clip| (clip, controls.time)),
+                ),
+                Some(clip_edit),
+            );
         }
         if let Some(key) = actions.animation_key {
             self.request_edit(EditKind::Animation(edits::AnimationEdit::Key(key), Some((key.clip, key.time))));
@@ -3223,6 +3242,7 @@ fn edit_name(kind: EditKind) -> &'static str {
         EditKind::Node(ad_document::NodeOp::Detach(_)) => "delete_object",
         EditKind::Animation(edits::AnimationEdit::Key(key), _) if key.remove => "delete_key",
         EditKind::Animation(edits::AnimationEdit::Key(_), _) => "set_key",
+        EditKind::Animation(edits::AnimationEdit::Clip, _) => "edit_clip",
         EditKind::Undo | EditKind::Animation(edits::AnimationEdit::Undo, _) => "undo",
         EditKind::Redo | EditKind::Animation(edits::AnimationEdit::Redo, _) => "redo",
     }

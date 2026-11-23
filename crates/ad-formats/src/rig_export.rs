@@ -33,7 +33,7 @@ pub(super) fn verify(
     if source_bytes.len() > max {
         return Err(budget());
     }
-    let bytes = if view.animation_clips().any(|clip| clip.is_edited()) {
+    let bytes = if view.animations_changed() {
         encode(view, source_bytes, max, limits, import, cancel)?
     } else {
         source_bytes.clone()
@@ -108,12 +108,40 @@ fn encode(
         return Err(budget());
     }
     let (mut meta, _) = metadata::parse(&parsed.glb.json, limits.metadata_values, cancel)?;
+    let root = meta.as_object_mut().ok_or_else(invalid)?;
+    let original = match root.remove("animations") {
+        None => Vec::new(),
+        Some(Value::Array(clips)) => clips,
+        _ => return Err(invalid()),
+    };
+    if original.len() != view.document().source_clip_count() {
+        return Err(invalid());
+    }
+    let mut animations = Vec::new();
+    animations
+        .try_reserve_exact(view.animation_clips().len())
+        .map_err(|_| budget())?;
     let mut suffix = Vec::new();
     let mut bin_len = bin.len();
-    for (index, clip) in view.animation_clips().enumerate().filter(|(_, clip)| clip.is_edited()) {
+    for (index, clip) in view.animation_clips().enumerate() {
         cancel.check()?;
-        let animation = array(&mut meta, "animations")?.get_mut(index).ok_or_else(invalid)?;
-        let mut animation = std::mem::take(animation);
+        let mut animation = match clip.source_clip() {
+            Some(index) => original.get(index).cloned().ok_or_else(invalid)?,
+            None => json!({"channels": [], "samplers": []}),
+        };
+        if !clip.is_edited() {
+            if clip.source_clip() != Some(index)
+                && animation
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_none_or(str::is_empty)
+            {
+                animation["name"] = json!(clip.name);
+            }
+            animations.push(animation);
+            continue;
+        }
+        animation["name"] = json!(clip.name);
         let original_channels = std::mem::take(array(&mut animation, "channels")?);
         let mut channels = Vec::new();
         channels.try_reserve_exact(clip.tracks().len()).map_err(|_| budget())?;
@@ -162,7 +190,10 @@ fn encode(
             channels.push(channel);
         }
         *array(&mut animation, "channels")? = channels;
-        array(&mut meta, "animations")?[index] = animation;
+        animations.push(animation);
+    }
+    if !animations.is_empty() {
+        meta["animations"] = Value::Array(animations);
     }
     array(&mut meta, "buffers")?.first_mut().ok_or_else(invalid)?["byteLength"] = json!(bin_len);
     let mut output = Limited { bytes: Vec::new(), max: max_json, cancel, failure: None };

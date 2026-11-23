@@ -275,6 +275,18 @@ impl Session {
         }
         Ok(plan)
     }
+    pub fn prepare_clip_edit(
+        &self,
+        expected: DocumentTag,
+        edit: &ad_document::ClipEdit,
+        cancel: &Cancellation,
+    ) -> AssetResult<PreparedRemoval> {
+        let plan = self.document.prepare_clip_edit(expected, edit, cancel)?;
+        if plan.changes() {
+            self.admit(plan.retained_bytes())?;
+        }
+        Ok(plan)
+    }
     pub fn commit(
         &mut self,
         plan: PreparedRemoval,

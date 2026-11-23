@@ -18,6 +18,7 @@ pub(crate) struct Controls {
     pub time: f32,
     pub playing: bool,
     pub looping: bool,
+    pub speed: f32,
 }
 
 impl Default for Controls {
@@ -27,6 +28,7 @@ impl Default for Controls {
             time: 0.,
             playing: false,
             looping: true,
+            speed: 1.,
         }
     }
 }
@@ -139,7 +141,8 @@ impl Playback {
         let now = Instant::now();
         let duration = asset.document().animation_clips()[clip].duration;
         if let Some((start, offset)) = self.anchor {
-            let time = f64::from(offset) + now.duration_since(start).as_secs_f64();
+            let time = f64::from(offset)
+                + now.duration_since(start).as_secs_f64() * f64::from(self.controls.speed);
             if self.controls.looping && duration > 0. {
                 self.controls.time = (time % f64::from(duration)) as f32;
             } else if time >= f64::from(duration) {

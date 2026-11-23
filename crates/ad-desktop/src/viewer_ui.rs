@@ -50,6 +50,7 @@ pub enum HealthPage {
 pub struct Actions {
     pub(crate) playback: Option<crate::rig_playback::Controls>,
     pub(crate) animation_key: Option<ad_document::AnimationKey>,
+    pub(crate) clip_edit: Option<ad_document::ClipEdit>,
     pub(crate) animation_preview: Option<Option<ad_document::ChannelValue>>,
     pub open: bool,
     pub fit: bool,

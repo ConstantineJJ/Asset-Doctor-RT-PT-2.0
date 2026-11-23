@@ -16,7 +16,9 @@ pub use indices::{
 pub use node_edits::{NodeEdits, NodeOp};
 pub use placement::Placement;
 pub use skin::{Influence, Rig, RigInspection, Skin, SkinReport};
-pub use skin_animation::{AnimationClip, AnimationKey, ChannelValue, Interpolation, Track, TrackKind, Transform};
+pub use skin_animation::{
+    AnimationClip, AnimationKey, ChannelValue, ClipEdit, Interpolation, Track, TrackKind, Transform,
+};
 pub use view::{CandidateIndices, DocumentView, Primitives};
 #[cfg(test)]
 mod index_tests;
@@ -174,6 +176,7 @@ pub struct AssetDocument {
     rig: Option<RigInspection>,
     animation_clips: Vec<Arc<AnimationClip>>,
     animation_bases: Vec<Option<Transform>>,
+    source_clip_count: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -398,6 +401,7 @@ impl AssetDocument {
             rig: None,
             animation_clips: Vec::new(),
             animation_bases: Vec::new(),
+            source_clip_count: 0,
             vertex_maps,
             parts,
             texture_stats: textures.stats,

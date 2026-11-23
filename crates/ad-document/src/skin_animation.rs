@@ -185,11 +185,19 @@ impl Track {
     }
 }
 
+#[path = "clip_edit.rs"]
+mod clip_edit;
+pub use clip_edit::ClipEdit;
+pub(crate) use clip_edit::animation_history_bytes;
+
+#[derive(Clone)]
 pub struct AnimationClip {
     pub name: String,
     pub duration: f32,
     tracks: Vec<Arc<Track>>,
     edited: bool,
+    id: u64,
+    source_clip: Option<usize>,
 }
 
 impl AnimationClip {
@@ -220,6 +228,8 @@ impl AnimationClip {
             duration,
             tracks,
             edited,
+            id: 0,
+            source_clip: None,
         })
     }
 }
@@ -244,14 +254,27 @@ impl AssetDocument {
         {
             return Err(invalid("Animation does not match the loaded document"));
         }
-        self.animation_clips = clips.into_iter().map(Arc::new).collect();
+        self.source_clip_count = clips.len();
+        self.animation_clips = clips
+            .into_iter()
+            .enumerate()
+            .map(|(index, mut clip)| {
+                clip.id = index as u64;
+                clip.source_clip = Some(index);
+                Arc::new(clip)
+            })
+            .collect();
         self.animation_bases = bases;
         Ok(self)
     }
 
     /// Rigged and animated documents protect geometry and scene transforms from edits.
     pub fn is_read_only(&self) -> bool {
-        self.rig().is_some() || !self.animation_clips.is_empty()
+        self.rig().is_some() || self.source_clip_count != 0
+    }
+
+    pub fn source_clip_count(&self) -> usize {
+        self.source_clip_count
     }
 
     pub fn animated_snapshot(
@@ -358,6 +381,14 @@ fn normalize_key(kind: TrackKind, mut value: [f32; 4]) -> AssetResult<[f32; 4]> 
 }
 
 impl AnimationClip {
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub fn source_clip(&self) -> Option<usize> {
+        self.source_clip
+    }
+
     pub fn tracks(&self) -> &[Arc<Track>] {
         &self.tracks
     }
@@ -410,8 +441,7 @@ impl AssetDocument {
         key: AnimationKey,
         cancel: &Cancellation,
     ) -> AssetResult<crate::PreparedRemoval> {
-        use crate::indices::{Alternate, budget};
-        use crate::{MeshId, PreparedRemoval, RemovalPreview};
+        use crate::indices::budget;
 
         self.verify_tag(expected, cancel)?;
         if !key.time.is_finite() || key.time < 0. {
@@ -456,29 +486,14 @@ impl AssetDocument {
             return Err(AssetError::new(ErrorCode::Unsupported, "В клипе должен остаться хотя бы один канал"));
         }
         let replacement = if changed {
-            Some(Arc::new(AnimationClip::build(clip.name.clone(), tracks, true, cancel)?))
+            let next = clip.with_tracks(tracks, cancel)?;
+            let mut clips = self.copy_clip_list(0)?;
+            clips[key.clip] = Arc::new(next);
+            Some(clips)
         } else {
             None
         };
-        let retained = replacement.as_ref().map_or(0, |next| {
-            next.retained_bytes().max(clip.retained_bytes())
-        });
-        let mesh = self.parts.meshes.first().ok_or_else(|| invalid("Animation requires a mesh"))?;
-        let triangles = mesh.indices.len() / 3;
-        let vertices = mesh.positions.len();
-        Ok(PreparedRemoval::new(
-            RemovalPreview {
-                tag: expected,
-                mesh: MeshId(0),
-                before_triangles: triangles,
-                after_triangles: triangles,
-                before_vertices: vertices,
-                after_vertices: vertices,
-            },
-            self.origin.clone(),
-            replacement.map(|clip| Alternate::Animation(key.clip, clip)),
-            retained,
-        ))
+        self.animation_plan(expected, replacement, cancel)
     }
 }
 

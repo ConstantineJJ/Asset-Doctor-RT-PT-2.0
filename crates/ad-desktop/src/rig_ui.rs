@@ -1,5 +1,7 @@
 use crate::{imports::PreparedAsset, rig_playback::Controls, viewer_ui::Actions};
-use ad_document::{AnimationClip, AnimationKey, AssetDocument, ChannelValue, NodeId, TrackKind};
+use ad_document::{
+    AnimationClip, AnimationKey, AssetDocument, ChannelValue, ClipEdit, NodeId, TrackKind,
+};
 use std::sync::Arc;
 
 pub(super) fn show(
@@ -15,10 +17,14 @@ pub(super) fn show(
     let document = asset.document();
     let clips = document.animation_clips();
     let before = controls;
+    if document.is_read_only() {
+        new_clip_button(ui, document, actions);
+    }
     if !clips.is_empty() {
         clip_controls(ui, clips, &mut controls);
         if let Some(clip) = controls.clip {
             ui.add_enabled_ui(!controls.playing, |ui| {
+                clip_properties(ui, document, clip, actions);
                 key_editor(ui, document, clip, &mut controls, actions);
             });
         }
@@ -139,8 +145,24 @@ fn clip_controls(
                 }
                 controls.playing = !controls.playing;
             }
+            if ui
+                .add_enabled(controls.playing || controls.time != 0., egui::Button::new("Стоп"))
+                .clicked()
+            {
+                controls.playing = false;
+                controls.time = 0.;
+            }
             ui.checkbox(&mut controls.looping, "Повтор");
         });
+        egui::ComboBox::from_id_salt("animation_preview_speed")
+            .selected_text(format!("{}×", controls.speed))
+            .show_ui(ui, |ui| {
+                for speed in [0.25, 0.5, 1., 1.5, 2.] {
+                    ui.selectable_value(&mut controls.speed, speed, format!("{speed}×"));
+                }
+            })
+            .response
+            .on_hover_text("Скорость предпросмотра");
         if ui
             .add(
                 egui::Slider::new(&mut controls.time, 0. ..=duration)
@@ -153,6 +175,95 @@ fn clip_controls(
             controls.playing = false;
         }
     }
+}
+
+fn new_clip_button(ui: &mut egui::Ui, document: &AssetDocument, actions: &mut Actions) {
+    let node_id = egui::Id::new(("animation_node", document.id().0));
+    let node = ui.ctx().data(|data| data.get_temp::<NodeId>(node_id))
+        .filter(|&node| document.can_animate_node(node))
+        .or_else(|| {
+            document.rig().into_iter().flat_map(|rig| &rig.skins)
+                .flat_map(|skin| skin.joints.iter().copied())
+                .find(|&node| document.can_animate_node(node))
+        })
+        .or_else(|| {
+            (0..document.nodes().len()).map(NodeId)
+                .find(|&node| document.can_animate_node(node))
+        });
+    if ui
+        .add_enabled(node.is_some(), egui::Button::new("Новый клип"))
+        .on_hover_text("Создать клип с ключом поворота в исходной позе")
+        .clicked()
+        && let Some(node) = node
+    {
+        let clips = document.animation_clips();
+        let mut number = clips.len() + 1;
+        let name = loop {
+            let name = format!("Клип {number}");
+            if !clips.iter().any(|clip| clip.name == name) {
+                break name;
+            }
+            number += 1;
+        };
+        actions.clip_edit = Some(ClipEdit::Create { name, node });
+    }
+}
+
+#[derive(Clone)]
+struct ClipDraft {
+    clip_id: u64,
+    revision: u64,
+    name: String,
+    duration: f32,
+}
+
+fn clip_properties(ui: &mut egui::Ui, document: &AssetDocument, clip: usize, actions: &mut Actions) {
+    let active = &document.animation_clips()[clip];
+    let id = egui::Id::new(("clip_properties", document.id().0));
+    egui::CollapsingHeader::new("Свойства клипа").id_salt(id).show(ui, |ui| {
+        let mut draft = ui.ctx().data(|data| data.get_temp::<ClipDraft>(id))
+            .filter(|draft| draft.clip_id == active.id() && draft.revision == document.revision())
+            .unwrap_or_else(|| ClipDraft {
+                clip_id: active.id(),
+                revision: document.revision(),
+                name: active.name.clone(),
+                duration: active.duration,
+            });
+        ui.add(egui::TextEdit::singleline(&mut draft.name).char_limit(120).hint_text("Название клипа"));
+        let name = draft.name.trim();
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add_enabled(!name.is_empty() && name != active.name, egui::Button::new("Переименовать"))
+                .clicked()
+            {
+                actions.clip_edit = Some(ClipEdit::Rename { clip, name: name.to_owned() });
+            }
+            if ui.button("Дублировать").clicked() {
+                let name = if name.is_empty() || name == active.name {
+                    let stem: String = active.name.trim().chars().take(112).collect();
+                    format!("{stem} (копия)").trim().to_owned()
+                } else {
+                    name.to_owned()
+                };
+                actions.clip_edit = Some(ClipEdit::Duplicate { clip, name });
+            }
+            if ui.button("Удалить клип").clicked() {
+                actions.clip_edit = Some(ClipEdit::Delete { clip });
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Длительность");
+            ui.add(egui::DragValue::new(&mut draft.duration)
+                .range(0. ..=f32::MAX).speed(0.01).max_decimals(6).suffix(" с"));
+            let can_retime = active.duration > 0.
+                && draft.duration > 0.
+                && draft.duration != active.duration;
+            if ui.add_enabled(can_retime, egui::Button::new("Применить")).clicked() {
+                actions.clip_edit = Some(ClipEdit::Retime { clip, duration: draft.duration });
+            }
+        });
+        ui.ctx().data_mut(|data| data.insert_temp(id, draft));
+    });
 }
 
 #[derive(Clone, Copy, PartialEq)]

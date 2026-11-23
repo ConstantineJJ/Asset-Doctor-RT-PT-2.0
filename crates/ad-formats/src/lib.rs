@@ -397,7 +397,7 @@ pub fn import_glb(
         notes.push("Отображается только основная/первая сцена.".into());
     }
     cancel.check()?;
-    let bases = if clips.is_empty() {
+    let bases = if clips.is_empty() && skins.is_empty() {
         Vec::new()
     } else {
         doc.nodes().map(|node| match node.transform() {
