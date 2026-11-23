@@ -9,6 +9,8 @@ use winit::{event::WindowEvent, window::Window};
 
 #[path = "panels.rs"]
 mod panels;
+#[path = "update_ui.rs"]
+mod update_ui;
 pub(crate) use panels::MARK_COLORS;
 #[path = "view_settings.rs"]
 pub mod view_settings;
@@ -74,6 +76,11 @@ pub struct Actions {
     /// SkyBox window: show this panorama; choose the library folder.
     pub skybox_open: Option<std::path::PathBuf>,
     pub skybox_folder_choose: bool,
+    /// ADR-0049: check for updates; download and install the shown one;
+    /// stop a running check or download.
+    pub update_check: bool,
+    pub update_install: bool,
+    pub update_cancel: bool,
     /// ADR-0040 lamp gizmo dragged by (dx, dy) logical points this frame.
     pub lamp_drag: Option<[f32; 2]>,
     /// Lamp context menu: point the lamp from the camera.
@@ -261,6 +268,8 @@ pub struct ViewerUi {
     /// already seen (the bug turns amber for new ones).
     pub show_log: bool,
     pub log_to_file: bool,
+    /// ADR-0049 update window and its state.
+    pub update: crate::updates::Panel,
     /// Object outline (Tab, amoeba icon): on/off and colour (None: dynamic
     /// contrast, Some: index into the seven fixed colours). The hovered node
     /// is set by the application from the pointer.
@@ -429,6 +438,7 @@ impl Default for ViewerUi {
             skybox_hover: None,
             show_log: false,
             log_to_file: false,
+            update: Default::default(),
             outline_on: true,
             outline_color: None,
             hover_node: None,
@@ -1375,6 +1385,7 @@ impl ViewerUi {
             self.skybox_tile_rects.clear();
             self.skybox_window(&context,&mut actions);
             self.log_window(&context);
+            self.update_window(&context,&mut actions);
             self.context_menu_ui(&context,asset,&mut actions);
             if let Some(info)=self.edit.preview.clone() {
                 let ready=!loading && self.edit.busy.is_none();
@@ -1501,6 +1512,7 @@ impl ViewerUi {
                 }
             }
             egui::Window::new("Справка").open(&mut self.help).resizable(true).show(&context,|ui| {
+                ui.strong(concat!("AD RT-PT v", env!("CARGO_PKG_VERSION")));
                 ui.label(format!("Открыть: {} или перетащить GLB в окно.",self.bindings.describe(crate::input::Action::Open)));
                 ui.label(format!("{} — вращение; {} — перемещение; колесо — масштаб.",self.bindings.describe(crate::input::Action::Orbit),self.bindings.describe(crate::input::Action::Pan)));
                 ui.label(format!("{} — вписать модель; {} — скрыть или вернуть пол; значок лампы во вьюпорте — тянуть, чтобы повернуть свет (его голубые стрелки — только по горизонтали, оранжевые — только по высоте), правая кнопка — меню лампы; стрелки X/Y/Z — сдвинуть модель, кольца — повернуть вокруг Y и X, квадрат — масштаб (каждое отпускание — одна правка, {} отменит); {} — отменить загрузку или подготовку правки; {} — справка.", self.bindings.describe(crate::input::Action::Fit), self.bindings.describe(crate::input::Action::ToggleFloor), self.bindings.describe(crate::input::Action::Undo), self.bindings.describe(crate::input::Action::Cancel), self.bindings.describe(crate::input::Action::Help)));

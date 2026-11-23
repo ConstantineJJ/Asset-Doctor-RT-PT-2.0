@@ -26,6 +26,7 @@ mod saving;
 mod skybox;
 mod skybox_library;
 mod ui_model;
+mod updates;
 mod viewer_ui;
 mod worker;
 
@@ -131,6 +132,15 @@ struct App {
     /// Picking: draw boxes and node parents of the shown snapshot; where the
     /// left button went down (a click selects).
     pick_cache: Option<PickCache>,
+    /// ADR-0049 updates: background check/download, the start marker the
+    /// updater waits for, and the exit for an update.
+    updates: updates::Updates,
+    update_ok_file: Option<PathBuf>,
+    exit_after_start: bool,
+    exit_for_update: bool,
+    /// Pointer position (pixels) waiting for the hover pick of the next
+    /// frame: one pick per frame however many moves arrive.
+    hover_request: Option<(f64, f64)>,
     press: Option<(f64, f64)>,
     smoke_select: bool,
     /// --camera-view: applied once a model is shown.
@@ -379,7 +389,7 @@ impl App {
         let window = Arc::new(
             event_loop.create_window(
                 Window::default_attributes()
-                    .with_title("Asset Doctor RT-PT 2.0 | Static GLB viewer prototype")
+                    .with_title(format!("{APP_TITLE} | Static GLB viewer prototype"))
                     .with_inner_size(PhysicalSize::new(1200, 760))
                     .with_min_inner_size(PhysicalSize::new(320, 240))
                     .with_window_icon(Some(icon()?)),
@@ -420,21 +430,21 @@ impl App {
         self.ui.error = None;
         eprintln!("import_started ticket={ticket}");
         if let Some(window) = self.window.as_ref() {
-            window.set_title("Asset Doctor RT-PT 2.0 — Loading GLB… | Esc: cancel");
+            window.set_title(&format!("{APP_TITLE} — Loading GLB… | Esc: cancel"));
         }
     }
     fn title(&self) {
         if let Some(window) = self.window.as_ref() {
             let title = if let Some(asset) = self.current.as_ref() {
                 format!(
-                    "{}Asset Doctor RT-PT 2.0 — {} | {} vertices · {} triangles | Ctrl+O: open · F: fit · H: help",
+                    "{}{APP_TITLE} — {} | {} vertices · {} triangles | Ctrl+O: open · F: fit · H: help",
                     if self.is_dirty() { "* " } else { "" },
                     asset.document().name(),
                     asset.snapshot().positions.len(),
                     asset.snapshot().indices.len() / 3
                 )
             } else {
-                "Asset Doctor RT-PT 2.0 — Ctrl+O: open GLB · Drop GLB into window · H: help".into()
+                format!("{APP_TITLE} — Ctrl+O: open GLB · Drop GLB into window · H: help")
             };
             window.set_title(&title);
         }
@@ -1182,6 +1192,63 @@ impl App {
             self.queue_smoke_done = true;
         }
     }
+    /// ADR-0049: start-up state of updates (after an update or a rollback)
+    /// and the quiet start-up check.
+    fn start_updates(
+        &mut self,
+        smoke_update: bool,
+        updated: (Option<String>, Option<String>),
+        failed: Option<String>,
+        smoke_run: bool,
+    ) {
+        self.updates.auto_install = smoke_update;
+        if smoke_update {
+            // The restarted program closes after its first frame.
+            self.updates.restart_args.push("--exit-after-start".into());
+        }
+        if let (Some(from), Some(to)) = updated {
+            eprintln!("update_restarted from={from} to={to}");
+            self.ui
+                .set_status(format!("Обновлено с v{from} до {to}"), false);
+            if let Ok(root) = ad_update::updates_root(self.updates.root.as_deref()) {
+                ad_update::stage::prune(&root, 1);
+            }
+        }
+        if let Some(reason) = failed {
+            eprintln!("update_rolled_back reason={reason}");
+            self.ui
+                .set_status(format!("Обновление не установлено: {reason}"), true);
+        }
+        let allowed = if smoke_run {
+            smoke_update
+        } else {
+            !self.exit_after_start
+        };
+        if allowed && (self.ui.update.check_on_start || smoke_update) {
+            self.updates.check(&mut self.ui.update, true);
+        }
+    }
+    /// Background update results; a staged update starts the updater and
+    /// closes the program.
+    fn poll_updates(&mut self) {
+        self.ui.update.can_install = !self.is_dirty();
+        let Some(staged) = self.updates.poll(&mut self.ui.update) else {
+            return;
+        };
+        if self.is_dirty() {
+            self.ui.update.phase = updates::Phase::Failed(
+                "есть несохранённые правки: сохраните модель и повторите".into(),
+            );
+            return;
+        }
+        match self.updates.launch(&staged) {
+            Ok(()) => {
+                self.ui.update.phase = updates::Phase::Installing;
+                self.exit_for_update = true;
+            }
+            Err(error) => self.ui.update.phase = updates::Phase::Failed(error),
+        }
+    }
     fn is_dirty(&self) -> bool {
         match (self.current.as_ref(), self.confirmed.as_ref()) {
             (Some(asset), Some(confirmed)) => confirmed.is_dirty(asset),
@@ -1729,7 +1796,7 @@ impl App {
         let (origin, direction) = picking::ray(&self.camera, uv, w, h)?;
         let marks = ui_model::node_marks(asset.document(), &self.ui.tree);
         let snapshot = asset.snapshot();
-        let (draw, t) = picking::pick(snapshot, &cache.bounds, origin, direction, |i| {
+        let (draw, t) = picking::pick(snapshot, &cache.data, origin, direction, |i| {
             marks.get(snapshot.draws[i].node.0).is_some_and(|m| m.0)
         })?;
         Some((snapshot.draws[draw].node, origin + direction * t))
@@ -1757,6 +1824,12 @@ impl App {
             drag.offset = origin + direction * t - drag.hit;
         }
     }
+    /// Hover pick of the latest pointer move, at most once per frame.
+    fn update_hover(&mut self) {
+        if let Some((x, y)) = self.hover_request.take() {
+            self.ui.hover_node = self.pick_at(x, y);
+        }
+    }
     /// Builds the picking data of the shown snapshot once.
     fn ensure_pick_cache(&mut self) {
         let Some(asset) = self.current.as_ref() else {
@@ -1777,7 +1850,7 @@ impl App {
         }
         self.pick_cache = Some(PickCache {
             key,
-            bounds: picking::draw_bounds(asset.snapshot()),
+            data: picking::PickData::new(asset.snapshot()),
             parents,
         });
     }
@@ -1918,7 +1991,7 @@ impl App {
             glam::Vec3::splat(f32::NEG_INFINITY),
         );
         for i in draws {
-            if let Some((a, b)) = cache.bounds.get(i) {
+            if let Some((a, b)) = cache.data.bounds.get(i) {
                 lo = lo.min(*a);
                 hi = hi.max(*b);
             }
@@ -2314,6 +2387,7 @@ impl App {
             let (width, height) = frame.scene.map_or((1, 1), |r| (r.width, r.height));
             self.model_gizmo_actions(&actions, width, height);
         }
+        self.update_hover();
         let outline = self.outline_settings();
         // ADR-0048: an object gizmo or a left-button drag previews only the
         // object's draws; the model gizmo previews the whole model.
@@ -2496,6 +2570,24 @@ impl App {
         if actions.skybox_load {
             self.pending_skybox_choose = true;
         }
+        if actions.update_check {
+            self.updates.check(&mut self.ui.update, false);
+        }
+        if actions.update_cancel {
+            self.updates.cancel(&mut self.ui.update);
+        }
+        if actions.update_install
+            && let updates::Phase::Available(release) = self.ui.update.phase.clone()
+        {
+            if self.is_dirty() {
+                self.ui.set_status(
+                    "Обновление: сначала сохраните модель или отмените правки",
+                    true,
+                );
+            } else {
+                self.updates.install(&mut self.ui.update, release);
+            }
+        }
         if let Some(path) = actions.skybox_open.clone() {
             self.skybox_job = Some(skybox::spawn(path, self.skybox_width()));
             self.ui.set_status("Загрузка скайбокса...", false);
@@ -2518,6 +2610,11 @@ impl App {
             self.ui.set_status("Загрузка скайбокса...", false);
         }
         if actions.skybox_remove {
+            // A panorama still loading (another file or another quality) must
+            // not bring the SkyBox back after «Убрать».
+            self.skybox_job = None;
+            self.pending_skybox = None;
+            self.skybox_restore_on = None;
             self.ui.skybox_name = None;
             self.ui.skybox_path = None;
             self.ui.skybox_light = None;
@@ -2641,6 +2738,22 @@ impl App {
             self.start_overwrite();
         }
         self.poll_skybox();
+        self.poll_updates();
+        if self.exit_for_update {
+            self.finish(event_loop);
+            return Ok(());
+        }
+        // The first frame is on screen: tell the updater this version starts.
+        if self.renderer.as_ref().is_some_and(|r| r.frames > 0) {
+            if let Some(marker) = self.update_ok_file.take() {
+                let written = std::fs::write(&marker, env!("CARGO_PKG_VERSION"));
+                eprintln!("update_ok_written ok={}", written.is_ok());
+            }
+            if self.exit_after_start {
+                self.finish(event_loop);
+                return Ok(());
+            }
+        }
         self.advance_input_smoke();
         self.save_bindings();
         if std::mem::take(&mut self.pending_save) {
@@ -2942,13 +3055,13 @@ impl ApplicationHandler for App {
                 if self.object_drag.as_ref().is_some_and(|d| d.active) {
                     self.drag_object(position.x, position.y);
                 }
-                let hover = if self.mouse_drag.is_none() && self.object_drag.is_none() && !consumed
-                {
-                    self.pick_at(position.x, position.y)
+                // The pick itself waits for the frame (see `update_hover`).
+                if self.mouse_drag.is_none() && self.object_drag.is_none() && !consumed {
+                    self.hover_request = Some((position.x, position.y));
                 } else {
-                    None
-                };
-                self.ui.hover_node = hover;
+                    self.hover_request = None;
+                    self.ui.hover_node = None;
+                }
                 Ok(())
             }
             WindowEvent::CursorLeft { .. } => {
@@ -3029,10 +3142,13 @@ struct ObjectDrag {
     active: bool,
 }
 
+/// Window title prefix with the program version (Cargo workspace version).
+pub(crate) const APP_TITLE: &str = concat!("Asset Doctor RT-PT v", env!("CARGO_PKG_VERSION"));
+
 /// Picking data of one snapshot.
 struct PickCache {
     key: (u64, ad_document::DocumentId),
-    bounds: Vec<(glam::Vec3, glam::Vec3)>,
+    data: picking::PickData,
     parents: Vec<Option<usize>>,
 }
 
@@ -3114,6 +3230,26 @@ fn run() -> GpuResult<()> {
     let mut initial_view = None;
     let mut smoke_work_tree = false;
     let mut smoke_select = false;
+    // ADR-0049 updates. The updater passes these on to the restarted
+    // program so that a smoke run keeps using its own files.
+    let mut updates = updates::Updates::default();
+    let mut smoke_update = false;
+    let mut update_ok_file = None;
+    let mut exit_after_start = false;
+    let mut updated = (None, None);
+    let mut update_failed = None;
+    for key in [
+        "--view-settings",
+        "--history",
+        "--bindings",
+        "--updates-root",
+    ] {
+        if let Some(i) = argv.iter().position(|a| a == key)
+            && let Some(value) = argv.get(i + 1)
+        {
+            updates.restart_args.extend([key.to_owned(), value.clone()]);
+        }
+    }
     let mut args = argv.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -3270,6 +3406,26 @@ fn run() -> GpuResult<()> {
                     args.next().ok_or("--history needs a file path")?,
                 ))
             }
+            "--update-feed" => {
+                updates.feed = ad_update::Feed::Local(PathBuf::from(
+                    args.next().ok_or("--update-feed needs a folder")?,
+                ))
+            }
+            "--updates-root" => {
+                updates.root = Some(PathBuf::from(
+                    args.next().ok_or("--updates-root needs a folder")?,
+                ))
+            }
+            "--smoke-update" => smoke_update = true,
+            "--update-ok-file" => {
+                update_ok_file = Some(PathBuf::from(
+                    args.next().ok_or("--update-ok-file needs a path")?,
+                ))
+            }
+            "--updated-from" => updated.0 = args.next(),
+            "--updated-to" => updated.1 = args.next(),
+            "--update-failed" => update_failed = args.next(),
+            "--exit-after-start" => exit_after_start = true,
             "--smoke-repair" => {
                 smoke_repair = match args.next().as_deref() {
                     Some("g001") => ad_heal::RepairKind::DegenerateTriangles,
@@ -3395,6 +3551,11 @@ fn run() -> GpuResult<()> {
         object_drag: None,
         press_right: None,
         pick_cache: None,
+        updates,
+        update_ok_file,
+        exit_after_start,
+        exit_for_update: false,
+        hover_request: None,
         press: None,
         smoke_select,
         initial_view,
@@ -3468,6 +3629,7 @@ fn run() -> GpuResult<()> {
         smoke_repair,
         ui,
     };
+    app.start_updates(smoke_update, updated, update_failed, smoke_run);
     event_loop.run_app(&mut app)?;
     if let Some(error) = app.error {
         return Err(error.into());

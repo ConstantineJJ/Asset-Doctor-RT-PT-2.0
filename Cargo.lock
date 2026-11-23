@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "ad-analysis"
-version = "0.1.0"
+version = "2.5.3"
 dependencies = [
  "ad-document",
  "robust",
@@ -21,7 +21,7 @@ dependencies = [
 
 [[package]]
 name = "ad-commands"
-version = "0.1.0"
+version = "2.5.3"
 dependencies = [
  "ad-analysis",
  "ad-document",
@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "ad-desktop"
-version = "0.1.0"
+version = "2.5.3"
 dependencies = [
  "ad-analysis",
  "ad-commands",
@@ -39,6 +39,7 @@ dependencies = [
  "ad-heal",
  "ad-render-vulkan",
  "ad-storage",
+ "ad-update",
  "egui",
  "egui-winit",
  "glam",
@@ -52,14 +53,14 @@ dependencies = [
 
 [[package]]
 name = "ad-document"
-version = "0.1.0"
+version = "2.5.3"
 dependencies = [
  "glam",
 ]
 
 [[package]]
 name = "ad-formats"
-version = "0.1.0"
+version = "2.5.3"
 dependencies = [
  "ad-document",
  "gltf",
@@ -70,7 +71,7 @@ dependencies = [
 
 [[package]]
 name = "ad-heal"
-version = "0.1.0"
+version = "2.5.3"
 dependencies = [
  "ad-analysis",
  "ad-commands",
@@ -81,7 +82,7 @@ dependencies = [
 
 [[package]]
 name = "ad-render-vulkan"
-version = "0.1.0"
+version = "2.5.3"
 dependencies = [
  "ad-document",
  "ash",
@@ -94,10 +95,20 @@ dependencies = [
 
 [[package]]
 name = "ad-storage"
-version = "0.1.0"
+version = "2.5.3"
 dependencies = [
  "ad-document",
  "ad-formats",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "ad-update"
+version = "2.5.3"
+dependencies = [
+ "crc32fast",
+ "miniz_oxide 0.9.1",
+ "serde_json",
  "windows-sys 0.52.0",
 ]
 

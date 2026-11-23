@@ -9,16 +9,17 @@ name = "AssetDoctorRTPT"
 path = "src/main.rs"
 
 [dependencies]
-ad-render-vulkan = { path = "../ad-render-vulkan", version = "=0.1.0" }
+ad-render-vulkan = { path = "../ad-render-vulkan", version = "=2.5.3" }
 winit = { version = "=0.30.13", default-features = false, features = ["rwh_06"] }
 png = "=0.18.1"
 raw-window-handle = "=0.6.2"
-ad-document = { path = "../ad-document", version = "=0.1.0" }
-ad-formats = { path = "../ad-formats", version = "=0.1.0" }
-ad-analysis = { path = "../ad-analysis", version = "=0.1.0" }
-ad-commands = { path = "../ad-commands", version = "=0.1.0" }
-ad-heal = { path = "../ad-heal", version = "=0.1.0" }
-ad-storage = { path = "../ad-storage", version = "=0.1.0" }
+ad-document = { path = "../ad-document", version = "=2.5.3" }
+ad-formats = { path = "../ad-formats", version = "=2.5.3" }
+ad-analysis = { path = "../ad-analysis", version = "=2.5.3" }
+ad-commands = { path = "../ad-commands", version = "=2.5.3" }
+ad-heal = { path = "../ad-heal", version = "=2.5.3" }
+ad-storage = { path = "../ad-storage", version = "=2.5.3" }
+ad-update = { path = "../ad-update", version = "=2.5.3" }
 glam = { version = "=0.34.3", default-features = false, features = ["std"] }
 egui = { version = "=0.36.2", default-features = false, features = ["default_fonts"] }
 egui-winit = { version = "=0.36.2", default-features = false }

@@ -788,3 +788,60 @@ fn object_edits_export_node_matrices_and_detach_nodes() {
         }
     }
 }
+
+#[test]
+fn detaching_a_shared_root_only_changes_the_active_scene() {
+    use ad_document::{NodeId, NodeOp};
+
+    let (mut json, bin) = tiny();
+    json["nodes"] = serde_json::json!([{"mesh":0},{"mesh":0}]);
+    json["scenes"] = serde_json::json!([
+        {"nodes":[0],"name":"Hidden","extras":{"marker":17}},
+        {"nodes":[0,1],"name":"Active"}
+    ]);
+    json["scene"] = serde_json::json!(1);
+    let mut doc = fixture(&bytes(json.clone(), bin.clone()));
+    let c = Cancellation::default();
+    let plan = doc
+        .prepare_node_op(doc.tag(), NodeOp::Detach(NodeId(0)), &c)
+        .unwrap();
+    doc.apply_triangle_removal(plan, ImportLimits::default(), &c)
+        .unwrap();
+    let saved = export(&doc).unwrap();
+    let glb = gltf::binary::Glb::from_slice(saved.bytes()).unwrap();
+    let meta: serde_json::Value = serde_json::from_slice(&glb.json).unwrap();
+    assert_eq!(meta["scene"], 1);
+    assert_eq!(meta["scenes"][0], json["scenes"][0]);
+    assert_eq!(meta["scenes"][1]["nodes"], serde_json::json!([1]));
+
+    // A change to the inactive scene must also fail independent readback.
+    let mut altered = meta;
+    altered["scenes"][0]["nodes"] = serde_json::json!([1]);
+    let altered = fixture(&bytes(altered, bin));
+    let err = crate::compare_reimported(&doc, &altered, &c).unwrap_err();
+    assert_eq!(err.code, ErrorCode::VerificationFailed);
+}
+
+#[test]
+fn detaching_a_child_of_a_shared_parent_is_refused_during_edit_preflight() {
+    use ad_document::{NodeId, NodeOp};
+
+    let (mut json, bin) = tiny();
+    json["nodes"] = serde_json::json!([
+        {"children":[1]},{"mesh":0},{"mesh":0}
+    ]);
+    json["scenes"] = serde_json::json!([{"nodes":[0,2]},{"nodes":[0]}]);
+    json.as_object_mut().unwrap().remove("scene"); // The first scene is active.
+    let doc = fixture(&bytes(json, bin));
+    let c = Cancellation::default();
+    let plan = doc
+        .prepare_node_op(doc.tag(), NodeOp::Detach(NodeId(1)), &c)
+        .unwrap();
+    let candidate = plan.candidate(&doc, &c).unwrap();
+    let view = doc.candidate_view(candidate, &c).unwrap();
+    let export_limits = ExportLimits::default();
+    let import_limits = ImportLimits::default();
+    let err = preflight_changed_export(&view, export_limits, import_limits, &c).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Unsupported);
+    assert!(doc.node_edits().is_empty());
+}
