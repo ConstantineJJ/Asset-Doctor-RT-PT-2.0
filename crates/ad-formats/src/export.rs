@@ -444,7 +444,8 @@ pub fn preflight_changed_export(
     let changed = bindings(&parsed, view, limits, cancel)?;
     let edits = view.node_edits();
     let roots = placed_roots(&parsed, document, view.placement(), edits, cancel)?;
-    if changed.is_empty() && roots.is_empty() && edits.detached.is_empty() {
+    let detached_scene = detach_scene(&parsed.document, &edits.detached, cancel)?;
+    if changed.is_empty() && roots.is_empty() && detached_scene.is_none() {
         if document.source().len() > limits.output_bytes {
             return Err(budget());
         }
@@ -530,44 +531,80 @@ fn placed_roots(
     }
     Ok(roots)
 }
-/// ADR-0048: nodes taken out of the scene leave every children list and
-/// scene node list; an emptied list is removed (glTF forbids empty ones).
-/// The nodes themselves stay in the file, unused.
-fn write_detached(
-    meta: &mut Value,
+/// The importer shows only this scene. A shared root can be unlinked from
+/// that scene alone, but a child link is stored on its parent, globally.
+fn detach_scene(
+    document: &gltf::Document,
     detached: &std::collections::BTreeSet<usize>,
-) -> AssetResult<()> {
+    cancel: &Cancellation,
+) -> AssetResult<Option<usize>> {
     if detached.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
-    let keep = |list: &mut Vec<Value>| {
-        list.retain(|v| v.as_u64().is_none_or(|n| !detached.contains(&(n as usize))));
-        list.is_empty()
-    };
-    for node in array(meta, "nodes")?.iter_mut() {
-        let Some(object) = node.as_object_mut() else {
-            continue;
-        };
-        if let Some(children) = object.get_mut("children").and_then(Value::as_array_mut)
-            && keep(children)
-        {
-            object.remove("children");
-        }
-    }
-    if let Some(scenes) = meta.get_mut("scenes").and_then(Value::as_array_mut) {
-        for scene in scenes.iter_mut() {
-            let Some(object) = scene.as_object_mut() else {
-                continue;
-            };
-            if let Some(nodes) = object.get_mut("nodes").and_then(Value::as_array_mut)
-                && keep(nodes)
-            {
-                object.remove("nodes");
+    let active = document
+        .default_scene()
+        .or_else(|| document.scenes().next())
+        .ok_or_else(invalid)?
+        .index();
+    let mut visited = vec![false; document.nodes().len()];
+    let mut stack = Vec::new();
+    for scene in document.scenes().filter(|scene| scene.index() != active) {
+        for root in scene.nodes() {
+            stack.push(root);
+            while let Some(node) = stack.pop() {
+                cancel.check()?;
+                if std::mem::replace(&mut visited[node.index()], true) {
+                    continue;
+                }
+                for child in node.children() {
+                    if detached.contains(&child.index()) {
+                        return Err(AssetError::new(
+                            ErrorCode::Unsupported,
+                            "Removing this child would change a scene that is not open",
+                        ));
+                    }
+                    stack.push(child);
+                }
             }
         }
     }
+    Ok(Some(active))
+}
+
+/// Unlink active scene roots and remove child links that preflight has
+/// established do not affect any other scene. Keep all node indices stable.
+fn write_detached(
+    meta: &mut Value,
+    scene: usize,
+    detached: &std::collections::BTreeSet<usize>,
+    cancel: &Cancellation,
+) -> AssetResult<()> {
+    let keep = |list: &mut Vec<Value>| {
+        list.retain(|v| v.as_u64().is_none_or(|n| !detached.contains(&(n as usize))));
+    };
+    for node in array(meta, "nodes")?.iter_mut() {
+        cancel.check()?;
+        let object = node.as_object_mut().ok_or_else(invalid)?;
+        if let Some(children) = object.get_mut("children").and_then(Value::as_array_mut) {
+            let had_children = !children.is_empty();
+            keep(children);
+            if had_children && children.is_empty() {
+                object.remove("children");
+            }
+        }
+    }
+    let roots = array(meta, "scenes")?
+        .get_mut(scene)
+        .and_then(|scene| scene.get_mut("nodes"))
+        .and_then(Value::as_array_mut)
+        .ok_or_else(invalid)?;
+    keep(roots);
+    if roots.is_empty() {
+        return Err(invalid());
+    }
     Ok(())
 }
+
 /// Root locals a saved copy of `document` must read back with (ADR-0041).
 pub(crate) fn expected_roots(
     document: &AssetDocument,
@@ -659,7 +696,8 @@ pub fn prepare_glb(
     let changed = bindings(&parsed, &view, limits, cancel)?;
     let edits = document.node_edits();
     let roots = placed_roots(&parsed, document, document.placement(), edits, cancel)?;
-    let bytes = if changed.is_empty() && roots.is_empty() && edits.detached.is_empty() {
+    let detached_scene = detach_scene(&parsed.document, &edits.detached, cancel)?;
+    let bytes = if changed.is_empty() && roots.is_empty() && detached_scene.is_none() {
         if document.source().len() > limits.output_bytes {
             return Err(budget());
         }
@@ -763,7 +801,9 @@ pub fn prepare_glb(
             offset += size;
         }
         write_roots(&mut meta, &roots)?;
-        write_detached(&mut meta, &edits.detached)?;
+        if let Some(scene) = detached_scene {
+            write_detached(&mut meta, scene, &edits.detached, cancel)?;
+        }
         let buffer = array(&mut meta, "buffers")?
             .first_mut()
             .and_then(Value::as_object_mut)
