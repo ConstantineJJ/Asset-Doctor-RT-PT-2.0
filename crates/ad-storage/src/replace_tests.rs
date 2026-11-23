@@ -95,6 +95,7 @@ fn missing_path_recovers_only_a_unique_matching_backup() {
         assert_eq!(fs::read(&other).unwrap(), b"external");
     });
 }
+
 #[test]
 fn publish_consumes_verified_staging_and_retains_the_original_backup() {
     use std::io::Write;
@@ -114,5 +115,50 @@ fn publish_consumes_verified_staging_and_retains_the_original_backup() {
         assert!(!path.exists());
         assert_eq!(fs::read(&target).unwrap(), b"staged");
         assert_eq!(fs::read(&backup).unwrap(), b"original");
+    });
+}
+
+#[test]
+fn extended_windows_paths_cover_drive_unc_and_verbatim_paths() {
+    for (input, expected) in [
+        (r"E:\a\..\b.glb", r"\\?\E:\b.glb"),
+        (r"\\server\share\file.glb", r"\\?\UNC\server\share\file.glb"),
+        (r"\\?\E:\file.glb", r"\\?\E:\file.glb"),
+        (r"\\?\UNC\server\share\file.glb", r"\\?\UNC\server\share\file.glb"),
+    ] {
+        let expected: Vec<_> = expected.encode_utf16().chain([0]).collect();
+        assert_eq!(wide(Path::new(input)).unwrap(), expected);
+    }
+}
+
+#[test]
+fn publish_and_restore_support_paths_longer_than_max_path() {
+    use std::io::Write;
+
+    in_owned_directory(|dir| {
+        let first = dir.join("a".repeat(120));
+        let deep = first.join("b".repeat(120));
+        fs::create_dir_all(&deep).unwrap();
+        let target = deep.join("working.glb");
+        let absolute = std::path::absolute(&target).unwrap();
+        assert!(absolute.as_os_str().encode_wide().count() > 260);
+
+        fs::write(&target, b"original").unwrap();
+        let cancel = Cancellation::default();
+        let mut staging = Staging::create(&deep, &cancel).unwrap();
+        let file = staging.file.as_mut().unwrap();
+        file.write_all(b"staged").unwrap();
+        file.sync_all().unwrap();
+
+        let backup = publish(&mut staging, &target, b"original", b"staged", &cancel).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"staged");
+        assert_eq!(fs::read(&backup).unwrap(), b"original");
+        fs::remove_file(&target).unwrap();
+        restore_missing(&target, &backup).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"original");
+
+        fs::remove_file(&target).unwrap();
+        fs::remove_dir(deep).unwrap();
+        fs::remove_dir(first).unwrap();
     });
 }

@@ -9,15 +9,14 @@ use std::{
         fs::{MetadataExt, OpenOptionsExt},
         io::AsRawHandle,
     },
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf, Prefix},
 };
 use windows_sys::Win32::{
     Foundation::{GENERIC_READ, GENERIC_WRITE},
     Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_REPARSE_POINT,
-        FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, GetFileInformationByHandle, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-        ReplaceFileW,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        GetFileInformationByHandle, MOVEFILE_WRITE_THROUGH, MoveFileExW, ReplaceFileW,
     },
 };
 
@@ -68,12 +67,32 @@ fn file_id(file: &File) -> io::Result<(u32, u32, u32)> {
     ))
 }
 
-fn wide(path: &Path) -> Vec<u16> {
-    path.as_os_str().encode_wide().chain([0]).collect()
+/// Use the extended Win32 syntax without resolving the file on disk. A
+/// backup path may not exist yet, and an existing path may be replaced.
+fn wide(path: &Path) -> io::Result<Vec<u16>> {
+    let absolute = std::path::absolute(path)?;
+    let (prefix, skip) = match absolute.components().next() {
+        Some(Component::Prefix(component)) => match component.kind() {
+            Prefix::Disk(_) => (r"\\?\", 0),
+            Prefix::UNC(_, _) => (r"\\?\UNC\", 2),
+            kind if kind.is_verbatim() => ("", 0),
+            _ => return Err(io::ErrorKind::InvalidInput.into()),
+        },
+        _ => return Err(io::ErrorKind::InvalidInput.into()),
+    };
+    let mut wide: Vec<_> = prefix
+        .encode_utf16()
+        .chain(absolute.as_os_str().encode_wide().skip(skip))
+        .collect();
+    if wide.contains(&0) {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    wide.push(0);
+    Ok(wide)
 }
 
 fn replace_file(destination: &Path, source: &Path, backup: &Path) -> io::Result<()> {
-    let (destination, source, backup) = (wide(destination), wide(source), wide(backup));
+    let (destination, source, backup) = (wide(destination)?, wide(source)?, wide(backup)?);
     // SAFETY: all paths are NUL-terminated and live through this call. The
     // reserved parameters are null. Staging was synced before publication.
     if unsafe {
@@ -93,7 +112,7 @@ fn replace_file(destination: &Path, source: &Path, backup: &Path) -> io::Result<
 }
 
 fn restore_missing(destination: &Path, backup: &Path) -> io::Result<()> {
-    let (destination, backup) = (wide(destination), wide(backup));
+    let (destination, backup) = (wide(destination)?, wide(backup)?);
     // SAFETY: both path buffers are NUL-terminated. This move has no replace flag.
     if unsafe { MoveFileExW(backup.as_ptr(), destination.as_ptr(), MOVEFILE_WRITE_THROUGH) } == 0 {
         return Err(io::Error::last_os_error());
@@ -160,8 +179,7 @@ pub(super) fn recover_missing(
     }
     if let Some((path, _guard)) = matching {
         cancel.check()?;
-        restore_missing(destination, &path)
-            .map_err(|error| retain_backup(io_error(error), &path))?;
+        restore_missing(destination, &path).map_err(|error| retain_backup(io_error(error), &path))?;
     }
     Ok(())
 }

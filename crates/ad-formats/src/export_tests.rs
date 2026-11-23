@@ -791,6 +791,8 @@ fn object_edits_export_node_matrices_and_detach_nodes() {
 
 #[test]
 fn detaching_a_shared_root_only_changes_the_active_scene() {
+    use ad_document::{NodeId, NodeOp};
+
     let (mut json, bin) = tiny();
     json["nodes"] = serde_json::json!([{"mesh":0},{"mesh":0}]);
     json["scenes"] = serde_json::json!([
@@ -801,9 +803,10 @@ fn detaching_a_shared_root_only_changes_the_active_scene() {
     let mut doc = fixture(&bytes(json.clone(), bin.clone()));
     let c = Cancellation::default();
     let plan = doc
-        .prepare_node_op(doc.tag(), ad_document::NodeOp::Detach(ad_document::NodeId(0)), &c)
+        .prepare_node_op(doc.tag(), NodeOp::Detach(NodeId(0)), &c)
         .unwrap();
-    doc.apply_triangle_removal(plan, ImportLimits::default(), &c).unwrap();
+    doc.apply_triangle_removal(plan, ImportLimits::default(), &c)
+        .unwrap();
     let saved = export(&doc).unwrap();
     let glb = gltf::binary::Glb::from_slice(saved.bytes()).unwrap();
     let meta: serde_json::Value = serde_json::from_slice(&glb.json).unwrap();
@@ -821,6 +824,8 @@ fn detaching_a_shared_root_only_changes_the_active_scene() {
 
 #[test]
 fn detaching_a_child_of_a_shared_parent_is_refused_during_edit_preflight() {
+    use ad_document::{NodeId, NodeOp};
+
     let (mut json, bin) = tiny();
     json["nodes"] = serde_json::json!([
         {"children":[1]},{"mesh":0},{"mesh":0}
@@ -830,17 +835,13 @@ fn detaching_a_child_of_a_shared_parent_is_refused_during_edit_preflight() {
     let doc = fixture(&bytes(json, bin));
     let c = Cancellation::default();
     let plan = doc
-        .prepare_node_op(doc.tag(), ad_document::NodeOp::Detach(ad_document::NodeId(1)), &c)
+        .prepare_node_op(doc.tag(), NodeOp::Detach(NodeId(1)), &c)
         .unwrap();
     let candidate = plan.candidate(&doc, &c).unwrap();
     let view = doc.candidate_view(candidate, &c).unwrap();
-    let err = preflight_changed_export(
-        &view,
-        ExportLimits::default(),
-        ImportLimits::default(),
-        &c,
-    )
-    .unwrap_err();
+    let export_limits = ExportLimits::default();
+    let import_limits = ImportLimits::default();
+    let err = preflight_changed_export(&view, export_limits, import_limits, &c).unwrap_err();
     assert_eq!(err.code, ErrorCode::Unsupported);
     assert!(doc.node_edits().is_empty());
 }
