@@ -437,6 +437,7 @@ pub fn preflight_changed_export(
 ) -> AssetResult<usize> {
     cancel.check()?;
     let document = view.document();
+    document.require_editable()?;
     let parsed = source::parse(document.source(), import, cancel)?;
     if parsed.glb.json.len() > limits.json_bytes {
         return Err(budget());
@@ -688,6 +689,7 @@ pub fn prepare_glb(
 ) -> AssetResult<VerifiedGlb> {
     document.verify_tag(expected, cancel)?;
     let stamp = document.stamp();
+    document.require_editable()?;
     let parsed = source::parse(document.source(), import, cancel)?;
     if parsed.glb.json.len() > limits.json_bytes {
         return Err(budget());

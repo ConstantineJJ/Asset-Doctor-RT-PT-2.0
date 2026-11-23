@@ -131,6 +131,7 @@ impl AssetDocument {
         placement: Placement,
         cancel: &Cancellation,
     ) -> AssetResult<PreparedRemoval> {
+        self.require_editable()?;
         self.verify_tag(expected, cancel)?;
         if !placement.valid() {
             return Err(AssetError::new(

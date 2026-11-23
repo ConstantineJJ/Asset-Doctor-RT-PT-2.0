@@ -267,6 +267,7 @@ impl AssetDocument {
         limits: ImportLimits,
         cancel: &Cancellation,
     ) -> AssetResult<PreparedRemoval> {
+        self.require_editable()?;
         self.verify_tag(expected, cancel)?;
         let current = self.parts.meshes.get(mesh.0).ok_or_else(invalid)?;
         let count = current.indices.len() / 3;
@@ -435,6 +436,7 @@ impl AssetDocument {
         limits: ImportLimits,
         cancel: &Cancellation,
     ) -> AssetResult<StagedExchange<'a>> {
+        self.require_editable()?;
         self.verify_tag(expected, cancel)?;
         if !Arc::ptr_eq(&self.origin, &change.owner) {
             return Err(conflict());

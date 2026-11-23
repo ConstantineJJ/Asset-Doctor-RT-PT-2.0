@@ -601,6 +601,10 @@ impl App {
         if self.importing || self.editing || self.saving {
             return false;
         }
+        if let Err(error) = asset.document().require_editable() {
+            self.ui.set_status(error.to_string(), false);
+            return false;
+        }
         let ticket = self.edits.request(EditInput {
             session: asset.session.clone(),
             base: asset.generation.stamp.clone(),
@@ -1091,7 +1095,13 @@ impl App {
     }
     /// HEAL-02: starts a queue on the current model (ADR-0038).
     fn start_queue(&mut self) {
-        if self.current.is_none() || self.importing || self.saving {
+        if self
+            .current
+            .as_ref()
+            .is_none_or(|asset| asset.document().rig().is_some())
+            || self.importing
+            || self.saving
+        {
             return;
         }
         if self.queue.as_ref().is_some_and(queue::Queue::running) {
@@ -1321,17 +1331,22 @@ impl App {
     }
     /// User-facing Save Copy: asks for a new path unless a smoke target exists.
     fn start_save(&mut self, after: Option<AfterSave>) {
-        if self.saving || self.editing || self.importing || self.current.is_none() {
+        let Some(asset) = self.current.as_ref() else {
+            return;
+        };
+        if self.saving || self.editing || self.importing {
+            return;
+        }
+        if let Err(error) = asset.document().require_editable() {
+            self.ui.set_status(error.to_string(), false);
             return;
         }
         let Some(window) = self.window.as_ref() else {
             return;
         };
-        let suggested = self.current.as_ref().map_or(String::new(), |asset| {
-            let name = asset.document().name();
-            let stem = name.strip_suffix(".glb").unwrap_or(name);
-            format!("{stem}_copy.glb")
-        });
+        let name = asset.document().name();
+        let stem = name.strip_suffix(".glb").unwrap_or(name);
+        let suggested = format!("{stem}_copy.glb");
         match native::choose_save_path(window, &suggested) {
             Ok(Some(path)) => self.start_save_to(path, after),
             Ok(None) => {
@@ -2698,13 +2713,17 @@ impl App {
             .current
             .as_ref()
             .map(|asset| (asset.session.can_undo(), asset.session.can_redo()));
+        let can_save = self
+            .current
+            .as_ref()
+            .is_some_and(|asset| asset.document().rig().is_none());
         self.ui.edit = viewer_ui::EditUi {
             busy: self.editing.then(|| self.edit_busy.clone()),
             preview: self.pending_preview.as_ref().and_then(EditCandidate::info),
             can_undo: history.is_some_and(|h| h.0),
             can_redo: history.is_some_and(|h| h.1),
-            can_save: self.current.is_some(),
-            can_overwrite: self.current.is_some() && self.working_path.is_some(),
+            can_save,
+            can_overwrite: can_save && self.working_path.is_some(),
             queue: self.queue.as_ref().map(|q| viewer_ui::QueueUi {
                 running: q.running(),
                 done: q

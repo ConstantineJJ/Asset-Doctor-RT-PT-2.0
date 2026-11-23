@@ -93,7 +93,11 @@ impl ViewerUi {
             "outline_color": self.outline_color,
             "layout": {
                 "right_block": self.show_summary,
-                "tab": if self.tab == Tab::Info { "info" } else { "health" },
+                "tab": match self.tab {
+                    Tab::Health => "health",
+                    Tab::Info => "info",
+                    Tab::Rigging => "rigging",
+                },
                 "health_page": if self.health_page == HealthPage::Repair { "repair" } else { "analysis" },
                 "tree": self.show_tree,
             },
@@ -316,6 +320,7 @@ impl ViewerUi {
             flag(layout, "tree", &mut self.show_tree, &mut bad);
             match layout.get("tab").and_then(Value::as_str) {
                 Some("info") => self.tab = Tab::Info,
+                Some("rigging") => self.tab = Tab::Rigging,
                 Some("health") => self.tab = Tab::Health,
                 None if layout.get("tab").is_none() => {}
                 _ => bad.push("layout.tab".into()),

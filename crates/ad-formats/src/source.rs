@@ -80,10 +80,8 @@ pub(crate) fn parse<'a>(
             "Compressed/quantized geometry is not supported in this build",
         ));
     }
-    if doc.skins().len() > 0 || doc.animations().len() > 0 {
-        return Err(unsupported(
-            "This build opens static meshes; skinned or animated assets are not supported yet",
-        ));
+    if doc.animations().len() > 0 {
+        return Err(unsupported("Animated assets are not supported yet"));
     }
     let bin = glb
         .bin

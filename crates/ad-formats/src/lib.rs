@@ -18,6 +18,8 @@ pub fn compare_reimported(
     reimported: &ad_document::AssetDocument,
     cancel: &ad_document::Cancellation,
 ) -> ad_document::AssetResult<()> {
+    original.require_editable()?;
+    reimported.require_editable()?;
     let roots = export::expected_roots(original, ad_document::ImportLimits::default(), cancel)?;
     roundtrip::compare(original, reimported, &roots, cancel)
 }
@@ -25,6 +27,7 @@ pub fn compare_reimported(
 mod export_tests;
 #[cfg(test)]
 mod export_vertex_tests;
+mod skin;
 mod source;
 use ad_document::{
     AssetDocument, AssetError, AssetResult, Cancellation, DocumentId, DocumentParts, ErrorCode,
@@ -55,6 +58,17 @@ pub fn import_glb(
         .bin
         .as_deref()
         .ok_or_else(|| invalid("GLB has no embedded BIN geometry"))?;
+    let skinned_meshes: std::collections::HashSet<_> = doc
+        .nodes()
+        .filter(|node| node.skin().is_some())
+        .filter_map(|node| node.mesh().map(|mesh| mesh.index()))
+        .collect();
+    let mut remaining = limits.decoded_bytes;
+    let skins = doc
+        .skins()
+        .map(|skin| skin::read_skin(skin, bin, &mut remaining, cancel))
+        .collect::<AssetResult<Vec<_>>>()?;
+    let mut influences = Vec::new();
     let mut meshes = Vec::new();
     let mut mesh_ids = Vec::new();
     let mut decoded = 0usize;
@@ -112,8 +126,23 @@ pub fn import_glb(
                 .checked_add(geometry_bytes(position.count(), index_count)?)
                 .and_then(|v| v.checked_add(uv_bytes))
                 .ok_or_else(budget)?;
-            if decoded > limits.decoded_bytes || position.count() > u32::MAX as usize {
+            let skinned = skinned_meshes.contains(&mesh.index());
+            if skinned {
+                decoded = position
+                    .count()
+                    .checked_mul(size_of::<ad_document::Influence>())
+                    .and_then(|bytes| decoded.checked_add(bytes))
+                    .ok_or_else(budget)?;
+            }
+            if decoded > remaining || position.count() > u32::MAX as usize {
                 return Err(budget());
+            }
+            if !skins.is_empty() {
+                influences.push(
+                    skinned
+                        .then(|| skin::read_influences(&primitive, bin, position.count(), cancel))
+                        .transpose()?,
+                );
             }
             let reader = primitive.reader(|_| Some(bin));
             let mut tangents = None;
@@ -362,7 +391,7 @@ pub fn import_glb(
         notes.push("Отображается только основная/первая сцена.".into());
     }
     cancel.check()?;
-    AssetDocument::new(
+    let document = AssetDocument::new(
         DocumentParts {
             id,
             name,
@@ -374,7 +403,23 @@ pub fn import_glb(
         },
         limits,
         cancel,
-    )
+    )?;
+    if skins.is_empty() {
+        Ok(document)
+    } else {
+        document.with_rig(
+            ad_document::Rig {
+                skins,
+                node_skins: doc
+                    .nodes()
+                    .map(|node| node.skin().map(|skin| skin.index()))
+                    .collect(),
+                influences,
+            },
+            limits,
+            cancel,
+        )
+    }
 }
 
 #[cfg(test)]

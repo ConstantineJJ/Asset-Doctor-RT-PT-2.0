@@ -43,6 +43,7 @@ impl ViewerUi {
         root: &mut egui::Ui,
         width: f32,
         loading: bool,
+        read_only: bool,
         actions: &mut Actions,
     ) {
         self.menu_buttons.clear();
@@ -96,7 +97,7 @@ impl ViewerUi {
                     }
                     let open = ui
                         .button("Открыть…")
-                        .on_hover_text("Открыть статическую GLB-модель · Ctrl+O");
+                        .on_hover_text("Открыть GLB-модель · Ctrl+O");
                     #[cfg(test)]
                     {
                         self.open_rect = open.rect;
@@ -109,7 +110,10 @@ impl ViewerUi {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if width >= 1400.
                             && ui
-                                .add_enabled(!loading, egui::Button::new("Очередь ремонтов…"))
+                                .add_enabled(
+                                    !loading && !read_only,
+                                    egui::Button::new("Очередь ремонтов…"),
+                                )
                                 .on_hover_text("Выполнить все доступные ремонты по очереди с проверкой после каждого шага.")
                                 .clicked()
                         {
@@ -824,6 +828,10 @@ impl ViewerUi {
             ui.label("Откройте модель.");
             return;
         };
+        if asset.document().rig().is_some() {
+            ui.label("Модель со скином открыта только для просмотра.");
+            return;
+        }
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.model_gizmo_on, "Гизмо модели").on_hover_text("Стрелки X/Y/Z сдвигают модель, кольца поворачивают её вокруг Y и X, квадрат масштабирует равномерно — всё от нижней точки центра. Каждое отпускание — одна правка: Ctrl+Z отменит, «Сохранить» запишет в файл.");
             if ui.add_enabled(!self.placement.is_identity(), egui::Button::new("Сбросить положение")).clicked() {
@@ -850,8 +858,11 @@ impl ViewerUi {
             .show(root, |ui| {
                 ui.add_space(4.);
                 ui.horizontal(|ui| {
-                    for (tab, label) in [(Tab::Health, "Здоровье"), (Tab::Info, "Инфо")]
-                    {
+                    for (tab, label) in [
+                        (Tab::Health, "Здоровье"),
+                        (Tab::Info, "Инфо"),
+                        (Tab::Rigging, "Rigging"),
+                    ] {
                         let response = ui.add(
                             egui::Button::selectable(
                                 self.tab == tab,
@@ -867,14 +878,7 @@ impl ViewerUi {
                             self.tab = tab;
                         }
                     }
-                    ui.add_enabled(
-                        false,
-                        egui::Button::selectable(false, RichText::new("Rigging").size(15.))
-                            .min_size(egui::vec2(0., 30.)),
-                    )
-                    .on_disabled_hover_text(
-                        "Риггинг (скелет и скиннинг) — этап P7, пока не реализован.",
-                    );
+
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
                             .small_button("Скрыть")
@@ -886,12 +890,19 @@ impl ViewerUi {
                     });
                 });
                 ui.separator();
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| match self.tab {
-                        Tab::Health => self.health_tab(ui, asset, loading, actions),
-                        Tab::Info => self.info_tab(ui, asset),
-                    });
+                if self.tab == Tab::Rigging {
+                    super::rig_ui::show(ui, asset);
+                } else {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            if self.tab == Tab::Health {
+                                self.health_tab(ui, asset, loading, actions);
+                            } else {
+                                self.info_tab(ui, asset);
+                            }
+                        });
+                }
             });
     }
 
@@ -918,7 +929,8 @@ impl ViewerUi {
             }
         });
         ui.separator();
-        let can_preview = !loading && self.edit.busy.is_none();
+        let read_only = asset.is_some_and(|asset| asset.document().rig().is_some());
+        let can_preview = !read_only && !loading && self.edit.busy.is_none();
         let mut buttons = Vec::new();
         let preview = match self.health_page {
             HealthPage::Analysis => crate::diagnostic_ui::analysis(
@@ -932,7 +944,7 @@ impl ViewerUi {
                 let preview = crate::diagnostic_ui::repairs(ui, asset, can_preview, &mut buttons);
                 ui.separator();
                 let queue = ui
-                    .add_enabled(!loading, egui::Button::new("Очередь ремонтов…"))
+                    .add_enabled(!read_only && !loading, egui::Button::new("Очередь ремонтов…"))
                     .on_hover_text("Выполнить все доступные ремонты по очереди с проверкой после каждого шага.");
                 #[cfg(test)]
                 {
@@ -963,7 +975,7 @@ impl ViewerUi {
         let Some(asset) = asset else {
             ui.label("Откройте модель, чтобы увидеть её состав и размеры.");
             ui.add_space(16.);
-            ui.weak("Статические GLB: PNG/JPEG, цвета вершин, нормали, OPAQUE/MASK. PBR — предварительный режим. BLEND, скелеты и анимации пока не поддерживаются.");
+            ui.weak("Статические GLB: PNG/JPEG, цвета вершин, нормали, OPAQUE/MASK. PBR — предварительный режим. Скины GLB доступны для просмотра во вкладке Rigging. BLEND и анимации пока не поддерживаются.");
             return;
         };
         ui.strong(asset.document().name());
@@ -1044,7 +1056,7 @@ impl ViewerUi {
         ui.add_space(16.);
         ui.separator();
         ui.weak("Металл и шероховатость: параметры × карты. Заполнение приблизительное. Свет окружения от панорамы (IBL) — в меню «Освещение» при показанном скайбоксе.");
-        ui.weak("Статические GLB: PNG/JPEG, цвета вершин, нормали, OPAQUE/MASK. PBR — предварительный режим. BLEND, скелеты и анимации пока не поддерживаются.");
+        ui.weak("Статические GLB: PNG/JPEG, цвета вершин, нормали, OPAQUE/MASK. PBR — предварительный режим. Скины GLB доступны для просмотра во вкладке Rigging. BLEND и анимации пока не поддерживаются.");
     }
 
     /// Right-click menu: the object under the pointer (gizmo, delete, hide,
@@ -1085,15 +1097,22 @@ impl ViewerUi {
                             })
                             .strong(),
                         );
+                        let editable = asset.document().rig().is_none();
                         if ui
-                            .button("Gizmo: переместить, повернуть, масштаб")
+                            .add_enabled(
+                                editable,
+                                egui::Button::new("Gizmo: переместить, повернуть, масштаб"),
+                            )
                             .clicked()
                         {
                             self.object_gizmo = Some(node);
                             self.model_gizmo_on = true;
                             close = true;
                         }
-                        if ui.button("Удалить (X)").clicked() {
+                        if ui
+                            .add_enabled(editable, egui::Button::new("Удалить (X)"))
+                            .clicked()
+                        {
                             actions.delete_object = Some(node);
                             close = true;
                         }
