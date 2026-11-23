@@ -602,7 +602,7 @@ impl App {
             return false;
         }
         if let Err(error) = asset.document().require_editable() {
-            self.ui.set_status(&error.to_string(), false);
+            self.ui.set_status(error.to_string(), false);
             return false;
         }
         let ticket = self.edits.request(EditInput {
@@ -1338,7 +1338,7 @@ impl App {
             return;
         }
         if let Err(error) = asset.document().require_editable() {
-            self.ui.set_status(&error.to_string(), false);
+            self.ui.set_status(error.to_string(), false);
             return;
         }
         let Some(window) = self.window.as_ref() else {
