@@ -71,6 +71,48 @@ impl Images {
         Ok(())
     }
 }
+/// The document keeps only the displayed roots. Verify the unedited scene
+/// entries independently against the original container, including extras.
+fn check_scene_metadata(
+    a: &AssetDocument,
+    b: &AssetDocument,
+    cancel: &Cancellation,
+) -> AssetResult<()> {
+    let parse = |bytes: &[u8]| {
+        let glb = gltf::binary::Glb::from_slice(bytes).map_err(|_| mismatch())?;
+        let (meta, _) =
+            crate::metadata::parse(&glb.json, crate::ExportLimits::default().metadata_values, cancel)?;
+        Ok::<_, AssetError>(meta)
+    };
+    let mut before = parse(a.source())?;
+    let mut after = parse(b.source())?;
+    if before.get("scene") != after.get("scene") {
+        return Err(mismatch());
+    }
+    let active = before
+        .get("scene")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0) as usize;
+    let scene_entries = |meta: &mut serde_json::Value| {
+        let mut scenes = meta
+            .get_mut("scenes")
+            .and_then(serde_json::Value::as_array_mut)
+            .map(std::mem::take)
+            .ok_or_else(mismatch)?;
+        scenes
+            .get_mut(active)
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or_else(mismatch)?
+            .remove("nodes");
+        Ok::<_, AssetError>(scenes)
+    };
+    equal(
+        &scene_entries(&mut before)?,
+        &scene_entries(&mut after)?,
+        cancel,
+    )
+}
+
 /// `roots`: ADR-0041 placed root nodes and the local transform the export
 /// wrote for them; every other node must be unchanged.
 pub(crate) fn compare(
@@ -88,6 +130,9 @@ pub(crate) fn compare(
     }
     // ADR-0048: nodes taken out of the scene leave the lists, not the file.
     equal(&a.scene_roots(), b.roots(), c)?;
+    if !a.node_edits().detached.is_empty() {
+        check_scene_metadata(a, b, c)?;
+    }
     let expects = !a.placement().is_identity() || !a.node_edits().locals.is_empty();
     if b.placement() != ad_document::Placement::IDENTITY
         || !b.node_edits().is_empty()
