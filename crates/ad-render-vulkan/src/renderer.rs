@@ -12,6 +12,9 @@ use ad_document::{DocumentId, GeometrySnapshot};
 use ash::vk;
 use std::sync::Arc;
 
+#[path = "skinning.rs"]
+mod skinning;
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum FrameResult {
     Presented,
@@ -53,6 +56,7 @@ impl StagedScene<'_> {
         let (document, revision) = self.tag();
         let bytes = self.scene.geometry_bytes();
         self.renderer.scene = Some(self.scene);
+        self.renderer.pose_buffers = None;
         eprintln!(
             "gpu_scene_published document={} revision={} vertices={} triangles={} stage_ms={} geometry_bytes={}",
             document.0, revision, self.vertices, self.triangles, self.stage_ms, bytes
@@ -83,6 +87,7 @@ pub struct Renderer {
     presented: vk::Fence,
     presentation_pending: bool,
     scene: Option<GpuScene>,
+    pose_buffers: Option<skinning::PoseBuffers>,
     scene_fault: Option<SceneFault>,
     overlay: Option<Overlay>,
     frame: Option<FrameBinding>,
@@ -157,6 +162,7 @@ impl Renderer {
             presented: vk::Fence::null(),
             presentation_pending: false,
             scene: None,
+            pose_buffers: None,
             scene_fault: None,
             sample_textures: true,
             sample_mr_maps: true,

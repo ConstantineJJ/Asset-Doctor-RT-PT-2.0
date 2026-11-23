@@ -1,17 +1,27 @@
-use crate::imports::PreparedAsset;
+use crate::{imports::PreparedAsset, rig_playback::Controls, viewer_ui::Actions};
 
-pub(super) fn show(ui: &mut egui::Ui, asset: Option<&PreparedAsset>) {
+pub(super) fn show(
+    ui: &mut egui::Ui,
+    asset: Option<&PreparedAsset>,
+    controls: Controls,
+    actions: &mut Actions,
+) {
     let Some(asset) = asset else {
-        ui.label("Откройте GLB со скином.");
+        ui.label("Откройте GLB со скином или анимацией.");
         return;
     };
     let document = asset.document();
+    let clips = document.animation_clips();
+    if !clips.is_empty() {
+        actions.playback = clip_controls(ui, clips, controls);
+        ui.separator();
+    }
     let Some(rig) = document.rig() else {
         ui.label("У этой модели нет скина.");
         return;
     };
 
-    ui.weak("Исходная поза · только просмотр");
+    ui.weak("Скин · только просмотр");
     let selector_id = ui.id().with(("skin", document.id().0));
     let mut selected = ui
         .ctx()
@@ -74,4 +84,62 @@ pub(super) fn show(ui: &mut egui::Ui, asset: Option<&PreparedAsset>) {
                 .on_hover_text(format!("Узел glTF №{}", node.0));
             }
         });
+}
+
+fn clip_controls(
+    ui: &mut egui::Ui,
+    clips: &[ad_document::AnimationClip],
+    mut controls: Controls,
+) -> Option<Controls> {
+    let before = controls;
+    egui::ComboBox::from_id_salt("animation_clip")
+        .selected_text(controls.clip.map_or_else(
+            || "Исходная поза".into(),
+            |index| format!("{} · {}", index + 1, clips[index].name),
+        ))
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut controls.clip, None, "Исходная поза");
+            for (index, clip) in clips.iter().enumerate() {
+                ui.selectable_value(
+                    &mut controls.clip,
+                    Some(index),
+                    format!("{} · {}", index + 1, clip.name),
+                );
+            }
+        });
+    if controls.clip != before.clip {
+        controls.time = 0.;
+        controls.playing = false;
+    }
+    if let Some(index) = controls.clip {
+        let duration = clips[index].duration;
+        ui.horizontal(|ui| {
+            let label = if controls.playing {
+                "Пауза"
+            } else {
+                "Воспроизвести"
+            };
+            if ui
+                .add_enabled(duration > 0., egui::Button::new(label))
+                .clicked()
+            {
+                if !controls.playing && controls.time >= duration {
+                    controls.time = 0.;
+                }
+                controls.playing = !controls.playing;
+            }
+            ui.checkbox(&mut controls.looping, "Повтор");
+        });
+        if ui
+            .add(
+                egui::Slider::new(&mut controls.time, 0. ..=duration)
+                    .fixed_decimals(2)
+                    .suffix(" с"),
+            )
+            .changed()
+        {
+            controls.playing = false;
+        }
+    }
+    (controls != before).then_some(controls)
 }

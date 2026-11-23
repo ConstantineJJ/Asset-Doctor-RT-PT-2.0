@@ -828,8 +828,8 @@ impl ViewerUi {
             ui.label("Откройте модель.");
             return;
         };
-        if asset.document().rig().is_some() {
-            ui.label("Модель со скином открыта только для просмотра.");
+        if asset.document().is_read_only() {
+            ui.label("Модель со скином или анимацией открыта только для просмотра.");
             return;
         }
         ui.horizontal(|ui| {
@@ -891,7 +891,7 @@ impl ViewerUi {
                 });
                 ui.separator();
                 if self.tab == Tab::Rigging {
-                    super::rig_ui::show(ui, asset);
+                    super::rig_ui::show(ui, asset, self.playback, actions);
                 } else {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
@@ -929,7 +929,7 @@ impl ViewerUi {
             }
         });
         ui.separator();
-        let read_only = asset.is_some_and(|asset| asset.document().rig().is_some());
+        let read_only = asset.is_some_and(|asset| asset.document().is_read_only());
         let can_preview = !read_only && !loading && self.edit.busy.is_none();
         let mut buttons = Vec::new();
         let preview = match self.health_page {
@@ -975,7 +975,7 @@ impl ViewerUi {
         let Some(asset) = asset else {
             ui.label("Откройте модель, чтобы увидеть её состав и размеры.");
             ui.add_space(16.);
-            ui.weak("Статические GLB: PNG/JPEG, цвета вершин, нормали, OPAQUE/MASK. PBR — предварительный режим. Скины GLB доступны для просмотра во вкладке Rigging. BLEND и анимации пока не поддерживаются.");
+            ui.weak("Статические GLB: PNG/JPEG, цвета вершин, нормали, OPAQUE/MASK. PBR — предварительный режим. Скины и клипы GLB доступны во вкладке Rigging. BLEND и морф-цели пока не поддерживаются.");
             return;
         };
         ui.strong(asset.document().name());
@@ -1056,7 +1056,7 @@ impl ViewerUi {
         ui.add_space(16.);
         ui.separator();
         ui.weak("Металл и шероховатость: параметры × карты. Заполнение приблизительное. Свет окружения от панорамы (IBL) — в меню «Освещение» при показанном скайбоксе.");
-        ui.weak("Статические GLB: PNG/JPEG, цвета вершин, нормали, OPAQUE/MASK. PBR — предварительный режим. Скины GLB доступны для просмотра во вкладке Rigging. BLEND и анимации пока не поддерживаются.");
+        ui.weak("Статические GLB: PNG/JPEG, цвета вершин, нормали, OPAQUE/MASK. PBR — предварительный режим. Скины и клипы GLB доступны во вкладке Rigging. BLEND и морф-цели пока не поддерживаются.");
     }
 
     /// Right-click menu: the object under the pointer (gizmo, delete, hide,
@@ -1097,7 +1097,7 @@ impl ViewerUi {
                             })
                             .strong(),
                         );
-                        let editable = asset.document().rig().is_none();
+                        let editable = !asset.document().is_read_only();
                         if ui
                             .add_enabled(
                                 editable,

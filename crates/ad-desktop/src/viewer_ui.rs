@@ -48,6 +48,7 @@ pub enum HealthPage {
 
 #[derive(Default)]
 pub struct Actions {
+    pub(crate) playback: Option<crate::rig_playback::Controls>,
     pub open: bool,
     pub fit: bool,
     pub cancel: bool,
@@ -241,6 +242,7 @@ pub struct EditUi {
     pub dirty: bool,
 }
 pub struct ViewerUi {
+    pub(crate) playback: crate::rig_playback::Controls,
     pub context: egui::Context,
     input: Option<egui_winit::State>,
     pub show_tree: bool,
@@ -482,6 +484,7 @@ impl Default for ViewerUi {
             menu_buttons: Vec::new(),
             menu_group_width: 0.,
             tab: Tab::Health,
+            playback: crate::rig_playback::Controls::default(),
             health_page: HealthPage::Analysis,
             carousel: Default::default(),
             lamp_hot: None,
@@ -1329,7 +1332,7 @@ impl ViewerUi {
         let output=context.run_ui(raw,|root| {
             let width=root.max_rect().width();
             let height=root.max_rect().height();
-            let read_only = asset.is_some_and(|asset| asset.document().rig().is_some());
+            let read_only = asset.is_some_and(|asset| asset.document().is_read_only());
             self.top_bar(root, width, loading, read_only, &mut actions);
             egui::Panel::bottom("status").exact_size(if self.error.is_some(){64.}else{32.}).resizable(false).show(root,|ui| {
                 if let Some(error)=&self.error {

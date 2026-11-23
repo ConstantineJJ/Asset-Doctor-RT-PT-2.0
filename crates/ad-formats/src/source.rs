@@ -5,6 +5,21 @@ pub(crate) struct Parsed<'a> {
     pub document: gltf::Document,
     pub glb: gltf::binary::Glb<'a>,
 }
+pub(crate) fn parse_for_export<'a>(
+    source: &'a [u8],
+    limits: ImportLimits,
+    cancel: &Cancellation,
+) -> AssetResult<Parsed<'a>> {
+    let parsed = parse(source, limits, cancel)?;
+    if parsed.document.skins().len() > 0 || parsed.document.animations().len() > 0 {
+        return Err(AssetError::new(
+            ErrorCode::Unsupported,
+            "Экспорт GLB со скином или анимацией пока не поддерживается.",
+        ));
+    }
+    Ok(parsed)
+}
+
 pub(crate) fn parse<'a>(
     source: &'a [u8],
     limits: ImportLimits,
@@ -64,6 +79,16 @@ pub(crate) fn parse<'a>(
             }
         }
     }
+    for animation in &root.animations {
+        cancel.check()?;
+        if animation
+            .channels
+            .iter()
+            .any(|channel| channel.sampler.value() >= animation.samplers.len())
+        {
+            return Err(invalid("Animation channel references a missing sampler"));
+        }
+    }
     let doc = gltf::Document::from_json(root)
         .map_err(|e| invalid(&format!("glTF validation failed: {e}")))?;
     cancel.check()?;
@@ -79,9 +104,6 @@ pub(crate) fn parse<'a>(
         return Err(unsupported(
             "Compressed/quantized geometry is not supported in this build",
         ));
-    }
-    if doc.animations().len() > 0 {
-        return Err(unsupported("Animated assets are not supported yet"));
     }
     let bin = glb
         .bin

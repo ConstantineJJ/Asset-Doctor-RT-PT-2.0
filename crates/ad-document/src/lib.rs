@@ -5,6 +5,7 @@ mod node_edits;
 mod normals;
 mod placement;
 mod skin;
+mod skin_animation;
 mod uv;
 mod vertices;
 mod view;
@@ -15,6 +16,7 @@ pub use indices::{
 pub use node_edits::{NodeEdits, NodeOp};
 pub use placement::Placement;
 pub use skin::{Influence, Rig, RigInspection, Skin, SkinReport};
+pub use skin_animation::{AnimationClip, Interpolation, Track, TrackKind, Transform};
 pub use view::{CandidateIndices, DocumentView, Primitives};
 #[cfg(test)]
 mod index_tests;
@@ -170,6 +172,7 @@ pub struct AssetDocument {
     /// ADR-0048 object edits (node transforms, nodes taken out).
     node_edits: NodeEdits,
     rig: Option<RigInspection>,
+    animation_clips: Vec<AnimationClip>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -392,6 +395,7 @@ impl AssetDocument {
             placement: Placement::IDENTITY,
             node_edits: NodeEdits::default(),
             rig: None,
+            animation_clips: Vec::new(),
             vertex_maps,
             parts,
             texture_stats: textures.stats,
@@ -445,6 +449,15 @@ impl DocumentView<'_> {
         limits: ImportLimits,
         cancel: &Cancellation,
     ) -> AssetResult<GeometrySnapshot> {
+        self.snapshot_with_pose(None, limits, cancel)
+    }
+
+    pub(crate) fn snapshot_with_pose(
+        &self,
+        locals: Option<&[Option<glam::Mat4>]>,
+        limits: ImportLimits,
+        cancel: &Cancellation,
+    ) -> AssetResult<GeometrySnapshot> {
         use glam::{Mat4, Vec3};
         let document = self.document();
         cancel.check()?;
@@ -475,7 +488,10 @@ impl DocumentView<'_> {
             }
             visited[id.0] = true;
             let node = &document.parts.nodes[id.0];
-            let world = parent * Mat4::from_cols_array_2d(&edits.local(document, id));
+            let local = locals
+                .and_then(|locals| locals[id.0])
+                .unwrap_or_else(|| Mat4::from_cols_array_2d(&edits.local(document, id)));
+            let world = parent * local;
             if !world.is_finite() {
                 return Err(AssetError::new(
                     ErrorCode::InvalidScene,

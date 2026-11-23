@@ -28,6 +28,7 @@ mod export_tests;
 #[cfg(test)]
 mod export_vertex_tests;
 mod skin;
+mod skin_animation;
 mod source;
 use ad_document::{
     AssetDocument, AssetError, AssetResult, Cancellation, DocumentId, DocumentParts, ErrorCode,
@@ -67,6 +68,10 @@ pub fn import_glb(
     let skins = doc
         .skins()
         .map(|skin| skin::read_skin(skin, bin, &mut remaining, cancel))
+        .collect::<AssetResult<Vec<_>>>()?;
+    let clips = doc
+        .animations()
+        .map(|clip| skin_animation::read_clip(clip, bin, &mut remaining, cancel))
         .collect::<AssetResult<Vec<_>>>()?;
     let mut influences = Vec::new();
     let mut meshes = Vec::new();
@@ -403,7 +408,8 @@ pub fn import_glb(
         },
         limits,
         cancel,
-    )?;
+    )?
+    .with_animation_clips(clips)?;
     if skins.is_empty() {
         Ok(document)
     } else {

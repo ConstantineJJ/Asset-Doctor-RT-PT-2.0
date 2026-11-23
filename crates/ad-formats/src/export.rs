@@ -438,7 +438,7 @@ pub fn preflight_changed_export(
     cancel.check()?;
     let document = view.document();
     document.require_editable()?;
-    let parsed = source::parse(document.source(), import, cancel)?;
+    let parsed = source::parse_for_export(document.source(), import, cancel)?;
     if parsed.glb.json.len() > limits.json_bytes {
         return Err(budget());
     }
@@ -615,7 +615,7 @@ pub(crate) fn expected_roots(
     if document.placement().is_identity() && document.node_edits().locals.is_empty() {
         return Ok(Vec::new());
     }
-    let parsed = source::parse(document.source(), import, cancel)?;
+    let parsed = source::parse_for_export(document.source(), import, cancel)?;
     Ok(placed_roots(
         &parsed,
         document,
@@ -690,7 +690,7 @@ pub fn prepare_glb(
     document.verify_tag(expected, cancel)?;
     let stamp = document.stamp();
     document.require_editable()?;
-    let parsed = source::parse(document.source(), import, cancel)?;
+    let parsed = source::parse_for_export(document.source(), import, cancel)?;
     if parsed.glb.json.len() > limits.json_bytes {
         return Err(budget());
     }

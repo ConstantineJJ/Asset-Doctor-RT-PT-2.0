@@ -44,10 +44,10 @@ impl AssetDocument {
     }
 
     pub fn require_editable(&self) -> AssetResult<()> {
-        if self.rig.is_some() {
+        if self.is_read_only() {
             return Err(AssetError::new(
                 ErrorCode::Unsupported,
-                "Модель со скином открыта только для просмотра.",
+                "Модель со скином или анимацией открыта только для просмотра.",
             ));
         }
         Ok(())

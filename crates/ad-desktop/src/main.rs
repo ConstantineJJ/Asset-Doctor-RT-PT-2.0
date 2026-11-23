@@ -22,6 +22,7 @@ mod model_gizmo;
 mod native;
 mod picking;
 mod queue;
+mod rig_playback;
 mod saving;
 mod skybox;
 mod skybox_library;
@@ -107,6 +108,7 @@ struct App {
     imports: Imports,
     importing: bool,
     current: Option<PreparedAsset>,
+    playback: rig_playback::Playback,
     camera: Camera,
     mouse: Option<MouseButton>,
     /// ADR-0043: drag action of the held mouse button.
@@ -389,7 +391,7 @@ impl App {
         let window = Arc::new(
             event_loop.create_window(
                 Window::default_attributes()
-                    .with_title(format!("{APP_TITLE} | Static GLB viewer prototype"))
+                    .with_title(format!("{APP_TITLE} | GLB viewer prototype"))
                     .with_inner_size(PhysicalSize::new(1200, 760))
                     .with_min_inner_size(PhysicalSize::new(320, 240))
                     .with_window_icon(Some(icon()?)),
@@ -504,6 +506,7 @@ impl App {
                     .set_status(format!("Открыт {}", asset.document().name()), false);
                 self.ui.error = None;
                 self.confirmed = Some(Confirmed::imported(&asset));
+                self.playback.reset();
                 self.current = Some(asset);
                 self.working_path = self.pending_path.take();
                 eprintln!("import_published ticket={}", completion.ticket);
@@ -1098,7 +1101,7 @@ impl App {
         if self
             .current
             .as_ref()
-            .is_none_or(|asset| asset.document().rig().is_some())
+            .is_none_or(|asset| asset.document().is_read_only())
             || self.importing
             || self.saving
         {
@@ -2018,7 +2021,8 @@ impl App {
     }
     /// Point lamp frame: model centre and radius (half the box diagonal).
     fn lamp_frame(&self) -> Option<([f32; 3], f32)> {
-        let bounds = self.current.as_ref()?.snapshot().bounds;
+        let asset = self.current.as_ref()?;
+        let bounds = self.playback.reference_snapshot(asset).bounds;
         let (min, max) = (
             glam::Vec3::from_array(bounds.min),
             glam::Vec3::from_array(bounds.max),
@@ -2303,6 +2307,7 @@ impl App {
             return Ok(());
         }
         self.refresh_edit_ui();
+        self.ui.playback = self.playback.controls;
         if self.current.is_some()
             && let Some(view) = self.initial_view.take()
         {
@@ -2451,7 +2456,7 @@ impl App {
             self.current.as_ref().and_then(|asset| {
                 // ADR-0041: the floor stays at the imported model's bottom,
                 // so a moved or turned model is seen moving against it.
-                let bounds = asset.snapshot().source_bounds;
+                let bounds = self.playback.reference_snapshot(asset).source_bounds;
                 ad_render_vulkan::grid::grid_for_bounds(bounds.min, bounds.max)
                     .map(|grid| ad_render_vulkan::grid::GridSettings { theme, ..grid })
             })
@@ -2603,6 +2608,9 @@ impl App {
                 self.updates.install(&mut self.ui.update, release);
             }
         }
+        if let Some(controls) = actions.playback {
+            self.playback.apply(controls);
+        }
         if let Some(path) = actions.skybox_open.clone() {
             self.skybox_job = Some(skybox::spawn(path, self.skybox_width()));
             self.ui.set_status("Загрузка скайбокса...", false);
@@ -2716,7 +2724,7 @@ impl App {
         let can_save = self
             .current
             .as_ref()
-            .is_some_and(|asset| asset.document().rig().is_none());
+            .is_some_and(|asset| !asset.document().is_read_only());
         self.ui.edit = viewer_ui::EditUi {
             busy: self.editing.then(|| self.edit_busy.clone()),
             preview: self.pending_preview.as_ref().and_then(EditCandidate::info),
@@ -2751,6 +2759,18 @@ impl App {
             return Ok(());
         }
         self.poll_import()?;
+        if !self.suspended
+            && let (Some(asset), Some(renderer)) = (&mut self.current, &mut self.renderer)
+        {
+            match self.playback.tick(asset, renderer) {
+                Ok(true) => self.pick_cache = None,
+                Ok(false) => {}
+                Err(error) => {
+                    self.playback.stop_after_error();
+                    self.ui.set_status(format!("Анимация: {error}"), true);
+                }
+            }
+        }
         self.poll_edit()?;
         self.poll_save(event_loop)?;
         if std::mem::take(&mut self.pending_overwrite) {
@@ -3556,6 +3576,7 @@ fn run() -> GpuResult<()> {
         imports: new_imports(),
         importing: false,
         current: None,
+        playback: rig_playback::Playback::new(),
         camera: Camera::default(),
         mouse: None,
         mouse_drag: None,
