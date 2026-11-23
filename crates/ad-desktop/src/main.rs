@@ -131,6 +131,9 @@ struct App {
     /// Picking: draw boxes and node parents of the shown snapshot; where the
     /// left button went down (a click selects).
     pick_cache: Option<PickCache>,
+    /// Pointer position (pixels) waiting for the hover pick of the next
+    /// frame: one pick per frame however many moves arrive.
+    hover_request: Option<(f64, f64)>,
     press: Option<(f64, f64)>,
     smoke_select: bool,
     /// --camera-view: applied once a model is shown.
@@ -379,7 +382,7 @@ impl App {
         let window = Arc::new(
             event_loop.create_window(
                 Window::default_attributes()
-                    .with_title("Asset Doctor RT-PT 2.0 | Static GLB viewer prototype")
+                    .with_title(format!("{APP_TITLE} | Static GLB viewer prototype"))
                     .with_inner_size(PhysicalSize::new(1200, 760))
                     .with_min_inner_size(PhysicalSize::new(320, 240))
                     .with_window_icon(Some(icon()?)),
@@ -420,21 +423,21 @@ impl App {
         self.ui.error = None;
         eprintln!("import_started ticket={ticket}");
         if let Some(window) = self.window.as_ref() {
-            window.set_title("Asset Doctor RT-PT 2.0 — Loading GLB… | Esc: cancel");
+            window.set_title(&format!("{APP_TITLE} — Loading GLB… | Esc: cancel"));
         }
     }
     fn title(&self) {
         if let Some(window) = self.window.as_ref() {
             let title = if let Some(asset) = self.current.as_ref() {
                 format!(
-                    "{}Asset Doctor RT-PT 2.0 — {} | {} vertices · {} triangles | Ctrl+O: open · F: fit · H: help",
+                    "{}{APP_TITLE} — {} | {} vertices · {} triangles | Ctrl+O: open · F: fit · H: help",
                     if self.is_dirty() { "* " } else { "" },
                     asset.document().name(),
                     asset.snapshot().positions.len(),
                     asset.snapshot().indices.len() / 3
                 )
             } else {
-                "Asset Doctor RT-PT 2.0 — Ctrl+O: open GLB · Drop GLB into window · H: help".into()
+                format!("{APP_TITLE} — Ctrl+O: open GLB · Drop GLB into window · H: help")
             };
             window.set_title(&title);
         }
@@ -1729,7 +1732,7 @@ impl App {
         let (origin, direction) = picking::ray(&self.camera, uv, w, h)?;
         let marks = ui_model::node_marks(asset.document(), &self.ui.tree);
         let snapshot = asset.snapshot();
-        let (draw, t) = picking::pick(snapshot, &cache.bounds, origin, direction, |i| {
+        let (draw, t) = picking::pick(snapshot, &cache.data, origin, direction, |i| {
             marks.get(snapshot.draws[i].node.0).is_some_and(|m| m.0)
         })?;
         Some((snapshot.draws[draw].node, origin + direction * t))
@@ -1757,6 +1760,12 @@ impl App {
             drag.offset = origin + direction * t - drag.hit;
         }
     }
+    /// Hover pick of the latest pointer move, at most once per frame.
+    fn update_hover(&mut self) {
+        if let Some((x, y)) = self.hover_request.take() {
+            self.ui.hover_node = self.pick_at(x, y);
+        }
+    }
     /// Builds the picking data of the shown snapshot once.
     fn ensure_pick_cache(&mut self) {
         let Some(asset) = self.current.as_ref() else {
@@ -1777,7 +1786,7 @@ impl App {
         }
         self.pick_cache = Some(PickCache {
             key,
-            bounds: picking::draw_bounds(asset.snapshot()),
+            data: picking::PickData::new(asset.snapshot()),
             parents,
         });
     }
@@ -1918,7 +1927,7 @@ impl App {
             glam::Vec3::splat(f32::NEG_INFINITY),
         );
         for i in draws {
-            if let Some((a, b)) = cache.bounds.get(i) {
+            if let Some((a, b)) = cache.data.bounds.get(i) {
                 lo = lo.min(*a);
                 hi = hi.max(*b);
             }
@@ -2314,6 +2323,7 @@ impl App {
             let (width, height) = frame.scene.map_or((1, 1), |r| (r.width, r.height));
             self.model_gizmo_actions(&actions, width, height);
         }
+        self.update_hover();
         let outline = self.outline_settings();
         // ADR-0048: an object gizmo or a left-button drag previews only the
         // object's draws; the model gizmo previews the whole model.
@@ -2518,6 +2528,11 @@ impl App {
             self.ui.set_status("Загрузка скайбокса...", false);
         }
         if actions.skybox_remove {
+            // A panorama still loading (another file or another quality) must
+            // not bring the SkyBox back after «Убрать».
+            self.skybox_job = None;
+            self.pending_skybox = None;
+            self.skybox_restore_on = None;
             self.ui.skybox_name = None;
             self.ui.skybox_path = None;
             self.ui.skybox_light = None;
@@ -2942,13 +2957,13 @@ impl ApplicationHandler for App {
                 if self.object_drag.as_ref().is_some_and(|d| d.active) {
                     self.drag_object(position.x, position.y);
                 }
-                let hover = if self.mouse_drag.is_none() && self.object_drag.is_none() && !consumed
-                {
-                    self.pick_at(position.x, position.y)
+                // The pick itself waits for the frame (see `update_hover`).
+                if self.mouse_drag.is_none() && self.object_drag.is_none() && !consumed {
+                    self.hover_request = Some((position.x, position.y));
                 } else {
-                    None
-                };
-                self.ui.hover_node = hover;
+                    self.hover_request = None;
+                    self.ui.hover_node = None;
+                }
                 Ok(())
             }
             WindowEvent::CursorLeft { .. } => {
@@ -3029,10 +3044,13 @@ struct ObjectDrag {
     active: bool,
 }
 
+/// Window title prefix with the program version (Cargo workspace version).
+pub(crate) const APP_TITLE: &str = concat!("Asset Doctor RT-PT v", env!("CARGO_PKG_VERSION"));
+
 /// Picking data of one snapshot.
 struct PickCache {
     key: (u64, ad_document::DocumentId),
-    bounds: Vec<(glam::Vec3, glam::Vec3)>,
+    data: picking::PickData,
     parents: Vec<Option<usize>>,
 }
 
@@ -3395,6 +3413,7 @@ fn run() -> GpuResult<()> {
         object_drag: None,
         press_right: None,
         pick_cache: None,
+        hover_request: None,
         press: None,
         smoke_select,
         initial_view,

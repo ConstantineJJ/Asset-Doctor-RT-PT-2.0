@@ -3,20 +3,37 @@
 Native Windows application for diagnosing, repairing and preparing 3D assets,
 written from scratch in Rust with a Vulkan renderer. Engineering prototype.
 
+Current build: **AD RT-PT v2.5.1**. Versions are MAJOR.MINOR.PATCH by
+significance: major reworks, notable features or large sets of fixes, and
+hotfixes.
+
 ## What it does today
 
 - Opens self-contained static **GLB** files and renders them with Vulkan:
   base color, vertex colors, optional direct PBR with metallic/roughness,
   normal, occlusion and emission maps.
-- Layout (ADR-0045): top bar with «Настройки» and file buttons on the left,
-  and on the right the drop-down menus «Вид», «Сетка и помощники»,
-  «Освещение», «Лампа», «Экспозиция и сила света», «Сцена», «Небо и
-  скайбокс», «Модель» (triangle buttons, every item shown at once) and a
-  lamp switch; the right block has tabs «Здоровье» (finding cards turned by
-  arrows, keys or a swipe; repair list, queue, history) and «Инфо»;
-  «Дерево» unfolds from the viewport's top-left corner; «Undo» / «Redo» sit
-  in its bottom-right corner. Camera: left drag orbit, right/middle drag pan,
-  wheel zoom, **F** frame, **Esc** cancel loading, **H** help.
+- Layout (ADR-0045): top bar with «Настройки» (help, keys and mouse, outline
+  colour, log file) and file buttons on the left; on the right the drop-down
+  menus «Вид», «Сетка и помощники», «Освещение», «Лампа», «Экспозиция и сила
+  света», «Сцена», «Окружение», the «SkyBox» button and «Модель», then the
+  outline («амёба») and lamp switches. The right block has tabs «Здоровье»
+  (finding cards turned by arrows, keys or a swipe; repair list, queue,
+  history), «Инфо» and «Rigging» (later). A light grey strip under the top bar
+  holds the black «Work-Tree» button, which opens the left block. The
+  bottom-right corner has Undo/Redo arrows and the views Front, Back, Left,
+  Right, Top, Bottom (orthographic) and 3/4; the bug in the status bar opens
+  the program log.
+- Mouse (ADR-0043, defaults): left button selects and drags objects, right
+  button opens the context menu; orbit with the side button Forward or
+  Shift+left drag, pan with the side button Back or Shift+right drag, wheel
+  zoom, **F** or middle click frame, **Tab** outline, **X** / **Delete**
+  delete object, **Esc** cancel loading, **H** help.
+- **Objects** (ADR-0048): the object under the cursor and the selected one get
+  an outline (dynamic contrast or one of 7 colours); drag an object with the
+  left button or with its own gizmo, or delete it; each change is one edit
+  (Ctrl+Z) and «Сохранить» writes the node matrices and removes deleted nodes.
+- **Work-Tree**: the node tree with an eye to hide a node and colour marks
+  (7 colours) to tint it in the viewport; view only.
 - **Пол** (Сцена): 20 procedural floors for contrast — studio grid, matte,
   light, checker, tiles, grass, dry grass, countryside, sand, asphalt,
   cobblestone, red brick, moon, Mars, lake, snow, clay, moss, blue and purple
@@ -28,22 +45,26 @@ written from scratch in Rust with a Vulkan renderer. Engineering prototype.
 - **Клавиши и мышь…** (Настройки): every key and mouse button, side buttons included,
   can be rebound (two chords per action, conflicts refused or moved, reset);
   saved to `%LOCALAPPDATA%\AssetDoctorRTPT\input-bindings.json`,
-- **Гизмо модели**: X/Y/Z arrows move the model, the red and green rings turn
-  it about X and Y, the centre square scales it uniformly — all from the
+- **Гизмо модели**: X/Y/Z arrows move the model, the red and green rings
+  (grabbed anywhere) turn it about X and Y, the centre square scales it uniformly — all from the
   bottom centre; each release is one edit (Ctrl+Z undoes it, «Сохранить»
   writes the new root node transforms; primitives stay byte-exact, extras and
   extensions are kept); the «Модель» menu has numeric «Сдвиг X/Y/Z»,
   «Поворот Y/X» and «Масштаб» fields plus «На пол» and «В центр»,
 - **Тени** (Освещение): the lamp casts a shadow on the model and the floor
   (shadow map, soft edges), with «Сила тени»,
-- **Лампа**: a sun icon in the viewport — drag it to turn the light around the
-  model, its blue arrows turn only the azimuth and the orange ones only the
-  height; right click for its menu (reset, from above, from the camera, on/off,
+- **Лампа**: a point light around the model — drag its icon to turn it, the
+  blue arrows turn only the azimuth, the orange ones only the height and the
+  violet one moves it closer or farther («Расстояние»; closer is brighter,
+  the shadow spreads from the lamp); right click for its menu (reset, from above, from the camera, on/off,
   colour, temperature, hide); also in «Освещение» and the lamp switch,
-- **Окружение** (Небо и скайбокс): sky background — dark studio, day, sunset, night,
+- **Окружение**: sky background — dark studio, day, sunset, night,
   overcast, light studio; optional «Свет окружения» lights the model from the
-  sky in PBR; «Скайбокс...» shows your own 2:1 PNG/JPEG or Radiance HDR
-  (`.hdr`) panorama (read only, with yaw; HDR at the current exposure), and
+  sky in PBR. The **SkyBox** window shows previews of every 2:1 PNG/JPEG or
+  Radiance HDR (`.hdr`) panorama in a folder (by default `assets/360.HDR`,
+  five Poly Haven CC0 panoramas are included) and shows the chosen one (read
+  only, with yaw; HDR at the current exposure; quality 2K/4K/8K within what
+  the GPU allows), and
   with «Свет окружения» the panorama lights the model (image based lighting:
   diffuse from spherical harmonics, reflections by roughness); view only, lamps and exposure stay as they are, at the model's lowest point with the step scaled to the model and
   red X / blue Z axes; **G** hides it or brings back the last theme. View only.
@@ -74,8 +95,7 @@ written from scratch in Rust with a Vulkan renderer. Engineering prototype.
   check; the original file is never overwritten.
 
 Skins, animations, morph targets, alpha BLEND, compressed geometry and external
-resources are refused at import. Rigging, environment lighting, RT and PT are
-planned.
+resources are refused at import. Rigging, RT and PT are planned.
 
 ## Build
 

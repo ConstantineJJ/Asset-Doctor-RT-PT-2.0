@@ -1501,6 +1501,7 @@ impl ViewerUi {
                 }
             }
             egui::Window::new("Справка").open(&mut self.help).resizable(true).show(&context,|ui| {
+                ui.strong(concat!("AD RT-PT v", env!("CARGO_PKG_VERSION")));
                 ui.label(format!("Открыть: {} или перетащить GLB в окно.",self.bindings.describe(crate::input::Action::Open)));
                 ui.label(format!("{} — вращение; {} — перемещение; колесо — масштаб.",self.bindings.describe(crate::input::Action::Orbit),self.bindings.describe(crate::input::Action::Pan)));
                 ui.label(format!("{} — вписать модель; {} — скрыть или вернуть пол; значок лампы во вьюпорте — тянуть, чтобы повернуть свет (его голубые стрелки — только по горизонтали, оранжевые — только по высоте), правая кнопка — меню лампы; стрелки X/Y/Z — сдвинуть модель, кольца — повернуть вокруг Y и X, квадрат — масштаб (каждое отпускание — одна правка, {} отменит); {} — отменить загрузку или подготовку правки; {} — справка.", self.bindings.describe(crate::input::Action::Fit), self.bindings.describe(crate::input::Action::ToggleFloor), self.bindings.describe(crate::input::Action::Undo), self.bindings.describe(crate::input::Action::Cancel), self.bindings.describe(crate::input::Action::Help)));
