@@ -608,13 +608,15 @@ impl DocumentView<'_> {
                 && let Some(skin) = rig.skin_at(node_id)
             {
                 if palettes[skin].is_none() {
-                    palettes[skin] = Some(rig.palette(
-                        skin,
-                        worlds
-                            .as_deref()
-                            .expect("rigged scene has world transforms"),
-                        cancel,
-                    )?);
+                    palettes[skin] = Some(
+                        rig.palette(
+                            skin,
+                            worlds
+                                .as_deref()
+                                .expect("rigged scene has world transforms"),
+                            cancel,
+                        )?,
+                    );
                 }
                 Some((
                     palettes[skin].as_deref().expect("initialized skin palette"),

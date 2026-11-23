@@ -81,9 +81,7 @@ pub(crate) fn parse<'a>(
         ));
     }
     if doc.animations().len() > 0 {
-        return Err(unsupported(
-            "Animated assets are not supported yet",
-        ));
+        return Err(unsupported("Animated assets are not supported yet"));
     }
     let bin = glb
         .bin

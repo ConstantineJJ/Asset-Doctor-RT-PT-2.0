@@ -128,7 +128,8 @@ pub fn import_glb(
                 .ok_or_else(budget)?;
             let skinned = skinned_meshes.contains(&mesh.index());
             if skinned {
-                decoded = position.count()
+                decoded = position
+                    .count()
                     .checked_mul(size_of::<ad_document::Influence>())
                     .and_then(|bytes| decoded.checked_add(bytes))
                     .ok_or_else(budget)?;

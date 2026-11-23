@@ -73,7 +73,9 @@ impl AssetDocument {
             cancel.check()?;
             if skin.joints.is_empty()
                 || skin.joints.len() != skin.inverse_bind.len()
-                || skin.skeleton.is_some_and(|node| node.0 >= self.nodes().len())
+                || skin
+                    .skeleton
+                    .is_some_and(|node| node.0 >= self.nodes().len())
             {
                 return Err(invalid("Invalid skin joint or inverse bind count"));
             }
@@ -115,9 +117,7 @@ impl AssetDocument {
                     cancel.check()?;
                 }
                 if influence.weights.iter().any(|w| !(0.0..=1.0).contains(w)) {
-                    return Err(invalid(
-                        "Skin weights must be finite and between 0 and 1",
-                    ));
+                    return Err(invalid("Skin weights must be finite and between 0 and 1"));
                 }
                 let sum: f32 = influence.weights.iter().sum();
                 if sum <= f32::MIN_POSITIVE {
@@ -162,9 +162,7 @@ impl AssetDocument {
                     ));
                 }
                 let Some((max_slot, active, normalized)) = &primitive_stats[mesh.0] else {
-                    return Err(invalid(
-                        "A skinned primitive is missing JOINTS_0/WEIGHTS_0",
-                    ));
+                    return Err(invalid("A skinned primitive is missing JOINTS_0/WEIGHTS_0"));
                 };
                 if usize::from(*max_slot) >= slots.len() {
                     return Err(invalid("Joint index is outside the skin's joint table"));

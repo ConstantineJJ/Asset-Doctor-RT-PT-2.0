@@ -22,7 +22,11 @@ pub(super) fn show(ui: &mut egui::Ui, asset: Option<&PreparedAsset>) {
         .selected_text(format!("{} · {}", selected + 1, rig.skins[selected].name))
         .show_ui(ui, |ui| {
             for (index, skin) in rig.skins.iter().enumerate() {
-                ui.selectable_value(&mut selected, index, format!("{} · {}", index + 1, skin.name));
+                ui.selectable_value(
+                    &mut selected,
+                    index,
+                    format!("{} · {}", index + 1, skin.name),
+                );
             }
         });
     ui.ctx()
@@ -32,12 +36,12 @@ pub(super) fn show(ui: &mut egui::Ui, asset: Option<&PreparedAsset>) {
     let report = &rig.reports[selected];
     ui.label(format!("Суставов: {}", skin.joints.len()));
     if let Some(root) = skin.skeleton {
-        ui.label(format!(
-            "Корень скелета: {}",
-            document.nodes()[root.0].name
-        ));
+        ui.label(format!("Корень скелета: {}", document.nodes()[root.0].name));
     }
-    ui.label(format!("Суставов без весов: {}", report.unused_joints.len()));
+    ui.label(format!(
+        "Суставов без весов: {}",
+        report.unused_joints.len()
+    ));
     if report.normalized_vertices > 0 {
         ui.label(format!(
             "Вершин с нормализованными весами: {}",
