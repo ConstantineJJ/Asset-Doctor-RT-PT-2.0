@@ -23,10 +23,18 @@ jobs:
         run: cargo deny check
       - name: Build Windows executable
         run: cargo build --workspace --release --locked
+      # The program looks for its bundled panoramas in assets/360.HDR next to
+      # the executable, so the artifact is the program folder.
+      - name: Stage program folder
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/assets | Out-Null
+          Copy-Item target/release/AssetDoctorRTPT.exe, target/release/ad-render-vulkan.exe dist/
+          Copy-Item -Recurse assets/360.HDR dist/assets/
+          Get-ChildItem -Recurse dist | Select-Object FullName, Length
       - uses: actions/upload-artifact@v4
         with:
           name: windows-msvc-foundation
-          path: |
-            target/release/ad-render-vulkan.exe
-            target/release/AssetDoctorRTPT.exe
+          path: dist/
+          if-no-files-found: error
       # Hosted build agents do not certify Vulkan presentation or installed UI.
