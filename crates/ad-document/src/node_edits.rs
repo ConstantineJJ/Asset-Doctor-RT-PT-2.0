@@ -91,6 +91,7 @@ impl AssetDocument {
         op: NodeOp,
         cancel: &Cancellation,
     ) -> AssetResult<PreparedRemoval> {
+        self.require_editable()?;
         self.verify_tag(expected, cancel)?;
         let refused = |m: &str| AssetError::new(ErrorCode::Unsupported, m.to_string());
         let mut edits = self.node_edits.clone();

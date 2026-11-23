@@ -9,6 +9,8 @@ use winit::{event::WindowEvent, window::Window};
 
 #[path = "panels.rs"]
 mod panels;
+#[path = "rig_ui.rs"]
+mod rig_ui;
 #[path = "update_ui.rs"]
 mod update_ui;
 pub(crate) use panels::MARK_COLORS;
@@ -28,12 +30,13 @@ pub enum TopMenu {
     Sky,
     Model,
 }
-/// Tabs of the right block («Rigging» comes later).
+/// Tabs of the right block.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tab {
     #[default]
     Health,
     Info,
+    Rigging,
 }
 /// Pages of «Здоровье».
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1326,7 +1329,8 @@ impl ViewerUi {
         let output=context.run_ui(raw,|root| {
             let width=root.max_rect().width();
             let height=root.max_rect().height();
-            self.top_bar(root,width,loading,&mut actions);
+            let read_only = asset.is_some_and(|asset| asset.document().rig().is_some());
+            self.top_bar(root, width, loading, read_only, &mut actions);
             egui::Panel::bottom("status").exact_size(if self.error.is_some(){64.}else{32.}).resizable(false).show(root,|ui| {
                 if let Some(error)=&self.error {
                     ui.add(egui::Label::new(RichText::new(error).color(Color32::from_rgb(255,173,173))).truncate()).on_hover_text(error);
@@ -1363,7 +1367,7 @@ impl ViewerUi {
                 if asset.is_some() && let Some(overlay)=self.helper_overlay.as_ref() {
                     Self::helpers_ui(root,self.scene,overlay);
                 }
-                if asset.is_some() && self.model_gizmo_on && let Some(gizmo)=self.model_gizmo {
+                if asset.is_some() && !read_only && self.model_gizmo_on && let Some(gizmo)=self.model_gizmo {
                     self.model_gizmo_ui(&context,root,gizmo,&mut actions);
                 }
                 if asset.is_some() && self.lamp_icon && let Some(gizmo)=self.lamp_gizmo.clone() {
@@ -1822,7 +1826,7 @@ mod tests {
         let (out, _, _) = ui.layout(raw(1200., 1000.), None, false);
         out.drop_without_applying_deltas();
         let labels: Vec<_> = ui.tab_rects.iter().map(|(t, _)| *t).collect();
-        assert_eq!(labels, [Tab::Health, Tab::Info]);
+        assert!(labels.starts_with(&[Tab::Health, Tab::Info]));
         let info = ui.tab_rects[1].1;
         click(&mut ui, None, info, (1200., 1000.));
         assert_eq!(ui.tab, Tab::Info);

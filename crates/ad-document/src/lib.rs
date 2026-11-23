@@ -4,6 +4,7 @@ mod indices;
 mod node_edits;
 mod normals;
 mod placement;
+mod skin;
 mod uv;
 mod vertices;
 mod view;
@@ -13,6 +14,7 @@ pub use indices::{
 };
 pub use node_edits::{NodeEdits, NodeOp};
 pub use placement::Placement;
+pub use skin::{Influence, Rig, RigInspection, Skin, SkinReport};
 pub use view::{CandidateIndices, DocumentView, Primitives};
 #[cfg(test)]
 mod index_tests;
@@ -167,6 +169,7 @@ pub struct AssetDocument {
     placement: Placement,
     /// ADR-0048 object edits (node transforms, nodes taken out).
     node_edits: NodeEdits,
+    rig: Option<RigInspection>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -388,6 +391,7 @@ impl AssetDocument {
             normals_changed,
             placement: Placement::IDENTITY,
             node_edits: NodeEdits::default(),
+            rig: None,
             vertex_maps,
             parts,
             texture_stats: textures.stats,
@@ -446,6 +450,11 @@ impl DocumentView<'_> {
         cancel.check()?;
         let mut visited = vec![false; document.parts.nodes.len()];
         let edits = self.node_edits();
+        let rig = document.rig();
+        let mut worlds = rig.map(|_| vec![None; document.nodes().len()]);
+        let mut palettes = rig.map_or_else(Vec::new, |rig| {
+            (0..rig.skins.len()).map(|_| None).collect::<Vec<_>>()
+        });
         let mut pending: Vec<_> = document
             .parts
             .roots
@@ -472,6 +481,9 @@ impl DocumentView<'_> {
                     ErrorCode::InvalidScene,
                     "World transform overflow",
                 ));
+            }
+            if let Some(worlds) = &mut worlds {
+                worlds[id.0] = Some(world);
             }
             for mesh_id in node.meshes.iter() {
                 if instances.len() >= limits.draws {
@@ -592,6 +604,25 @@ impl DocumentView<'_> {
             })?;
         for (mesh_id, world, node_id) in instances {
             let mesh = self.primitive(mesh_id);
+            let skinning = if let Some(rig) = rig
+                && let Some(skin) = rig.skin_at(node_id)
+            {
+                if palettes[skin].is_none() {
+                    palettes[skin] = Some(rig.palette(
+                        skin,
+                        worlds
+                            .as_deref()
+                            .expect("rigged scene has world transforms"),
+                        cancel,
+                    )?);
+                }
+                Some((
+                    palettes[skin].as_deref().expect("initialized skin palette"),
+                    rig.weights(mesh_id).expect("validated skin influences"),
+                ))
+            } else {
+                None
+            };
             let normal_matrix = normals::normal_matrix(world);
             let tangent_matrix = normals::tangent_matrix(world);
             let [
@@ -609,7 +640,9 @@ impl DocumentView<'_> {
                 if i % 4096 == 0 {
                     cancel.check()?;
                 }
-                let position = world.transform_point3(Vec3::from_array(*point));
+                let transform =
+                    skinning.map_or(world, |(palette, weights)| weights[i].transform(palette));
+                let position = transform.transform_point3(Vec3::from_array(*point));
                 if !position.is_finite() || position.abs().max_element() > 1.0e12 {
                     return Err(AssetError::new(
                         ErrorCode::InvalidGeometry,
@@ -618,12 +651,22 @@ impl DocumentView<'_> {
                 }
                 result.positions.push(position.to_array());
                 let normal = mesh.normals.as_ref().map_or([0.; 3], |values| {
-                    normals::transform_normal(normal_matrix, values[i])
+                    let matrix = if skinning.is_some() {
+                        normals::normal_matrix(transform)
+                    } else {
+                        normal_matrix
+                    };
+                    normals::transform_normal(matrix, values[i])
                 });
                 result.fallback_normal_vertices += usize::from(normal == [0.; 3]);
                 result.normals.push(normal);
                 let tangent = mesh.tangents.as_ref().map_or([0.; 4], |values| {
-                    normals::transform_tangent(tangent_matrix, normal, values[i])
+                    let matrix = if skinning.is_some() {
+                        normals::tangent_matrix(transform)
+                    } else {
+                        tangent_matrix
+                    };
+                    normals::transform_tangent(matrix, normal, values[i])
                 });
                 result.fallback_tangent_vertices +=
                     usize::from(mesh.normal_texture.is_some() && tangent == [0.; 4]);

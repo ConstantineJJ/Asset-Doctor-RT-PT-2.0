@@ -160,6 +160,7 @@ impl AssetDocument {
         limits: ImportLimits,
         cancel: &Cancellation,
     ) -> AssetResult<PreparedRemoval> {
+        self.require_editable()?;
         self.verify_tag(expected, cancel)?;
         let current = self.parts.meshes.get(mesh.0).ok_or_else(invalid)?;
         let count = current.positions.len();
@@ -312,6 +313,7 @@ impl AssetDocument {
         limits: ImportLimits,
         cancel: &Cancellation,
     ) -> AssetResult<PreparedRemoval> {
+        self.require_editable()?;
         self.verify_tag(expected, cancel)?;
         let current = self.parts.meshes.get(mesh.0).ok_or_else(invalid)?;
         if current.tangents.is_some() {

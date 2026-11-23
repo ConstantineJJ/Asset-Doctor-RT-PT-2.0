@@ -47,7 +47,7 @@ jobs:
           $version = (Select-String -Path Cargo.toml -Pattern '^version = "(\d+\.\d+\.\d+)"').Matches[0].Groups[1].Value
           if (-not $version) { throw 'No workspace version in Cargo.toml.' }
           New-Item -ItemType Directory -Force dist/AssetDoctorRTPT/assets, release | Out-Null
-          Copy-Item target/release/AssetDoctorRTPT.exe, target/release/AssetDoctorRTPT-Updater.exe dist/AssetDoctorRTPT/
+          Copy-Item target/release/AssetDoctorRTPT.exe, target/release/AssetDoctorRTPT-Updater.exe, LICENSE dist/AssetDoctorRTPT/
           Copy-Item -Recurse assets/360.HDR dist/AssetDoctorRTPT/assets/
           Get-ChildItem -Recurse dist | Select-Object FullName, Length
           $zip = 'release/AssetDoctorRTPT-win-x64.zip'
