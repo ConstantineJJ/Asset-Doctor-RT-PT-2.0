@@ -121,7 +121,7 @@ pub(crate) fn read_clip(
             times,
             values,
             cancel,
-        )?);
+        )?.from_source_channel(channel.index()));
     }
     let name = source
         .name()

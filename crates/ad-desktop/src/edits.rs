@@ -32,9 +32,23 @@ pub enum EditKind {
     Place(ad_document::Placement),
     /// ADR-0048: one object edit (node transform or delete).
     Node(ad_document::NodeOp),
+    Animation(AnimationEdit, Option<(usize, f32)>),
     Undo,
     Redo,
 }
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AnimationEdit {
+    Key(ad_document::AnimationKey),
+    Undo,
+    Redo,
+}
+
+pub struct AnimationFrame {
+    pub clip: usize,
+    pub time: f32,
+    pub rest: Arc<GeometrySnapshot>,
+}
+
 impl EditKind {
     /// The source primitive and repair kind of a repair edit.
     pub fn repair(self) -> Option<(MeshId, RepairKind)> {
@@ -45,7 +59,7 @@ impl EditKind {
             Self::MergeVertices(mesh) => Some((mesh, RepairKind::DuplicateVertices)),
             Self::CreateNormals(mesh) => Some((mesh, RepairKind::MissingNormals)),
             Self::FixNormals(mesh) => Some((mesh, RepairKind::ZeroNormals)),
-            Self::Undo | Self::Redo | Self::Place(_) | Self::Node(_) => None,
+            Self::Undo | Self::Redo | Self::Place(_) | Self::Node(_) | Self::Animation(..) => None,
         }
     }
     pub fn from_repair(mesh: MeshId, kind: RepairKind) -> Self {
@@ -112,6 +126,7 @@ pub struct EditCandidate {
     /// G006 boundary edges of the primitive before/after a merge.
     boundary: Option<(usize, usize)>,
     snapshot: Arc<GeometrySnapshot>,
+    pub animation_frame: Option<AnimationFrame>,
     diagnostics: AssetResult<ad_analysis::Report>,
 }
 impl EditCandidate {
@@ -259,11 +274,22 @@ pub fn prepare_edit(
             preview = None;
             change = Change::Remove(plan);
         }
-        EditKind::Undo => {
+        EditKind::Animation(AnimationEdit::Key(key), _) => {
+            let plan = session.prepare_animation_key(base.tag(), key, cancel)?;
+            if !plan.changes() {
+                return Err(AssetError::new(
+                    ad_document::ErrorCode::Unsupported,
+                    "Ключ не изменился",
+                ));
+            }
+            preview = None;
+            change = Change::Remove(plan);
+        }
+        EditKind::Undo | EditKind::Animation(AnimationEdit::Undo, _) => {
             preview = None;
             change = Change::Undo;
         }
-        EditKind::Redo => {
+        EditKind::Redo | EditKind::Animation(AnimationEdit::Redo, _) => {
             preview = None;
             change = Change::Redo;
         }
@@ -286,7 +312,28 @@ pub fn prepare_edit(
             cancel,
         )?;
     }
-    let snapshot = Arc::new(view.snapshot(ImportLimits::default(), cancel)?);
+    if candidate.changes_animation()
+        && matches!(kind, EditKind::Animation(AnimationEdit::Key(_), _))
+    {
+        ad_formats::verify_animation_export(
+            &view,
+            ad_formats::ExportLimits::default(),
+            ImportLimits::default(),
+            cancel,
+        )?;
+    }
+    let rest = Arc::new(view.snapshot(ImportLimits::default(), cancel)?);
+    let (snapshot, animation_frame) = if let EditKind::Animation(_, Some((clip, time))) = kind {
+        let duration = view.animation_clip(clip).ok_or_else(stale)?.duration;
+        let time = time.clamp(0., duration);
+        let pose = view.animated_snapshot(clip, time, None, ImportLimits::default(), cancel)?;
+        (
+            Arc::new(pose),
+            Some(AnimationFrame { clip, time, rest }),
+        )
+    } else {
+        (rest, None)
+    };
     // Like import, an analysis resource refusal keeps a viewable result with
     // an incomplete report; whole-job cancellation still discards everything.
     let diagnostics = ad_analysis::analyze_view(&view, ad_analysis::Limits::default(), cancel);
@@ -306,6 +353,7 @@ pub fn prepare_edit(
         appended,
         boundary,
         snapshot,
+        animation_frame,
         diagnostics,
     })))
 }

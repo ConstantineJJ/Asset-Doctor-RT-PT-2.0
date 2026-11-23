@@ -1,3 +1,8 @@
+#[path = "rig_export.rs"]
+mod rig_export;
+pub use rig_export::verify_animation_export;
+pub(crate) use rig_export::compare as compare_rig_readback;
+
 use crate::{metadata, roundtrip, source};
 use ad_document::{
     AssetDocument, AssetError, AssetResult, Cancellation, DocumentStamp, DocumentTag, DocumentView,
@@ -689,6 +694,12 @@ pub fn prepare_glb(
 ) -> AssetResult<VerifiedGlb> {
     document.verify_tag(expected, cancel)?;
     let stamp = document.stamp();
+    if document.is_read_only() {
+        let bytes = rig_export::verify(&document.view(), limits, import, cancel)?;
+        let verified = VerifiedGlb { stamp, bytes };
+        verified.verify_current(document, cancel)?;
+        return Ok(verified);
+    }
     document.require_editable()?;
     let parsed = source::parse_for_export(document.source(), import, cancel)?;
     if parsed.glb.json.len() > limits.json_bytes {

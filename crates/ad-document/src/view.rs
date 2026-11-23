@@ -17,6 +17,7 @@ pub(crate) enum CandidateData<'a> {
     Placement(crate::Placement),
     /// ADR-0048: a new object edit state; primitives stay current.
     Nodes(&'a crate::NodeEdits),
+    Animation(usize, &'a crate::AnimationClip),
 }
 impl<'a> CandidateData<'a> {
     /// Proposed indices, or None when the primitive data stays current.
@@ -24,7 +25,7 @@ impl<'a> CandidateData<'a> {
         match self {
             Self::Indices(v) => Some(v),
             Self::Primitive(p, ..) => Some(&p.indices),
-            Self::Placement(_) | Self::Nodes(_) => None,
+            Self::Placement(_) | Self::Nodes(_) | Self::Animation(..) => None,
         }
     }
 }
@@ -82,6 +83,9 @@ impl<'a> CandidateIndices<'a> {
     pub fn changes_nodes(&self) -> bool {
         matches!(self.data, CandidateData::Nodes(_))
     }
+    pub fn changes_animation(&self) -> bool {
+        matches!(self.data, CandidateData::Animation(..))
+    }
 }
 
 /// Immutable view used by snapshots and analysis. A candidate view never
@@ -94,6 +98,16 @@ pub struct DocumentView<'a> {
     candidate: Option<(MeshId, CandidateData<'a>)>,
 }
 impl<'a> DocumentView<'a> {
+    pub fn animation_clip(&self, index: usize) -> Option<&'a crate::AnimationClip> {
+        match self.candidate {
+            Some((_, CandidateData::Animation(changed, clip))) if changed == index => Some(clip),
+            _ => self.document.animation_clips().get(index).map(Arc::as_ref),
+        }
+    }
+    pub fn animation_clips(&self) -> impl ExactSizeIterator<Item = &'a crate::AnimationClip> + '_ {
+        (0..self.document.animation_clips().len())
+            .map(|index| self.animation_clip(index).expect("existing clip"))
+    }
     pub fn document(&self) -> &'a AssetDocument {
         self.document
     }
@@ -234,6 +248,17 @@ impl AssetDocument {
             }
             CandidateData::Placement(p) => {
                 if !p.valid() {
+                    return Err(invalid());
+                }
+                cancel.check()?;
+                return Ok(DocumentView {
+                    document: self,
+                    tag: candidate.next,
+                    candidate: Some((candidate.mesh, candidate.data)),
+                });
+            }
+            CandidateData::Animation(index, _) => {
+                if index >= self.animation_clips().len() {
                     return Err(invalid());
                 }
                 cancel.check()?;

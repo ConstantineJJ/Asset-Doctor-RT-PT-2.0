@@ -8,7 +8,7 @@ pub(crate) fn mismatch() -> AssetError {
         "Export readback differs from the current document",
     )
 }
-fn equal<T: PartialEq>(a: &[T], b: &[T], c: &Cancellation) -> AssetResult<()> {
+pub(crate) fn equal<T: PartialEq>(a: &[T], b: &[T], c: &Cancellation) -> AssetResult<()> {
     if a.len() != b.len() {
         return Err(mismatch());
     }

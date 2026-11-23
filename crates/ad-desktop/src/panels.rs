@@ -891,7 +891,9 @@ impl ViewerUi {
                 });
                 ui.separator();
                 if self.tab == Tab::Rigging {
-                    super::rig_ui::show(ui, asset, self.playback, actions);
+                    ui.add_enabled_ui(self.edit.busy.is_none(), |ui| {
+                        super::rig_ui::show(ui, asset, self.playback, actions);
+                    });
                 } else {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])

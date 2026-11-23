@@ -604,7 +604,9 @@ impl App {
         if self.importing || self.editing || self.saving {
             return false;
         }
-        if let Err(error) = asset.document().require_editable() {
+        if matches!(kind, EditKind::Animation(..)) {
+            self.playback.pause_for_edit();
+        } else if let Err(error) = asset.document().require_editable() {
             self.ui.set_status(error.to_string(), false);
             return false;
         }
@@ -625,14 +627,18 @@ impl App {
             EditKind::Place(_) => "Перемещение модели…",
             EditKind::Node(ad_document::NodeOp::Local(..)) => "Перемещение объекта…",
             EditKind::Node(ad_document::NodeOp::Detach(_)) => "Удаление объекта…",
-            EditKind::Undo => "Подготовка отмены правки…",
-            EditKind::Redo => "Подготовка повтора правки…",
+            EditKind::Animation(edits::AnimationEdit::Key(_), _) => "Проверка ключа и экспорта GLB…",
+            EditKind::Undo | EditKind::Animation(edits::AnimationEdit::Undo, _) => "Подготовка отмены правки…",
+            EditKind::Redo | EditKind::Animation(edits::AnimationEdit::Redo, _) => "Подготовка повтора правки…",
         }
         .into();
         eprintln!("edit_started ticket={ticket} kind={kind:?}");
         true
     }
     fn poll_edit(&mut self) -> GpuResult<()> {
+        if !self.playback.is_idle() {
+            return Ok(());
+        }
         let Some(completion) = self.edits.poll() else {
             return Ok(());
         };
@@ -740,7 +746,7 @@ impl App {
             None => Ok(()),
         }
     }
-    fn publish_candidate(&mut self, candidate: EditCandidate) -> GpuResult<()> {
+    fn publish_candidate(&mut self, mut candidate: EditCandidate) -> GpuResult<()> {
         // Any publication attempt invalidates an older preview.
         self.pending_preview = None;
         let kind = candidate.kind();
@@ -762,6 +768,7 @@ impl App {
             )
         });
         let rule = kind.repair().map(|(_, k)| k);
+        let animation_frame = candidate.animation_frame.take();
         let published = publish_edit(asset, renderer, candidate, &Cancellation::default());
         eprintln!(
             "edit_timing stage=publish kind={} publish_ms={}",
@@ -770,6 +777,9 @@ impl App {
         );
         match published {
             Ok(tag) => {
+                if matches!(kind, EditKind::Animation(..)) {
+                    self.playback.edit_published(animation_frame);
+                }
                 let report = asset.diagnostics().as_ref().ok();
                 let count =
                     |kind| report.map_or(usize::MAX, |r| edits::findings_in_mesh(r, mesh, kind));
@@ -1338,10 +1348,6 @@ impl App {
             return;
         };
         if self.saving || self.editing || self.importing {
-            return;
-        }
-        if let Err(error) = asset.document().require_editable() {
-            self.ui.set_status(error.to_string(), false);
             return;
         }
         let Some(window) = self.window.as_ref() else {
@@ -2611,6 +2617,12 @@ impl App {
         if let Some(controls) = actions.playback {
             self.playback.apply(controls);
         }
+        if let Some(preview) = actions.animation_preview {
+            self.playback.preview(preview);
+        }
+        if let Some(key) = actions.animation_key {
+            self.request_edit(EditKind::Animation(edits::AnimationEdit::Key(key), Some((key.clip, key.time))));
+        }
         if let Some(path) = actions.skybox_open.clone() {
             self.skybox_job = Some(skybox::spawn(path, self.skybox_width()));
             self.ui.set_status("Загрузка скайбокса...", false);
@@ -2701,6 +2713,16 @@ impl App {
             _ => asset.session.can_redo(),
         });
         if allowed {
+            let kind = if self.current.as_ref().is_some_and(|asset| asset.document().is_read_only()) {
+                let action = match kind {
+                    EditKind::Undo => edits::AnimationEdit::Undo,
+                    _ => edits::AnimationEdit::Redo,
+                };
+                let controls = self.playback.controls;
+                EditKind::Animation(action, controls.clip.map(|clip| (clip, controls.time)))
+            } else {
+                kind
+            };
             self.request_edit(kind);
         }
     }
@@ -2721,10 +2743,7 @@ impl App {
             .current
             .as_ref()
             .map(|asset| (asset.session.can_undo(), asset.session.can_redo()));
-        let can_save = self
-            .current
-            .as_ref()
-            .is_some_and(|asset| !asset.document().is_read_only());
+        let can_save = self.current.is_some();
         self.ui.edit = viewer_ui::EditUi {
             busy: self.editing.then(|| self.edit_busy.clone()),
             preview: self.pending_preview.as_ref().and_then(EditCandidate::info),
@@ -2759,7 +2778,7 @@ impl App {
             return Ok(());
         }
         self.poll_import()?;
-        if !self.suspended
+        if !self.suspended && !self.editing
             && let (Some(asset), Some(renderer)) = (&mut self.current, &mut self.renderer)
         {
             match self.playback.tick(asset, renderer) {
@@ -3202,8 +3221,10 @@ fn edit_name(kind: EditKind) -> &'static str {
         EditKind::Place(_) => "place",
         EditKind::Node(ad_document::NodeOp::Local(..)) => "move_object",
         EditKind::Node(ad_document::NodeOp::Detach(_)) => "delete_object",
-        EditKind::Undo => "undo",
-        EditKind::Redo => "redo",
+        EditKind::Animation(edits::AnimationEdit::Key(key), _) if key.remove => "delete_key",
+        EditKind::Animation(edits::AnimationEdit::Key(_), _) => "set_key",
+        EditKind::Undo | EditKind::Animation(edits::AnimationEdit::Undo, _) => "undo",
+        EditKind::Redo | EditKind::Animation(edits::AnimationEdit::Redo, _) => "redo",
     }
 }
 

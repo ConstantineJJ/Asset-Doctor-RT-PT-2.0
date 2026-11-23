@@ -120,7 +120,6 @@ impl<Q: Send + 'static, R: Send + 'static> Worker<Q, R> {
             .result
             .take()
     }
-    #[cfg(test)]
     pub fn is_idle(&self) -> bool {
         let state = self.shared.0.lock().unwrap();
         !state.active && state.pending.is_none()

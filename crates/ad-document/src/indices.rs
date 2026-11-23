@@ -41,6 +41,7 @@ pub(crate) enum Alternate {
     Placement(crate::Placement),
     /// ADR-0048: the other object edit state.
     Nodes(Box<crate::NodeEdits>),
+    Animation(usize, Arc<crate::AnimationClip>),
 }
 impl Alternate {
     fn data(&self) -> CandidateData<'_> {
@@ -51,6 +52,7 @@ impl Alternate {
             }
             Self::Placement(p) => CandidateData::Placement(*p),
             Self::Nodes(e) => CandidateData::Nodes(e),
+            Self::Animation(index, clip) => CandidateData::Animation(*index, clip),
         }
     }
     /// Shape used for decoded-budget admission: (vertices, UV channels, indices).
@@ -58,7 +60,7 @@ impl Alternate {
         match self {
             Self::Indices(v) => (current.positions.len(), current.uv_channels.len(), v.len()),
             Self::Primitive(p, ..) => (p.positions.len(), p.uv_channels.len(), p.indices.len()),
-            Self::Placement(_) | Self::Nodes(_) => (
+            Self::Placement(_) | Self::Nodes(_) | Self::Animation(..) => (
                 current.positions.len(),
                 current.uv_channels.len(),
                 current.indices.len(),
@@ -70,6 +72,7 @@ impl Alternate {
             Self::Indices(v) => v.capacity().checked_mul(4).ok_or_else(budget),
             Self::Primitive(p, map, _) => crate::vertices::primitive_bytes(p, map.as_ref()),
             Self::Placement(_) => Ok(std::mem::size_of::<crate::Placement>()),
+            Self::Animation(_, clip) => Ok(clip.retained_bytes()),
             Self::Nodes(e) => Ok(std::mem::size_of::<crate::NodeEdits>()
                 + e.locals.len() * 96
                 + e.detached.len() * 32),
@@ -98,7 +101,7 @@ impl PreparedRemoval {
         Ok(match &self.replacement {
             Some(Alternate::Indices(v)) => v,
             Some(Alternate::Primitive(p, ..)) => &p.indices,
-            Some(Alternate::Placement(_) | Alternate::Nodes(_)) | None => {
+            Some(Alternate::Placement(_) | Alternate::Nodes(_) | Alternate::Animation(..)) | None => {
                 &document.parts.meshes[self.preview.mesh.0].indices
             }
         })
@@ -436,7 +439,9 @@ impl AssetDocument {
         limits: ImportLimits,
         cancel: &Cancellation,
     ) -> AssetResult<StagedExchange<'a>> {
-        self.require_editable()?;
+        if !matches!(change.alternate, Alternate::Animation(..)) {
+            self.require_editable()?;
+        }
         self.verify_tag(expected, cancel)?;
         if !Arc::ptr_eq(&self.origin, &change.owner) {
             return Err(conflict());
@@ -446,6 +451,11 @@ impl AssetDocument {
             Alternate::Indices(_) => mesh.indices.capacity().checked_mul(4).ok_or_else(budget)?,
             Alternate::Primitive(..) => self.primitive_capacity_bytes(change.mesh)?,
             Alternate::Placement(_) => std::mem::size_of::<crate::Placement>(),
+            Alternate::Animation(index, _) => self
+                .animation_clips
+                .get(*index)
+                .ok_or_else(invalid)?
+                .retained_bytes(),
             Alternate::Nodes(_) => {
                 std::mem::size_of::<crate::NodeEdits>()
                     + self.node_edits.locals.len() * 96
@@ -519,6 +529,7 @@ fn swap_in(document: &mut AssetDocument, mesh: MeshId, alternate: &mut Alternate
         }
         Alternate::Placement(p) => std::mem::swap(&mut document.placement, p),
         Alternate::Nodes(e) => std::mem::swap(&mut document.node_edits, &mut **e),
+        Alternate::Animation(index, clip) => std::mem::swap(&mut document.animation_clips[*index], clip),
     }
 }
 

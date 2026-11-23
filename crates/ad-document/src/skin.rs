@@ -11,6 +11,7 @@ pub struct Skin {
     pub skeleton: Option<NodeId>,
 }
 
+#[derive(PartialEq)]
 pub struct Influence {
     pub joints: [u16; 4],
     pub weights: [f32; 4],
@@ -34,6 +35,39 @@ pub struct RigInspection {
     influences: Vec<Option<Vec<Influence>>>,
 }
 
+impl RigInspection {
+    pub fn matches(&self, other: &Self, cancel: &Cancellation) -> AssetResult<bool> {
+        if self.skins.len() != other.skins.len()
+            || self.node_skins != other.node_skins
+            || self.influences.len() != other.influences.len()
+        {
+            return Ok(false);
+        }
+        for (a, b) in self.skins.iter().zip(&other.skins) {
+            cancel.check()?;
+            if a.name != b.name || a.joints != b.joints || a.inverse_bind != b.inverse_bind || a.skeleton != b.skeleton {
+                return Ok(false);
+            }
+        }
+        for (a, b) in self.influences.iter().zip(&other.influences) {
+            cancel.check()?;
+            match (a, b) {
+                (None, None) => {},
+                (Some(a), Some(b)) if a.len() == b.len() => {
+                    for (a, b) in a.chunks(4096).zip(b.chunks(4096)) {
+                        cancel.check()?;
+                        if a != b {
+                            return Ok(false);
+                        }
+                    }
+                }
+                _ => return Ok(false),
+            }
+        }
+        Ok(true)
+    }
+}
+
 fn invalid(message: &str) -> AssetError {
     AssetError::new(ErrorCode::InvalidScene, message)
 }
@@ -47,7 +81,7 @@ impl AssetDocument {
         if self.is_read_only() {
             return Err(AssetError::new(
                 ErrorCode::Unsupported,
-                "Модель со скином или анимацией открыта только для просмотра.",
+                "Изменение геометрии и объектов заблокировано для модели со скином или анимацией.",
             ));
         }
         Ok(())

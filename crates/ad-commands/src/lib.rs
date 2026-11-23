@@ -263,6 +263,18 @@ impl Session {
         }
         Ok(plan)
     }
+    pub fn prepare_animation_key(
+        &self,
+        expected: DocumentTag,
+        key: ad_document::AnimationKey,
+        cancel: &Cancellation,
+    ) -> AssetResult<PreparedRemoval> {
+        let plan = self.document.prepare_animation_key(expected, key, cancel)?;
+        if plan.changes() {
+            self.admit(plan.retained_bytes())?;
+        }
+        Ok(plan)
+    }
     pub fn commit(
         &mut self,
         plan: PreparedRemoval,
