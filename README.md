@@ -1,5 +1,7 @@
 # Asset Doctor RT-PT 2.0
 
+**Русская версия: [README.ru.md](README.ru.md)**
+
 Native Windows application for diagnosing, repairing and preparing 3D assets,
 written from scratch in Rust with a Vulkan renderer. Engineering prototype.
 
@@ -7,95 +9,100 @@ Current build: **AD RT-PT v2.5.2**. Versions are MAJOR.MINOR.PATCH by
 significance: major reworks, notable features or large sets of fixes, and
 hotfixes.
 
+## Install and update
+
+1. Download `AssetDoctorRTPT-win-x64.zip` from
+   [Releases](https://github.com/ConstantineJJ/Asset-Doctor-RT-PT-2.0/releases).
+   Optionally compare it with the `.sha256` file next to it.
+2. Unpack it into a folder you can write to (not `Program Files`) and run
+   `AssetDoctorRTPT.exe`. A GPU driver with Vulkan 1.1 or newer is required.
+3. **Updates (ADR-0049).** The program checks this repository's releases once
+   at start-up; turn it off in «Настройки → Обновления». You can also check by
+   hand with «Проверить обновления…» there. A new version is installed only
+   after you confirm it in the update window:
+   - the package is downloaded and its SHA-256 verified;
+   - the program closes;
+   - `AssetDoctorRTPT-Updater.exe` replaces the files and starts the new
+     version;
+   - if the new version does not start, the previous one is restored.
+
+   The update check is the program's only network access. It sends no user
+   data, and your own panoramas in `assets\360.HDR` are kept.
+
 ## What it does today
 
-- Opens self-contained static **GLB** files and renders them with Vulkan:
-  base color, vertex colors, optional direct PBR with metallic/roughness,
-  normal, occlusion and emission maps.
-- Layout (ADR-0045): top bar with «Настройки» (help, keys and mouse, outline
-  colour, log file) and file buttons on the left; on the right the drop-down
-  menus «Вид», «Сетка и помощники», «Освещение», «Лампа», «Экспозиция и сила
-  света», «Сцена», «Окружение», the «SkyBox» button and «Модель», then the
-  outline («амёба») and lamp switches. The right block has tabs «Здоровье»
-  (finding cards turned by arrows, keys or a swipe; repair list, queue,
-  history), «Инфо» and «Rigging» (later). A light grey strip under the top bar
-  holds the black «Work-Tree» button, which opens the left block. The
-  bottom-right corner has Undo/Redo arrows and the views Front, Back, Left,
-  Right, Top, Bottom (orthographic) and 3/4; the bug in the status bar opens
-  the program log.
-- Mouse (ADR-0043, defaults): left button selects and drags objects, right
-  button opens the context menu; orbit with the side button Forward or
-  Shift+left drag, pan with the side button Back or Shift+right drag, wheel
-  zoom, **F** or middle click frame, **Tab** outline, **X** / **Delete**
-  delete object, **Esc** cancel loading, **H** help.
-- **Objects** (ADR-0048): the object under the cursor and the selected one get
-  an outline (dynamic contrast or one of 7 colours); drag an object with the
-  left button or with its own gizmo, or delete it; each change is one edit
-  (Ctrl+Z) and «Сохранить» writes the node matrices and removes deleted nodes.
-- **Work-Tree**: the node tree with an eye to hide a node and colour marks
-  (7 colours) to tint it in the viewport; view only.
-- **Пол** (Сцена): 20 procedural floors for contrast — studio grid, matte,
-  light, checker, tiles, grass, dry grass, countryside, sand, asphalt,
-  cobblestone, red brick, moon, Mars, lake, snow, clay, moss, blue and purple
-  studio — or no surface,
-- **Канал** (Вид) / **Каркас / Оси / Габариты** (Сетка и помощники): show normals, UV, base colour,
-  metal, roughness, AO or emission instead of lighting; triangle edges over the
-  model; world axes and the bounding box with its size; «Пресет света» sets the
-  lamp, key, fill and exposure in one choice,
-- **Клавиши и мышь…** (Настройки): every key and mouse button, side buttons included,
-  can be rebound (two chords per action, conflicts refused or moved, reset);
-  saved to `%LOCALAPPDATA%\AssetDoctorRTPT\input-bindings.json`,
-- **Гизмо модели**: X/Y/Z arrows move the model, the red and green rings
-  (grabbed anywhere) turn it about X and Y, the centre square scales it uniformly — all from the
-  bottom centre; each release is one edit (Ctrl+Z undoes it, «Сохранить»
-  writes the new root node transforms; primitives stay byte-exact, extras and
-  extensions are kept); the «Модель» menu has numeric «Сдвиг X/Y/Z»,
-  «Поворот Y/X» and «Масштаб» fields plus «На пол» and «В центр»,
-- **Тени** (Освещение): the lamp casts a shadow on the model and the floor
-  (shadow map, soft edges), with «Сила тени»,
-- **Лампа**: a point light around the model — drag its icon to turn it, the
-  blue arrows turn only the azimuth, the orange ones only the height and the
-  violet one moves it closer or farther («Расстояние»; closer is brighter,
-  the shadow spreads from the lamp); right click for its menu (reset, from above, from the camera, on/off,
-  colour, temperature, hide); also in «Освещение» and the lamp switch,
-- **Окружение**: sky background — dark studio, day, sunset, night,
-  overcast, light studio; optional «Свет окружения» lights the model from the
-  sky in PBR. The **SkyBox** window shows previews of every 2:1 PNG/JPEG or
-  Radiance HDR (`.hdr`) panorama in a folder (by default `assets/360.HDR`,
-  five Poly Haven CC0 panoramas are included) and shows the chosen one (read
-  only, with yaw; HDR at the current exposure; quality 2K/4K/8K within what
-  the GPU allows), and
-  with «Свет окружения» the panorama lights the model (image based lighting:
-  diffuse from spherical harmonics, reflections by roughness); view only, lamps and exposure stay as they are, at the model's lowest point with the step scaled to the model and
-  red X / blue Z axes; **G** hides it or brings back the last theme. View only.
-- **Здоровье → Анализ и диагностика**: geometry and UV checks G001–G012 (zero-area and duplicate
-  triangles, unused vertices, missing/zero normals, boundary and non-manifold
-  edges, connected groups, missing UV0, zero UV area, UV outside 0…1, exact
-  duplicate vertices).
-- Repairs with preview → Apply → Undo/Redo (Ctrl+Z / Ctrl+Y) on one source
-  primitive: remove zero-area triangles (G001), duplicate triangles (G002) and
-  unused vertices (G003); merge exact duplicate vertices (G012), refused if the
-  topology would get worse; create missing normals (G004) or replace zero
-  normals (G005) from area-weighted faces.
-- **Очередь ремонтов**: runs every available repair one by one, re-analysing
-  after each step; refused steps are skipped with their reason, a regression
-  or failure stops it, and each step can be undone separately.
-- **История ремонта** (Здоровье → Ремонт): past repairs, Undo/Redo and saves
-  from all runs, stored in `%LOCALAPPDATA%\AssetDoctorRTPT\repair-history.jsonl`;
-  clearly separate from the current model's diagnostics.
-- **View settings** are kept between runs (ADR-0046): shading, channel and
-  maps, grid and helpers, lamp, exposure, shadows, environment, floor, your
-  skybox file and the layout, in
-  `%LOCALAPPDATA%\AssetDoctorRTPT\view-settings.json`; the model, its
-  placement and the camera are not part of it.
-- **Сохранить** (Ctrl+S) replaces the working file after a one-time
-  confirmation and the same verification; a file changed by another program
-  is never overwritten.
-- **Сохранить копию…** writes a new GLB only after an independent re-import
-  check; the original file is never overwritten.
+- **Viewing.** Opens self-contained static **GLB** files and renders them with
+  Vulkan: base colour, vertex colours, optional direct PBR with
+  metallic/roughness, normal, occlusion and emission maps.
+- **Layout (ADR-0045).**
+  - Top bar: «Настройки» (help, keys and mouse, outline colour, updates) and
+    the file buttons on the left. On the right, the drop-down menus «Вид»,
+    «Сетка и помощники», «Освещение», «Лампа», «Экспозиция и сила света»,
+    «Сцена», «Окружение», the «SkyBox» button and «Модель», then the outline
+    («амёба») and lamp switches.
+  - Right block, with tabs:
+    - «Здоровье»: finding cards, repair list, queue, history;
+    - «Инфо»;
+    - «Rigging» (later).
+  - A light grey strip under the top bar holds the «Work-Tree» button, which
+    opens the left block.
+  - Bottom-right corner: Undo/Redo and the views Front, Back, Left, Right, Top,
+    Bottom (orthographic) and 3/4.
+  - Status bar: the bug icon opens the program log. The window title and
+    «Справка» show the version.
+- **Mouse (ADR-0043, defaults).**
+  - Left button selects and drags objects; right button opens the context
+    menu.
+  - Orbit: side button Forward or Shift+left drag. Pan: side button Back or
+    Shift+right drag. Wheel: zoom.
+  - **F** or middle click: frame the model.
+  - **Tab**: outline. **X** / **Delete**: delete the object.
+  - **Esc**: cancel loading. **H**: help.
+  - Every key and mouse button can be rebound in «Клавиши и мышь…».
+- **Objects (ADR-0048).**
+  - Outline: the object under the cursor and the selected one are outlined.
+    The click respects transparent MASK parts.
+  - Edits: move with a left drag or the object gizmo, or delete. Each change
+    is one edit (Ctrl+Z).
+  - «Сохранить» writes the node matrices and removes deleted nodes; the GLB's
+    other scenes are kept.
+- **Work-Tree.** The node tree, with hide and colour marks; view only.
+- **Model gizmo.** Arrows move the model, rings turn it, the centre square
+  scales it. Exact values are in «Модель».
+- **Light and scene.**
+  - Lamp: a point light with azimuth, height and distance handles, and
+    shadows on the model and the floor.
+  - 20 procedural floors.
+  - Render channels: normals, UV, base colour, metal, roughness, AO,
+    emission.
+  - Wireframe, axes, bounding box and light presets.
+- **SkyBox and image-based lighting.**
+  - The SkyBox window previews every 2:1 PNG/JPEG or Radiance HDR panorama
+    in a folder. By default this is `assets/360.HDR`, with five CC0
+    panoramas from Poly Haven.
+  - Quality is 2K, 4K or 8K, within what the GPU allows.
+  - With «Свет окружения» the panorama lights the model: diffuse from
+    spherical harmonics, reflections by roughness.
+- **Health (diagnostics G001–G012).** Zero-area and duplicate triangles,
+  unused vertices, missing or zero normals, boundary and non-manifold edges,
+  connected groups, missing UV0, zero UV area, UV outside 0…1, exact duplicate
+  vertices.
+- **Repairs.**
+  - Each repair goes preview → Apply → Undo/Redo: G001, G002, G003, G012,
+    G004, G005.
+  - The repair queue runs them one by one, re-analysing after each step.
+  - Repair history is kept across runs.
+- **Saving.**
+  - «Сохранить» (Ctrl+S) replaces the working file after confirmation and
+    verification. It never overwrites a file changed by another program, and
+    paths over 260 characters work.
+  - «Сохранить копию…» writes a new, independently verified GLB.
+- **View settings.** Kept between runs in
+  `%LOCALAPPDATA%\AssetDoctorRTPT\view-settings.json`.
 
 Skins, animations, morph targets, alpha BLEND, compressed geometry and external
-resources are refused at import. Rigging, RT and PT are planned.
+resources are refused at import. Rigging, multi-model comparison, RT and PT are
+planned.
 
 ## Build
 
@@ -110,20 +117,24 @@ cargo build --workspace --release --locked
 cargo run --locked -p ad-desktop -- --open model.glb
 ```
 
-The executable is `target/release/AssetDoctorRTPT.exe`. `--require-validation`
-fails if Vulkan validation layers are unavailable.
+The executables are `target/release/AssetDoctorRTPT.exe` and
+`target/release/AssetDoctorRTPT-Updater.exe`. `--require-validation` fails if
+Vulkan validation layers are unavailable. CI packages the program folder as
+`AssetDoctorRTPT-win-x64.zip` and its `.sha256`. A release is published only
+by a manual run with `publish` set.
 
-## Layout
+## Source layout
 
-- `crates/ad-document` — asset document, commands and candidate views
-- `crates/ad-formats` — GLB import and verified export
-- `crates/ad-analysis` — diagnostics
-- `crates/ad-commands` — revision-checked edit history
-- `crates/ad-heal` — repair planning and independent verification
-- `crates/ad-storage` — safe new-file copies
-- `crates/ad-render-vulkan` — Vulkan renderer
-- `crates/ad-desktop` — the application
-- `tests/fixtures` — small authored models used by the tests
-- `assets` — application icon
+- `crates/ad-document`: asset document, commands and candidate views
+- `crates/ad-formats`: GLB import and verified export
+- `crates/ad-analysis`: diagnostics
+- `crates/ad-commands`: revision-checked edit history
+- `crates/ad-heal`: repair planning and independent verification
+- `crates/ad-storage`: verified save and new-file copies
+- `crates/ad-render-vulkan`: Vulkan renderer
+- `crates/ad-update`: update check, package verification and the updater
+- `crates/ad-desktop`: the application
+- `tests/fixtures`: small authored models and packages used by the tests
+- `assets`: application icon and bundled panoramas
 
 Product licensing has not been decided yet.
