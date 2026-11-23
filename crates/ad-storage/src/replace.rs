@@ -45,7 +45,8 @@ fn holds(mut file: &File, expected: &[u8], cancel: &Cancellation) -> AssetResult
     let mut buffer = [0; 64 << 10];
     for chunk in expected.chunks(buffer.len()) {
         cancel.check()?;
-        file.read_exact(&mut buffer[..chunk.len()]).map_err(io_error)?;
+        file.read_exact(&mut buffer[..chunk.len()])
+            .map_err(io_error)?;
         if &buffer[..chunk.len()] != chunk {
             return Ok(false);
         }
@@ -114,7 +115,14 @@ fn replace_file(destination: &Path, source: &Path, backup: &Path) -> io::Result<
 fn restore_missing(destination: &Path, backup: &Path) -> io::Result<()> {
     let (destination, backup) = (wide(destination)?, wide(backup)?);
     // SAFETY: both path buffers are NUL-terminated. This move has no replace flag.
-    if unsafe { MoveFileExW(backup.as_ptr(), destination.as_ptr(), MOVEFILE_WRITE_THROUGH) } == 0 {
+    if unsafe {
+        MoveFileExW(
+            backup.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
         return Err(io::Error::last_os_error());
     }
     Ok(())
@@ -179,13 +187,16 @@ pub(super) fn recover_missing(
     }
     if let Some((path, _guard)) = matching {
         cancel.check()?;
-        restore_missing(destination, &path).map_err(|error| retain_backup(io_error(error), &path))?;
+        restore_missing(destination, &path)
+            .map_err(|error| retain_backup(io_error(error), &path))?;
     }
     Ok(())
 }
 
 fn retain_backup(mut error: AssetError, backup: &Path) -> AssetError {
-    error.message.push_str(&format!("; recovery backup: {}", backup.display()));
+    error
+        .message
+        .push_str(&format!("; recovery backup: {}", backup.display()));
     error
 }
 
@@ -216,7 +227,8 @@ pub(super) fn publish(
             "Replacement backup path is already occupied",
         )));
     }
-    let owned_id = file_id(staging.file.as_ref().expect("owned staging handle")).map_err(io_error)?;
+    let owned_id =
+        file_id(staging.file.as_ref().expect("owned staging handle")).map_err(io_error)?;
     cancel.check()?;
 
     // ReplaceFileW needs exclusive access to the staged file. If publication
@@ -238,11 +250,13 @@ pub(super) fn publish(
         }
         drop(original);
         let error = io_error(error);
-        return Err(if backup.is_file() && restore_missing(destination, &backup).is_err() {
-            retain_backup(error, &backup)
-        } else {
-            error
-        });
+        return Err(
+            if backup.is_file() && restore_missing(destination, &backup).is_err() {
+                retain_backup(error, &backup)
+            } else {
+                error
+            },
+        );
     }
     drop(original);
 
@@ -260,7 +274,8 @@ fn audit_backup(
     staged_bytes: &[u8],
 ) -> AssetResult<PathBuf> {
     let after = Cancellation::default();
-    let original = guarded_read(&backup).map_err(|error| retain_backup(io_error(error), &backup))?;
+    let original =
+        guarded_read(&backup).map_err(|error| retain_backup(io_error(error), &backup))?;
     match holds(&original, expected, &after) {
         Ok(true) => return Ok(backup),
         Ok(false) => (),
@@ -282,16 +297,22 @@ fn audit_backup(
             let result = replace_file(destination, &backup, &displaced);
             drop(published);
             if result.is_err() && displaced.is_file() && !backup.is_file() {
-                error.message.push_str(&format!("; displaced file: {}", displaced.display()));
+                error
+                    .message
+                    .push_str(&format!("; displaced file: {}", displaced.display()));
             }
             result.is_ok() || restore_missing(destination, &backup).is_ok()
         }
         _ => restore_missing(destination, &backup).is_ok(),
     };
     if restored {
-        error.message.push_str("; the external version was restored");
+        error
+            .message
+            .push_str("; the external version was restored");
         if displaced.is_file() {
-            error.message.push_str(&format!("; rollback copy: {}", displaced.display()));
+            error
+                .message
+                .push_str(&format!("; rollback copy: {}", displaced.display()));
         }
         Err(error)
     } else {

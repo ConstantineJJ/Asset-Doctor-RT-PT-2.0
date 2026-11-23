@@ -80,8 +80,11 @@ fn check_scene_metadata(
 ) -> AssetResult<()> {
     let parse = |bytes: &[u8]| {
         let glb = gltf::binary::Glb::from_slice(bytes).map_err(|_| mismatch())?;
-        let (meta, _) =
-            crate::metadata::parse(&glb.json, crate::ExportLimits::default().metadata_values, cancel)?;
+        let (meta, _) = crate::metadata::parse(
+            &glb.json,
+            crate::ExportLimits::default().metadata_values,
+            cancel,
+        )?;
         Ok::<_, AssetError>(meta)
     };
     let mut before = parse(a.source())?;

@@ -54,7 +54,10 @@ fn audit_restores_an_external_replacement_after_the_prior_check() {
         let err = audit_backup(&target, backup, b"original", b"staged").unwrap_err();
         assert_eq!(err.code, ErrorCode::Conflict);
         assert_eq!(fs::read(&target).unwrap(), b"external");
-        assert_eq!(fs::read(dir.join("backup.glb.rollback")).unwrap(), b"staged");
+        assert_eq!(
+            fs::read(dir.join("backup.glb.rollback")).unwrap(),
+            b"staged"
+        );
     });
 }
 
@@ -124,7 +127,10 @@ fn extended_windows_paths_cover_drive_unc_and_verbatim_paths() {
         (r"E:\a\..\b.glb", r"\\?\E:\b.glb"),
         (r"\\server\share\file.glb", r"\\?\UNC\server\share\file.glb"),
         (r"\\?\E:\file.glb", r"\\?\E:\file.glb"),
-        (r"\\?\UNC\server\share\file.glb", r"\\?\UNC\server\share\file.glb"),
+        (
+            r"\\?\UNC\server\share\file.glb",
+            r"\\?\UNC\server\share\file.glb",
+        ),
     ] {
         let expected: Vec<_> = expected.encode_utf16().chain([0]).collect();
         assert_eq!(wide(Path::new(input)).unwrap(), expected);
