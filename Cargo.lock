@@ -39,6 +39,7 @@ dependencies = [
  "ad-heal",
  "ad-render-vulkan",
  "ad-storage",
+ "ad-update",
  "egui",
  "egui-winit",
  "glam",
@@ -98,6 +99,16 @@ version = "2.5.2"
 dependencies = [
  "ad-document",
  "ad-formats",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "ad-update"
+version = "2.5.2"
+dependencies = [
+ "crc32fast",
+ "miniz_oxide 0.9.1",
+ "serde_json",
  "windows-sys 0.52.0",
 ]
 
