@@ -14,7 +14,13 @@ pub struct OutlineSettings {
     pub hovered: Vec<usize>,
     /// None: dynamic contrast (invert); Some: fixed sRGB colour.
     pub color: Option<[u8; 3]>,
+    /// Line width in pixels (WIDTHS; 0 means the default).
+    pub width: f32,
 }
+/// Outline width range and default, in pixels (owner 2026-11-25: at least
+/// ten times the former fixed 2 px).
+pub const WIDTHS: std::ops::RangeInclusive<f32> = 1.0..=32.0;
+pub const DEFAULT_WIDTH: f32 = 2.0;
 impl OutlineSettings {
     pub fn is_empty(&self) -> bool {
         self.selected.is_empty() && self.hovered.is_empty()
@@ -35,7 +41,7 @@ pub(crate) struct OutlinePush {
 }
 impl OutlinePush {
     /// `decode`: the swapchain encodes sRGB itself, so colours go linear.
-    pub fn new(color: Option<[u8; 3]>, decode: bool) -> Self {
+    pub fn new(color: Option<[u8; 3]>, decode: bool, width: f32) -> Self {
         let channel = |v: u8| {
             let c = f32::from(v) / 255.;
             if decode {
@@ -50,7 +56,12 @@ impl OutlinePush {
         Self {
             selected: rgba,
             hovered: rgba,
-            params: [2., 6., if color.is_none() { 1. } else { 0. }, 0.],
+            params: [
+                width.clamp(*WIDTHS.start(), *WIDTHS.end()),
+                6. + width.clamp(*WIDTHS.start(), *WIDTHS.end()),
+                if color.is_none() { 1. } else { 0. },
+                0.,
+            ],
         }
     }
 }
@@ -510,11 +521,13 @@ mod tests {
     fn push_layouts_fit_and_colours_follow_the_mode() {
         assert_eq!(std::mem::size_of::<MaskPush>(), 80);
         assert_eq!(std::mem::size_of::<OutlinePush>(), 48);
-        let dynamic = OutlinePush::new(None, false);
+        let dynamic = OutlinePush::new(None, false, DEFAULT_WIDTH);
         assert_eq!(dynamic.params[2], 1.);
-        let red = OutlinePush::new(Some([255, 0, 0]), true);
+        assert_eq!(OutlinePush::new(None, false, 100.).params[0], 32.);
+        assert_eq!(OutlinePush::new(None, false, 0.).params[0], 1.);
+        let red = OutlinePush::new(Some([255, 0, 0]), true, DEFAULT_WIDTH);
         assert_eq!((red.params[2], red.selected), (0., [1., 0., 0., 1.]));
-        let mid = OutlinePush::new(Some([128, 128, 128]), true).selected[0];
+        let mid = OutlinePush::new(Some([128, 128, 128]), true, DEFAULT_WIDTH).selected[0];
         assert!(mid < 0.3, "decoded to linear: {mid}");
         assert!(OutlineSettings::default().is_empty());
     }

@@ -5,7 +5,7 @@
 Native Windows application for diagnosing, repairing and preparing 3D assets,
 written from scratch in Rust with a Vulkan renderer. Engineering prototype.
 
-Current build: **AD RT-PT v2.7.0**. Versions are MAJOR.MINOR.PATCH by
+Current build: **AD RT-PT v2.8.0**. Versions are MAJOR.MINOR.PATCH by
 significance: major reworks, notable features or large sets of fixes, and
 hotfixes.
 
@@ -46,8 +46,9 @@ hotfixes.
     - «Rigging»: skins, joints and animation clips (see below).
   - A light grey strip under the top bar holds the «Work-Tree» button, which
     opens the left block. **Q** / **E** hide or show the left / right block.
-  - Window: normal, maximized with its frame, or borderless full screen
-    (**F11**; **Esc** returns to the window).
+  - Window: a normal window or full screen (**F11**; **Esc** returns to the
+    window). **F1** removes the window's frame and title bar (and brings
+    them back).
   - Bottom-right corner: Undo/Redo and the views Front, Back, Left, Right, Top,
     Bottom (orthographic) and 3/4.
   - Status bar: the bug icon opens the program log. The window title and
@@ -59,16 +60,24 @@ hotfixes.
     adds an object, **Ctrl**+click (or Ctrl + box) removes it.
   - Orbit: side button Forward or Shift+left drag. Pan: side button Back or
     Shift+right drag. Wheel: zoom.
-  - **F** or middle click: frame the model.
-  - **Tab**: outline. **X** / **Delete**: delete the selected objects.
+  - **F**: frame the model.
+  - Middle click: **grab**. The selection (or the object under the pointer)
+    follows the pointer; a left or middle click puts it down, a right click or
+    **Esc** cancels.
+  - **Tab**: outline (width 1–32 px, dynamic contrast or 18 colours incl.
+    bright neon ones, in «Настройки» and the right-click menu). **X** / **Delete**:
+    delete the selected objects. **Z**: show or hide the rig.
   - **Esc**: cancel loading. **H**: help.
   - Every key and mouse button can be rebound in «Клавиши и мышь…».
 - **Objects (ADR-0048).**
   - Outline: the object under the cursor and the selected ones are outlined.
     The click respects transparent MASK parts and has a few pixels of
     tolerance for small or far objects.
-  - Edits: move with a left drag (the whole selection moves together) or the
-    object gizmo, or delete. Each change, also for a group, is one edit
+  - The gizmo appears on the selection by itself and moves, turns and scales
+    the whole selection about its centre. With nothing selected it works on
+    the whole model.
+  - Edits: move with the gizmo, a left drag or a grab (the whole selection
+    moves together), or delete. Each change, also for a group, is one edit
     (Ctrl+Z).
   - «Сохранить» writes the node matrices and removes deleted nodes; the GLB's
     other scenes are kept.

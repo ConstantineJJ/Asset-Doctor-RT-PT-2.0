@@ -25,6 +25,28 @@ pub(crate) const MARK_COLORS: [[u8; 3]; 7] = [
     [70, 120, 240],
     [210, 80, 220],
 ];
+/// Outline colours: the seven mark colours (the indices kept in view
+/// settings stay valid), then bright «acid» ones (owner 2026-11-25).
+pub(crate) const OUTLINE_COLORS: [[u8; 3]; 18] = [
+    [235, 64, 64],
+    [245, 150, 40],
+    [240, 220, 50],
+    [70, 200, 90],
+    [60, 200, 220],
+    [70, 120, 240],
+    [210, 80, 220],
+    [57, 255, 20],   // neon green
+    [204, 255, 0],   // acid yellow-green
+    [255, 255, 0],   // electric yellow
+    [255, 95, 31],   // neon orange
+    [255, 7, 58],    // neon red
+    [255, 20, 147],  // hot pink
+    [255, 0, 255],   // magenta
+    [191, 0, 255],   // electric purple
+    [0, 255, 255],   // electric cyan
+    [0, 150, 255],   // electric blue
+    [255, 255, 255], // white
+];
 /// View menus of the top bar, left to right (ADR-0045 amendment).
 const VIEW_MENUS: [(TopMenu, &str, &str); 8] = [
     (TopMenu::View, "Вид", "Вид"),
@@ -237,7 +259,7 @@ impl ViewerUi {
             .collect();
         let fixed = self
             .outline_color
-            .map(|i| MARK_COLORS[i % MARK_COLORS.len()]);
+            .map(|i| OUTLINE_COLORS[i % OUTLINE_COLORS.len()]);
         if self.outline_on {
             let fill = fixed.map_or(
                 Color32::from_rgba_unmultiplied(255, 255, 255, 40),
@@ -400,31 +422,7 @@ impl ViewerUi {
         }
         ui.separator();
         Self::heading(ui, "Контур объектов");
-        ui.checkbox(&mut self.outline_on, "Показывать контур (Tab)");
-        ui.horizontal(|ui| {
-            ui.radio_value(&mut self.outline_color, None, "Динамический контраст")
-                .on_hover_text("Линия инвертирует то, что под ней: видна на любом фоне.");
-        });
-        ui.horizontal(|ui| {
-            ui.label("Фиксированный цвет:");
-            for (i, [r, g, b]) in MARK_COLORS.into_iter().enumerate() {
-                let (rect, response) =
-                    ui.allocate_exact_size(egui::vec2(20., 20.), egui::Sense::click());
-                ui.painter()
-                    .rect_filled(rect.shrink(1.), 3., Color32::from_rgb(r, g, b));
-                if self.outline_color == Some(i) {
-                    ui.painter().rect_stroke(
-                        rect,
-                        3.,
-                        egui::Stroke::new(2., ui.visuals().strong_text_color()),
-                        egui::StrokeKind::Inside,
-                    );
-                }
-                if response.clicked() {
-                    self.outline_color = Some(i);
-                }
-            }
-        });
+        self.outline_controls(ui);
         ui.separator();
         Self::heading(ui, "Справка");
         if ui
@@ -440,12 +438,12 @@ impl ViewerUi {
         ui.horizontal(|ui| {
             use super::WindowMode as W;
             ui.selectable_value(&mut self.window_mode, W::Normal, "Окно")
-                .on_hover_text("Обычное окно с рамкой");
-            ui.selectable_value(&mut self.window_mode, W::Maximized, "Во весь экран")
-                .on_hover_text("Окно на весь экран, с рамкой и заголовком");
+                .on_hover_text("Обычное окно");
             ui.selectable_value(&mut self.window_mode, W::Fullscreen, "Полный экран")
-                .on_hover_text("Без рамки · F11 — переключить, Esc — вернуть окно");
+                .on_hover_text("Без рамки поверх всего · F11 — переключить, Esc — вернуть окно");
         });
+        ui.checkbox(&mut self.frameless, "Окно без рамки и заголовка (F1)")
+            .on_hover_text("Убирает рамку и верхнюю полосу с кнопками свернуть/развернуть/закрыть; F1 — вернуть.");
         ui.separator();
         Self::heading(ui, "Обновления");
         self.update_settings(ui, actions);
@@ -460,6 +458,44 @@ impl ViewerUi {
         if exit.clicked() {
             actions.exit = true;
             self.menu = None;
+        }
+    }
+
+    /// Outline switch, width and colour («Настройки» and the right-click
+    /// menu): dynamic contrast or one of OUTLINE_COLORS.
+    pub(super) fn outline_controls(&mut self, ui: &mut egui::Ui) {
+        ui.checkbox(&mut self.outline_on, "Показывать контур (Tab)");
+        ui.add(
+            egui::Slider::new(&mut self.outline_width, ad_render_vulkan::outline::WIDTHS)
+                .step_by(1.)
+                .suffix(" px")
+                .text("Толщина"),
+        )
+        .on_hover_text("Толщина линии контура в пикселях экрана: 1–32.");
+        ui.radio_value(&mut self.outline_color, None, "Динамический контраст")
+            .on_hover_text("Линия инвертирует то, что под ней: видна на любом фоне.");
+        ui.label("Цвет:");
+        for row in OUTLINE_COLORS.chunks(9).enumerate() {
+            ui.horizontal(|ui| {
+                for (k, [r, g, b]) in row.1.iter().copied().enumerate() {
+                    let i = row.0 * 9 + k;
+                    let (rect, response) =
+                        ui.allocate_exact_size(egui::vec2(22., 22.), egui::Sense::click());
+                    ui.painter()
+                        .rect_filled(rect.shrink(1.), 3., Color32::from_rgb(r, g, b));
+                    if self.outline_color == Some(i) {
+                        ui.painter().rect_stroke(
+                            rect,
+                            3.,
+                            egui::Stroke::new(2., ui.visuals().strong_text_color()),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                    if response.clicked() {
+                        self.outline_color = Some(i);
+                    }
+                }
+            });
         }
     }
 
@@ -1137,6 +1173,9 @@ impl ViewerUi {
                             )
                             .clicked()
                         {
+                            if !self.tree.is_selected(node) {
+                                self.tree.select_only(Some(node));
+                            }
                             self.object_gizmo = Some(node);
                             self.model_gizmo_on = true;
                             close = true;
@@ -1190,6 +1229,8 @@ impl ViewerUi {
                     }
                     if self.object_gizmo.is_some() && ui.button("Gizmo: вся модель").clicked()
                     {
+                        // The gizmo follows the selection: clear it.
+                        self.tree.select_only(None);
                         self.object_gizmo = None;
                         close = true;
                     }
@@ -1197,12 +1238,9 @@ impl ViewerUi {
                         actions.fit = true;
                         close = true;
                     }
-                    if ui
-                        .checkbox(&mut self.outline_on, "Контур объектов (Tab)")
-                        .changed()
-                    {
-                        close = true;
-                    }
+                    ui.menu_button("Контур объектов", |ui| {
+                        self.outline_controls(ui)
+                    });
                     ui.separator();
                     ui.menu_button("Вид", |ui| self.view_menu(ui));
                     ui.menu_button("Сетка и помощники", |ui| self.grid_menu(ui));

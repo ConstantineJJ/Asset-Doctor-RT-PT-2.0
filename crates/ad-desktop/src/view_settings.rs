@@ -62,7 +62,9 @@ impl ViewerUi {
             "axes": self.show_axes,
             "bounds": self.show_bounds,
             "skeleton": self.skeleton_on,
+            "outline_width": self.outline_width,
             "window": self.window_mode.key(),
+            "frameless": self.frameless,
             "lamp": {
                 "enabled": l.enabled,
                 "direction": l.direction,
@@ -175,6 +177,16 @@ impl ViewerUi {
         flag(value, "axes", &mut self.show_axes, &mut bad);
         flag(value, "bounds", &mut self.show_bounds, &mut bad);
         flag(value, "skeleton", &mut self.skeleton_on, &mut bad);
+        if value.get("outline_width").is_some() {
+            number(
+                value,
+                "outline_width",
+                ad_render_vulkan::outline::WIDTHS,
+                &mut self.outline_width,
+                &mut bad,
+            );
+        }
+        flag(value, "frameless", &mut self.frameless, &mut bad);
         match value.get("window") {
             None => {}
             Some(Value::String(key)) if super::WindowMode::from_key(key).is_some() => {
@@ -321,7 +333,7 @@ impl ViewerUi {
             None => {}
             Some(Value::Null) => self.outline_color = None,
             Some(n) => match n.as_u64().map(|n| n as usize) {
-                Some(i) if i < 7 => self.outline_color = Some(i),
+                Some(i) if i < super::OUTLINE_COLORS.len() => self.outline_color = Some(i),
                 _ => bad.push("outline_color".into()),
             },
         }
