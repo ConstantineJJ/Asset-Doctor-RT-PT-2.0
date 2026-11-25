@@ -134,13 +134,8 @@ struct App {
     /// Picking: draw boxes and node parents of the shown snapshot; where the
     /// left button went down (a click selects).
     pick_cache: Option<PickCache>,
-    /// The window mode last given to the OS window, and the normal
-    /// window's place to come back to from the borderless mode.
-    applied_window_mode: viewer_ui::WindowMode,
-    normal_window: Option<(
-        winit::dpi::PhysicalPosition<i32>,
-        winit::dpi::PhysicalSize<u32>,
-    )>,
+    /// The window mode and frameless switch last given to the OS window.
+    applied_window_mode: (viewer_ui::WindowMode, bool),
     /// ADR-0049 updates: background check/download, the start marker the
     /// updater waits for, and the exit for an update.
     updates: updates::Updates,
@@ -518,6 +513,7 @@ impl App {
                 self.ui.error = None;
                 self.confirmed = Some(Confirmed::imported(&asset));
                 self.playback.reset();
+                self.reset_gizmo_state();
                 self.current = Some(asset);
                 self.working_path = self.pending_path.take();
                 eprintln!("import_published ticket={}", completion.ticket);
@@ -1835,6 +1831,7 @@ impl App {
             }
             A::Grab => self.toggle_grab(),
             A::ToggleRightPanel => self.ui.show_summary = !self.ui.show_summary,
+            A::ToggleFrameless => self.ui.frameless = !self.ui.frameless,
             A::ToggleFullscreen => {
                 self.ui.window_mode = if self.ui.window_mode == viewer_ui::WindowMode::Fullscreen {
                     viewer_ui::WindowMode::Normal
@@ -1932,53 +1929,23 @@ impl App {
     /// Gives the OS window the mode chosen in «Настройки → Окно» / F11.
     fn apply_window_mode(&mut self) {
         use viewer_ui::WindowMode as W;
-        let mode = self.ui.window_mode;
-        if mode == self.applied_window_mode || self.smoke.is_some() {
+        let state = (self.ui.window_mode, self.ui.frameless);
+        if state == self.applied_window_mode || self.smoke.is_some() {
             return;
         }
         let Some(window) = self.window.as_ref() else {
             return;
         };
-        // Leaving the borderless mode: frame back, the old place restored.
-        if self.applied_window_mode == W::Borderless {
-            window.set_decorations(true);
-            if let Some((position, size)) = self.normal_window.take() {
-                window.set_outer_position(position);
-                let _ = window.request_inner_size(size);
-            }
-        }
-        match mode {
+        match state.0 {
             W::Fullscreen => {
                 window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)))
             }
-            W::Maximized => {
-                window.set_fullscreen(None);
-                window.set_maximized(true);
-            }
-            W::Normal => {
-                window.set_fullscreen(None);
-                window.set_maximized(false);
-            }
-            W::Borderless => {
-                window.set_fullscreen(None);
-                window.set_maximized(false);
-                if let Ok(position) = window.outer_position() {
-                    self.normal_window = Some((position, window.inner_size()));
-                    let size = window.outer_size();
-                    let centre = (
-                        position.x + size.width as i32 / 2,
-                        position.y + size.height as i32 / 2,
-                    );
-                    if let Some((x, y, w, h)) = native::work_area(centre.0, centre.1) {
-                        window.set_decorations(false);
-                        window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
-                        let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(w, h));
-                    }
-                }
-            }
+            W::Normal => window.set_fullscreen(None),
         }
-        eprintln!("window_mode {}", mode.key());
-        self.applied_window_mode = mode;
+        // F1: a window without frame and title bar (same place and size).
+        window.set_decorations(!state.1);
+        eprintln!("window_mode {} frameless={}", state.0.key(), state.1);
+        self.applied_window_mode = state;
     }
     /// Hover pick of the latest pointer move, at most once per frame.
     fn update_hover(&mut self) {
@@ -2028,7 +1995,10 @@ impl App {
         ad_render_vulkan::outline::OutlineSettings {
             selected: selected_draws,
             hovered: hovered.map(|n| self.subtree_draws(n)).unwrap_or_default(),
-            color: self.ui.outline_color.map(|i| viewer_ui::MARK_COLORS[i % 7]),
+            color: self
+                .ui
+                .outline_color
+                .map(|i| viewer_ui::OUTLINE_COLORS[i % viewer_ui::OUTLINE_COLORS.len()]),
             width: self.ui.outline_width,
         }
     }
@@ -2181,6 +2151,18 @@ impl App {
             "grab_started objects={}",
             self.object_drag.as_ref().map_or(0, |d| d.nodes.len())
         );
+    }
+    /// Gizmo, drag and grab state back to rest: a new model, a cancelled
+    /// edit. Nothing stays previewed and the gizmo follows the selection.
+    fn reset_gizmo_state(&mut self) {
+        self.model_preview = None;
+        self.model_pending = false;
+        self.model_turning = None;
+        self.object_drag = None;
+        self.marquee = None;
+        self.ui.marquee = None;
+        self.ui.object_gizmo = None;
+        self.ui.reset_placement_draft();
     }
     /// The nodes the object gizmo works on: the top-level selected nodes
     /// (the primary one when nothing else is selected).
@@ -2758,6 +2740,16 @@ impl App {
         // The gizmo follows the selection (owner 2026-11-25): objects
         // selected -> object gizmo on them; nothing selected -> the model.
         // It does not jump while a gizmo drag or its edit is running.
+        // A preview with no drag, no numeric field and no edit behind it is
+        // stale (a drag whose end never arrived): drop it.
+        if self.model_preview.is_some()
+            && !self.model_pending
+            && !self.ui.gizmo_dragging
+            && !self.ui.editing_placement()
+        {
+            self.model_preview = None;
+            self.model_turning = None;
+        }
         if self.model_preview.is_none() && !self.model_pending {
             self.ui.object_gizmo = self.ui.tree.selected.filter(|n| {
                 self.current
@@ -3187,6 +3179,7 @@ impl App {
         if self.editing {
             self.edits.cancel();
             self.editing = false;
+            self.reset_gizmo_state();
             self.ui
                 .set_status("Подготовка правки отменена; модель не изменена", false);
         }
@@ -4169,8 +4162,7 @@ fn run() -> GpuResult<()> {
         object_drag: None,
         press_right: None,
         pick_cache: None,
-        applied_window_mode: viewer_ui::WindowMode::Normal,
-        normal_window: None,
+        applied_window_mode: (viewer_ui::WindowMode::Normal, false),
         updates,
         update_ok_file,
         exit_after_start,

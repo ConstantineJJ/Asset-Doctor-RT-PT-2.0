@@ -15,20 +15,17 @@ mod rig_ui;
 pub mod skeleton_ui;
 #[path = "update_ui.rs"]
 mod update_ui;
-pub(crate) use panels::MARK_COLORS;
+pub(crate) use panels::OUTLINE_COLORS;
 #[path = "view_settings.rs"]
 pub mod view_settings;
 
-/// How the program window is shown («Настройки → Окно», F11).
+/// How the program window is shown («Настройки → Окно», F11). The window
+/// can also lose its frame and title bar (F1, `ViewerUi::frameless`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WindowMode {
-    /// A normal window with its frame.
+    /// A window (with its frame unless frameless).
     #[default]
     Normal,
-    /// The window fills the screen and keeps its frame and title.
-    Maximized,
-    /// No frame, the whole desktop except the taskbar.
-    Borderless,
     /// Borderless full screen (F11; Esc returns to the window).
     Fullscreen,
 }
@@ -36,20 +33,17 @@ impl WindowMode {
     pub fn key(self) -> &'static str {
         match self {
             Self::Normal => "normal",
-            Self::Maximized => "maximized",
-            Self::Borderless => "borderless",
             Self::Fullscreen => "fullscreen",
         }
     }
+    /// Also reads the modes of 2026-11-25 builds (maximized, borderless)
+    /// as a normal window.
     pub fn from_key(key: &str) -> Option<Self> {
-        [
-            Self::Normal,
-            Self::Maximized,
-            Self::Borderless,
-            Self::Fullscreen,
-        ]
-        .into_iter()
-        .find(|m| m.key() == key)
+        match key {
+            "normal" | "maximized" | "borderless" => Some(Self::Normal),
+            "fullscreen" => Some(Self::Fullscreen),
+            _ => None,
+        }
     }
 }
 
@@ -366,8 +360,12 @@ pub struct ViewerUi {
     pub shadow_strength: f32,
     pub show_bounds: bool,
     pub helper_overlay: Option<crate::helpers::Overlay>,
-    /// Window mode chosen in «Настройки → Окно» (applied by the app).
+    /// Window mode chosen in «Настройки → Окно» (applied by the app) and
+    /// the window without frame and title bar (F1).
     pub window_mode: WindowMode,
+    pub frameless: bool,
+    /// A widget (a gizmo handle or ring) is being dragged right now.
+    pub gizmo_dragging: bool,
     /// The pointer was over a gizmo ring/handle, the lamp or a joint in the
     /// last frame: the left button belongs to that, not to selection.
     pub pointer_on_gizmo: bool,
@@ -532,7 +530,9 @@ impl Default for ViewerUi {
             skeleton: None,
             marquee: None,
             pointer_on_gizmo: false,
+            gizmo_dragging: false,
             window_mode: WindowMode::Normal,
+            frameless: false,
             helper_overlay: None,
             placement: ad_document::Placement::IDENTITY,
             placement_draft: None,
@@ -774,6 +774,13 @@ impl ViewerUi {
         if actions.place.is_some() {
             self.placement_draft = None;
         }
+    }
+    /// The «Модель» number fields hold an unpublished preview.
+    pub fn editing_placement(&self) -> bool {
+        self.placement_draft.is_some()
+    }
+    pub fn reset_placement_draft(&mut self) {
+        self.placement_draft = None;
     }
     fn controls_ui(&mut self, ui: &mut egui::Ui) {
         use crate::input::Action;
@@ -1420,6 +1427,7 @@ impl ViewerUi {
             });
         }
         let mut actions = Actions::default();
+        self.gizmo_dragging = context.dragged_id().is_some();
         let output=context.run_ui(raw,|root| {
             let width=root.max_rect().width();
             let height=root.max_rect().height();
@@ -2079,10 +2087,8 @@ FORMAT=32-bit_rle_rgbe
             Some(WindowMode::Fullscreen)
         );
         assert_eq!(WindowMode::from_key("big"), None);
-        assert_eq!(
-            WindowMode::from_key("borderless"),
-            Some(WindowMode::Borderless)
-        );
+        assert_eq!(WindowMode::from_key("borderless"), Some(WindowMode::Normal));
+        assert_eq!(WindowMode::from_key("maximized"), Some(WindowMode::Normal));
     }
     #[test]
     fn view_buttons_choose_camera_views_and_the_bug_opens_the_log() {

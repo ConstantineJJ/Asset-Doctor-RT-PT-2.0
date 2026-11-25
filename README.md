@@ -46,9 +46,9 @@ hotfixes.
     - «Rigging»: skins, joints and animation clips (see below).
   - A light grey strip under the top bar holds the «Work-Tree» button, which
     opens the left block. **Q** / **E** hide or show the left / right block.
-  - Window: normal, maximized with its frame, borderless on the desktop
-    (the taskbar stays visible), or borderless full screen (**F11**;
-    **Esc** returns to the window).
+  - Window: a normal window or full screen (**F11**; **Esc** returns to the
+    window). **F1** removes the window's frame and title bar (and brings
+    them back).
   - Bottom-right corner: Undo/Redo and the views Front, Back, Left, Right, Top,
     Bottom (orthographic) and 3/4.
   - Status bar: the bug icon opens the program log. The window title and
@@ -64,7 +64,8 @@ hotfixes.
   - Middle click: **grab**. The selection (or the object under the pointer)
     follows the pointer; a left or middle click puts it down, a right click or
     **Esc** cancels.
-  - **Tab**: outline (width 1–32 px in «Настройки»). **X** / **Delete**:
+  - **Tab**: outline (width 1–32 px, dynamic contrast or 18 colours incl.
+    bright neon ones, in «Настройки» and the right-click menu). **X** / **Delete**:
     delete the selected objects. **Z**: show or hide the rig.
   - **Esc**: cancel loading. **H**: help.
   - Every key and mouse button can be rebound in «Клавиши и мышь…».

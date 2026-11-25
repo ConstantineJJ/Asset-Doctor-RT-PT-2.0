@@ -26,6 +26,7 @@ pub enum Action {
     ToggleLeftPanel,
     ToggleRightPanel,
     ToggleFullscreen,
+    ToggleFrameless,
     ToggleSkeleton,
     Grab,
     Help,
@@ -34,7 +35,7 @@ pub enum Action {
     Pan,
 }
 impl Action {
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 24] = [
         Self::Open,
         Self::Save,
         Self::SaveCopy,
@@ -52,6 +53,7 @@ impl Action {
         Self::ToggleLeftPanel,
         Self::ToggleRightPanel,
         Self::ToggleFullscreen,
+        Self::ToggleFrameless,
         Self::ToggleSkeleton,
         Self::Grab,
         Self::Help,
@@ -78,6 +80,7 @@ impl Action {
             Self::ToggleLeftPanel => "Левая панель (Work-Tree): скрыть/показать",
             Self::ToggleRightPanel => "Правая панель: скрыть/показать",
             Self::ToggleFullscreen => "Полный экран: вкл/выкл",
+            Self::ToggleFrameless => "Окно без рамки и заголовка: вкл/выкл",
             Self::ToggleSkeleton => "Риг (скелет): показать/скрыть",
             Self::Grab => "Захват: взять / положить выбранное",
             Self::Help => "Справка",
@@ -106,6 +109,7 @@ impl Action {
             Self::ToggleLeftPanel => "toggle_left_panel",
             Self::ToggleRightPanel => "toggle_right_panel",
             Self::ToggleFullscreen => "toggle_fullscreen",
+            Self::ToggleFrameless => "toggle_frameless",
             Self::ToggleSkeleton => "toggle_skeleton",
             Self::Grab => "grab",
             Self::Help => "help",
@@ -398,6 +402,7 @@ pub fn default_slots(action: Action) -> Slots {
         Action::ToggleRightPanel => [Some(Chord::plain(K::KeyE)), None],
         Action::ToggleFullscreen => [Some(Chord::plain(K::F11)), None],
         Action::ToggleSkeleton => [Some(Chord::plain(K::KeyZ)), None],
+        Action::ToggleFrameless => [Some(Chord::plain(K::F1)), None],
         Action::ToggleFloor => [Some(Chord::plain(K::KeyG)), None],
         Action::Help => [Some(Chord::plain(K::KeyH)), None],
         Action::Cancel => [Some(Chord::plain(K::Escape)), None],

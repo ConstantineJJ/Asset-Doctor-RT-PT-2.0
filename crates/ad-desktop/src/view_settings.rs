@@ -64,6 +64,7 @@ impl ViewerUi {
             "skeleton": self.skeleton_on,
             "outline_width": self.outline_width,
             "window": self.window_mode.key(),
+            "frameless": self.frameless,
             "lamp": {
                 "enabled": l.enabled,
                 "direction": l.direction,
@@ -185,6 +186,7 @@ impl ViewerUi {
                 &mut bad,
             );
         }
+        flag(value, "frameless", &mut self.frameless, &mut bad);
         match value.get("window") {
             None => {}
             Some(Value::String(key)) if super::WindowMode::from_key(key).is_some() => {
@@ -331,7 +333,7 @@ impl ViewerUi {
             None => {}
             Some(Value::Null) => self.outline_color = None,
             Some(n) => match n.as_u64().map(|n| n as usize) {
-                Some(i) if i < 7 => self.outline_color = Some(i),
+                Some(i) if i < super::OUTLINE_COLORS.len() => self.outline_color = Some(i),
                 _ => bad.push("outline_color".into()),
             },
         }
