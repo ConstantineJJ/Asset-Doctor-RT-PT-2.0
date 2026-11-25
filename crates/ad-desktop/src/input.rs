@@ -26,13 +26,15 @@ pub enum Action {
     ToggleLeftPanel,
     ToggleRightPanel,
     ToggleFullscreen,
+    ToggleSkeleton,
+    Grab,
     Help,
     Cancel,
     Orbit,
     Pan,
 }
 impl Action {
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 23] = [
         Self::Open,
         Self::Save,
         Self::SaveCopy,
@@ -50,6 +52,8 @@ impl Action {
         Self::ToggleLeftPanel,
         Self::ToggleRightPanel,
         Self::ToggleFullscreen,
+        Self::ToggleSkeleton,
+        Self::Grab,
         Self::Help,
         Self::Cancel,
         Self::Orbit,
@@ -74,6 +78,8 @@ impl Action {
             Self::ToggleLeftPanel => "Левая панель (Work-Tree): скрыть/показать",
             Self::ToggleRightPanel => "Правая панель: скрыть/показать",
             Self::ToggleFullscreen => "Полный экран: вкл/выкл",
+            Self::ToggleSkeleton => "Риг (скелет): показать/скрыть",
+            Self::Grab => "Захват: взять / положить выбранное",
             Self::Help => "Справка",
             Self::Cancel => "Отмена загрузки/правки",
             Self::Orbit => "Камера: вращать (держать)",
@@ -100,6 +106,8 @@ impl Action {
             Self::ToggleLeftPanel => "toggle_left_panel",
             Self::ToggleRightPanel => "toggle_right_panel",
             Self::ToggleFullscreen => "toggle_fullscreen",
+            Self::ToggleSkeleton => "toggle_skeleton",
+            Self::Grab => "grab",
             Self::Help => "help",
             Self::Cancel => "cancel",
             Self::Orbit => "orbit",
@@ -381,15 +389,15 @@ pub fn default_slots(action: Action) -> Slots {
         Action::SaveCopy => [Some(shift_ctrl(K::KeyS)), None],
         Action::Undo => [Some(Chord::ctrl(K::KeyZ)), None],
         Action::Redo => [Some(Chord::ctrl(K::KeyY)), Some(shift_ctrl(K::KeyZ))],
-        Action::Fit => [
-            Some(Chord::plain(K::KeyF)),
-            Some(Chord::mouse(MouseButton::Middle)),
-        ],
+        // 2026-11-25: the middle button grabs objects; F still frames.
+        Action::Fit => [Some(Chord::plain(K::KeyF)), None],
+        Action::Grab => [Some(Chord::mouse(MouseButton::Middle)), None],
         Action::ToggleOutline => [Some(Chord::plain(K::Tab)), None],
         Action::DeleteObject => [Some(Chord::plain(K::KeyX)), Some(Chord::plain(K::Delete))],
         Action::ToggleLeftPanel => [Some(Chord::plain(K::KeyQ)), None],
         Action::ToggleRightPanel => [Some(Chord::plain(K::KeyE)), None],
         Action::ToggleFullscreen => [Some(Chord::plain(K::F11)), None],
+        Action::ToggleSkeleton => [Some(Chord::plain(K::KeyZ)), None],
         Action::ToggleFloor => [Some(Chord::plain(K::KeyG)), None],
         Action::Help => [Some(Chord::plain(K::KeyH)), None],
         Action::Cancel => [Some(Chord::plain(K::Escape)), None],
@@ -523,7 +531,7 @@ impl Bindings {
                 json!(slots.iter().flatten().map(|c| c.name()).collect::<Vec<_>>()),
             );
         }
-        json!({"version": 2, "invert_zoom": self.invert_zoom, "actions": actions})
+        json!({"version": 3, "invert_zoom": self.invert_zoom, "actions": actions})
     }
     /// Reads a bindings file. Unknown actions and unreadable chords are
     /// skipped with a warning (that action keeps its defaults); a conflict
@@ -531,7 +539,7 @@ impl Bindings {
     pub fn from_json(value: &Value) -> (Self, Vec<String>) {
         let mut warnings = Vec::new();
         let version = value.get("version").and_then(Value::as_u64);
-        if !matches!(version, Some(1 | 2)) {
+        if !matches!(version, Some(1..=3)) {
             return (
                 Self::default(),
                 vec!["неизвестная версия файла управления; взяты значения по умолчанию".into()],
@@ -548,6 +556,8 @@ impl Bindings {
             return (result, vec!["в файле управления нет действий".into()]);
         };
         let mut parsed = Vec::new();
+        let mut middle_moved = false;
+        let mut camera_moved = false;
         for (name, chords) in actions {
             let Some(action) = Action::ALL.iter().copied().find(|a| a.key() == name) else {
                 warnings.push(format!("неизвестное действие «{name}» пропущено"));
@@ -569,7 +579,19 @@ impl Bindings {
                     {
                         chord.mods.shift = true;
                         result.migrated = true;
+                        camera_moved = true;
                     }
+                }
+            }
+            // Version ≤ 2 → 3: the middle button moves from «Вписать» to
+            // «Захват» (F still frames).
+            if version.is_some_and(|v| v < 3) && action == Action::Fit {
+                let middle = Some(Chord::mouse(MouseButton::Middle));
+                let before = chords.len();
+                chords.retain(|chord| *chord != middle);
+                if chords.len() != before {
+                    result.migrated = true;
+                    middle_moved = true;
                 }
             }
             if chords.iter().any(Option::is_none) || chords.len() > 2 {
@@ -607,9 +629,15 @@ impl Bindings {
                 }
             }
         }
-        if result.migrated {
+        if camera_moved {
             warnings.push(
                 "ЛКМ и ПКМ теперь — выбор объектов и контекстное меню: вращение и сдвиг с них перенесены на Shift+ЛКМ и Shift+ПКМ".into(),
+            );
+        }
+        if middle_moved {
+            warnings.push(
+                "СКМ теперь — захват объектов (щелчок — взять, щелчок — положить); «Вписать» — F"
+                    .into(),
             );
         }
         (result, warnings)
@@ -723,10 +751,12 @@ mod tests {
         };
         assert_eq!(b.drag(MouseButton::Left, shift), Some(Action::Orbit));
         assert_eq!(b.drag(MouseButton::Right, shift), Some(Action::Pan));
+        // 2026-11-25: the middle button grabs, F frames.
         assert_eq!(
             b.command(Chord::mouse(MouseButton::Middle)),
-            Some(Action::Fit)
+            Some(Action::Grab)
         );
+        assert_eq!(b.command(Chord::plain(KeyCode::KeyF)), Some(Action::Fit));
         assert_eq!(
             b.command(Chord::plain(KeyCode::Tab)),
             Some(Action::ToggleOutline)
@@ -798,7 +828,16 @@ mod tests {
         }});
         let (b, warnings) = Bindings::from_json(&v1);
         assert!(b.migrated);
-        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        // Camera drags moved to Shift, and the middle button to «Захват».
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert_eq!(
+            b.command(Chord::mouse(MouseButton::Middle)),
+            Some(Action::Grab)
+        );
+        assert_eq!(
+            b.slots(Action::Fit),
+            [Some(Chord::plain(KeyCode::KeyF)), None]
+        );
         let shift = Mods {
             shift: true,
             ..Mods::NONE
@@ -819,10 +858,51 @@ mod tests {
             b.command(Chord::plain(KeyCode::Tab)),
             Some(Action::ToggleOutline)
         );
-        // Saved again as version 2 and read back unchanged.
+        // Saved again as version 3 and read back unchanged.
         let (again, warnings) = Bindings::from_json(&b.to_json());
         assert!(warnings.is_empty() && !again.migrated);
         assert_eq!(again.slots(Action::Orbit), b.slots(Action::Orbit));
+    }
+    #[test]
+    fn version_two_files_give_the_middle_button_to_grab_and_z_to_the_skeleton() {
+        let v2 = json!({"version": 2, "invert_zoom": false, "actions": {
+            "fit": ["F", "Mouse Middle"],
+            "orbit": ["Mouse Forward", "Shift+Mouse Left"]
+        }});
+        let (b, warnings) = Bindings::from_json(&v2);
+        assert!(b.migrated);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("СКМ"));
+        assert_eq!(
+            b.command(Chord::mouse(MouseButton::Middle)),
+            Some(Action::Grab)
+        );
+        assert_eq!(b.command(Chord::plain(KeyCode::KeyF)), Some(Action::Fit));
+        assert_eq!(
+            b.command(Chord::plain(KeyCode::KeyZ)),
+            Some(Action::ToggleSkeleton)
+        );
+        assert_eq!(
+            b.command(Chord::plain(KeyCode::KeyQ)),
+            Some(Action::ToggleLeftPanel)
+        );
+        assert_eq!(
+            b.command(Chord::plain(KeyCode::KeyE)),
+            Some(Action::ToggleRightPanel)
+        );
+        // Undo keeps Ctrl+Z; plain Z is the skeleton.
+        assert_eq!(b.command(Chord::ctrl(KeyCode::KeyZ)), Some(Action::Undo));
+        // A version 3 file keeps whatever the owner put on the middle button.
+        let mut v3 = b.to_json();
+        v3["actions"]["fit"] = json!(["F", "Mouse Middle"]);
+        v3["actions"]["grab"] = json!(["G"]);
+        v3["actions"]["toggle_floor"] = json!([]);
+        let (kept, warnings) = Bindings::from_json(&v3);
+        assert!(warnings.is_empty() && !kept.migrated, "{warnings:?}");
+        assert_eq!(
+            kept.command(Chord::mouse(MouseButton::Middle)),
+            Some(Action::Fit)
+        );
     }
     #[test]
     fn capture_waits_for_modifiers_cancels_on_esc_and_reports_conflicts() {

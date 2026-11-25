@@ -142,6 +142,9 @@ impl ViewerUi {
             } else {
                 format!("{} · без TRS-каналов", joint.name)
             });
+            if response.hovered() {
+                self.pointer_on_gizmo = true;
+            }
             if response.clicked() {
                 select_joint(
                     context,

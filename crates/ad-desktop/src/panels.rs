@@ -401,6 +401,13 @@ impl ViewerUi {
         ui.separator();
         Self::heading(ui, "Контур объектов");
         ui.checkbox(&mut self.outline_on, "Показывать контур (Tab)");
+        ui.add(
+            egui::Slider::new(&mut self.outline_width, ad_render_vulkan::outline::WIDTHS)
+                .step_by(1.)
+                .suffix(" px")
+                .text("Толщина"),
+        )
+        .on_hover_text("Толщина линии контура в пикселях экрана: 1–32 (раньше было 2).");
         ui.horizontal(|ui| {
             ui.radio_value(&mut self.outline_color, None, "Динамический контраст")
                 .on_hover_text("Линия инвертирует то, что под ней: видна на любом фоне.");
@@ -443,8 +450,12 @@ impl ViewerUi {
                 .on_hover_text("Обычное окно с рамкой");
             ui.selectable_value(&mut self.window_mode, W::Maximized, "Во весь экран")
                 .on_hover_text("Окно на весь экран, с рамкой и заголовком");
+            ui.selectable_value(&mut self.window_mode, W::Borderless, "Без рамки")
+                .on_hover_text(
+                    "Без рамки на весь рабочий стол; панель задач Windows остаётся видна",
+                );
             ui.selectable_value(&mut self.window_mode, W::Fullscreen, "Полный экран")
-                .on_hover_text("Без рамки · F11 — переключить, Esc — вернуть окно");
+                .on_hover_text("Без рамки поверх всего · F11 — переключить, Esc — вернуть окно");
         });
         ui.separator();
         Self::heading(ui, "Обновления");
@@ -1137,6 +1148,9 @@ impl ViewerUi {
                             )
                             .clicked()
                         {
+                            if !self.tree.is_selected(node) {
+                                self.tree.select_only(Some(node));
+                            }
                             self.object_gizmo = Some(node);
                             self.model_gizmo_on = true;
                             close = true;
@@ -1190,6 +1204,8 @@ impl ViewerUi {
                     }
                     if self.object_gizmo.is_some() && ui.button("Gizmo: вся модель").clicked()
                     {
+                        // The gizmo follows the selection: clear it.
+                        self.tree.select_only(None);
                         self.object_gizmo = None;
                         close = true;
                     }

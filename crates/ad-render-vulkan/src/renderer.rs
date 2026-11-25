@@ -1108,8 +1108,15 @@ impl Renderer {
                         &[target.set],
                         &[],
                     );
-                    let push =
-                        crate::outline::OutlinePush::new(self.outline.color, !chain.encode_srgb);
+                    let push = crate::outline::OutlinePush::new(
+                        self.outline.color,
+                        !chain.encode_srgb,
+                        if self.outline.width > 0. {
+                            self.outline.width
+                        } else {
+                            crate::outline::DEFAULT_WIDTH
+                        },
+                    );
                     let bytes = std::slice::from_raw_parts(
                         (&push as *const crate::outline::OutlinePush).cast::<u8>(),
                         std::mem::size_of::<crate::outline::OutlinePush>(),

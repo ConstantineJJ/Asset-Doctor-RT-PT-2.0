@@ -14,11 +14,25 @@ void main() {
     vec2 here=texelFetch(sampler2D(mask_image,mask_sampler),p,0).rg;
     int r=int(pc.params.x+0.5);
     vec2 near=vec2(0.0);
-    for (int dy=-r; dy<=r; dy++) {
-        for (int dx=-r; dx<=r; dx++) {
-            if (dx*dx+dy*dy>r*r) {continue;}
+    // Every pixel within 3 px (thin parts keep their outline), then a
+    // sparser grid up to the full width: at most ~17 x 17 samples for any
+    // width, so a thick outline stays cheap.
+    int core=min(r,3);
+    for (int dy=-core; dy<=core; dy++) {
+        for (int dx=-core; dx<=core; dx++) {
+            if (dx*dx+dy*dy>core*core) {continue;}
             ivec2 q=clamp(p+ivec2(dx,dy),ivec2(0),size-1);
             near=max(near,texelFetch(sampler2D(mask_image,mask_sampler),q,0).rg);
+        }
+    }
+    if (r>core) {
+        int step=max(1,(r+7)/8);
+        for (int dy=-r; dy<=r; dy+=step) {
+            for (int dx=-r; dx<=r; dx+=step) {
+                if (dx*dx+dy*dy>r*r) {continue;}
+                ivec2 q=clamp(p+ivec2(dx,dy),ivec2(0),size-1);
+                near=max(near,texelFetch(sampler2D(mask_image,mask_sampler),q,0).rg);
+            }
         }
     }
     bool selected=near.r>0.5 && here.r<0.5;

@@ -134,8 +134,13 @@ struct App {
     /// Picking: draw boxes and node parents of the shown snapshot; where the
     /// left button went down (a click selects).
     pick_cache: Option<PickCache>,
-    /// The window mode last given to the OS window.
+    /// The window mode last given to the OS window, and the normal
+    /// window's place to come back to from the borderless mode.
     applied_window_mode: viewer_ui::WindowMode,
+    normal_window: Option<(
+        winit::dpi::PhysicalPosition<i32>,
+        winit::dpi::PhysicalSize<u32>,
+    )>,
     /// ADR-0049 updates: background check/download, the start marker the
     /// updater waits for, and the exit for an update.
     updates: updates::Updates,
@@ -1817,6 +1822,18 @@ impl App {
             A::ToggleOutline => self.ui.outline_on = !self.ui.outline_on,
             A::DeleteObject => self.delete_selected(),
             A::ToggleLeftPanel => self.ui.show_tree = !self.ui.show_tree,
+            A::ToggleSkeleton => {
+                self.ui.skeleton_on = !self.ui.skeleton_on;
+                self.ui.set_status(
+                    if self.ui.skeleton_on {
+                        "Риг показан (Z)"
+                    } else {
+                        "Риг скрыт (Z)"
+                    },
+                    false,
+                );
+            }
+            A::Grab => self.toggle_grab(),
             A::ToggleRightPanel => self.ui.show_summary = !self.ui.show_summary,
             A::ToggleFullscreen => {
                 self.ui.window_mode = if self.ui.window_mode == viewer_ui::WindowMode::Fullscreen {
@@ -1827,6 +1844,11 @@ impl App {
             }
             A::Help => self.ui.help(),
             A::Cancel => {
+                if self.object_drag.as_ref().is_some_and(|d| d.grab) {
+                    self.object_drag = None;
+                    self.ui.set_status("Захват отменён", false);
+                    return;
+                }
                 if self.ui.window_mode == viewer_ui::WindowMode::Fullscreen {
                     self.ui.window_mode = viewer_ui::WindowMode::Normal;
                 }
@@ -1917,6 +1939,14 @@ impl App {
         let Some(window) = self.window.as_ref() else {
             return;
         };
+        // Leaving the borderless mode: frame back, the old place restored.
+        if self.applied_window_mode == W::Borderless {
+            window.set_decorations(true);
+            if let Some((position, size)) = self.normal_window.take() {
+                window.set_outer_position(position);
+                let _ = window.request_inner_size(size);
+            }
+        }
         match mode {
             W::Fullscreen => {
                 window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)))
@@ -1928,6 +1958,23 @@ impl App {
             W::Normal => {
                 window.set_fullscreen(None);
                 window.set_maximized(false);
+            }
+            W::Borderless => {
+                window.set_fullscreen(None);
+                window.set_maximized(false);
+                if let Ok(position) = window.outer_position() {
+                    self.normal_window = Some((position, window.inner_size()));
+                    let size = window.outer_size();
+                    let centre = (
+                        position.x + size.width as i32 / 2,
+                        position.y + size.height as i32 / 2,
+                    );
+                    if let Some((x, y, w, h)) = native::work_area(centre.0, centre.1) {
+                        window.set_decorations(false);
+                        window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
+                        let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(w, h));
+                    }
+                }
             }
         }
         eprintln!("window_mode {}", mode.key());
@@ -1982,6 +2029,7 @@ impl App {
             selected: selected_draws,
             hovered: hovered.map(|n| self.subtree_draws(n)).unwrap_or_default(),
             color: self.ui.outline_color.map(|i| viewer_ui::MARK_COLORS[i % 7]),
+            width: self.ui.outline_width,
         }
     }
     /// Selects a node (Work-Tree, Info, outline) or clears the selection.
@@ -2065,6 +2113,86 @@ impl App {
             self.ui
                 .set_status("Объект сейчас нельзя удалить: идёт другая работа", true);
         }
+    }
+    /// Middle button: take the selection (or the object under the pointer)
+    /// so that it follows the pointer; pressed again, put it down.
+    fn toggle_grab(&mut self) {
+        if self.object_drag.as_ref().is_some_and(|d| d.grab) {
+            let drag = self.object_drag.take().expect("grab checked");
+            self.finish_object_drag(drag);
+            return;
+        }
+        let Some((x, y)) = self.cursor.filter(|(x, y)| self.ui.camera_at(*x, *y)) else {
+            return;
+        };
+        if self.model_pending || self.editing || self.object_drag.is_some() {
+            return;
+        }
+        if let Some(asset) = self.current.as_ref()
+            && let Err(error) = asset.document().require_editable()
+        {
+            self.ui.set_status(error.to_string(), true);
+            return;
+        }
+        if self.ui.tree.all_selected().is_empty() {
+            let picked = self.pick_at(x, y);
+            self.ui.tree.select_only(picked);
+        }
+        let nodes = self.top_level(self.ui.tree.all_selected());
+        let Some(&node) = nodes.first() else {
+            self.ui
+                .set_status("Захват: наведите на объект или выделите объекты", true);
+            return;
+        };
+        // The objects' centre sticks to the pointer.
+        self.ensure_pick_cache();
+        let Some(cache) = self.pick_cache.as_ref() else {
+            return;
+        };
+        let (mut lo, mut hi) = (
+            glam::Vec3::splat(f32::INFINITY),
+            glam::Vec3::splat(f32::NEG_INFINITY),
+        );
+        for draw in nodes.iter().flat_map(|n| self.subtree_draws(*n)) {
+            if let Some((a, b)) = cache.data.bounds.get(draw) {
+                lo = lo.min(*a);
+                hi = hi.max(*b);
+            }
+        }
+        if !lo.is_finite() || !hi.is_finite() {
+            return;
+        }
+        self.object_drag = Some(ObjectDrag {
+            node,
+            nodes,
+            grab: true,
+            hit: (lo + hi) * 0.5,
+            offset: glam::Vec3::ZERO,
+            start: (x, y),
+            active: true,
+        });
+        self.drag_object(x, y);
+        self.ui.hover_node = None;
+        self.ui.set_status(
+            "Захват: объекты следуют за курсором · ЛКМ или СКМ — положить, ПКМ или Esc — отмена",
+            false,
+        );
+        eprintln!(
+            "grab_started objects={}",
+            self.object_drag.as_ref().map_or(0, |d| d.nodes.len())
+        );
+    }
+    /// The nodes the object gizmo works on: the top-level selected nodes
+    /// (the primary one when nothing else is selected).
+    fn gizmo_nodes(&mut self) -> Vec<ad_document::NodeId> {
+        if self.ui.object_gizmo.is_none() {
+            return Vec::new();
+        }
+        let all = self.ui.tree.all_selected();
+        if all.is_empty() {
+            return self.ui.object_gizmo.into_iter().collect();
+        }
+        self.top_level(all)
     }
     /// Shift + click adds the object under the pointer, Ctrl + click removes
     /// it; a click on empty space with a modifier changes nothing.
@@ -2208,12 +2336,13 @@ impl App {
     fn gizmo_bounds(&mut self) -> Option<ad_document::Bounds> {
         let asset = self.current.as_ref()?;
         let model = asset.snapshot().bounds;
-        let Some(node) = self.ui.object_gizmo else {
+        if self.ui.object_gizmo.is_none() {
             return Some(model);
-        };
+        }
+        let nodes = self.gizmo_nodes();
         self.ensure_pick_cache();
         let cache = self.pick_cache.as_ref()?;
-        let draws = self.subtree_draws(node);
+        let draws: Vec<usize> = nodes.iter().flat_map(|n| self.subtree_draws(*n)).collect();
         let (mut lo, mut hi) = (
             glam::Vec3::splat(f32::INFINITY),
             glam::Vec3::splat(f32::NEG_INFINITY),
@@ -2506,13 +2635,26 @@ impl App {
         if actions.model_drag_end {
             self.model_turning = None;
         }
-        if actions.model_drag_end
-            && !self.model_pending
-            && let Some(node) = self.ui.object_gizmo
-        {
-            // ADR-0048: the object gizmo edits the node, not the placement.
+        if actions.model_drag_end && !self.model_pending && self.ui.object_gizmo.is_some() {
+            // ADR-0048: the object gizmo edits the selected nodes (one edit
+            // for the whole group), not the placement.
             if let Some(delta) = self.model_preview.filter(|d| !d.is_noop()) {
-                match self.object_edit(node, delta.matrix()) {
+                let ops: Option<Vec<_>> = self
+                    .gizmo_nodes()
+                    .into_iter()
+                    .map(|node| match self.object_edit(node, delta.matrix())? {
+                        EditKind::Node(op) => Some(op),
+                        _ => None,
+                    })
+                    .collect();
+                let kind = ops.filter(|ops| !ops.is_empty()).map(|mut ops| {
+                    EditKind::Node(if ops.len() == 1 {
+                        ops.remove(0)
+                    } else {
+                        ad_document::NodeOp::Many(ops.into())
+                    })
+                });
+                match kind {
                     Some(kind) if self.request_edit(kind.clone()) => self.model_pending = true,
                     _ => {
                         self.model_preview = None;
@@ -2613,12 +2755,15 @@ impl App {
             None
         };
         // ADR-0041 model gizmo at the (previewed) bottom centre.
-        if self.ui.object_gizmo.is_some_and(|n| {
-            self.current
-                .as_ref()
-                .is_none_or(|a| n.0 >= a.document().nodes().len())
-        }) {
-            self.ui.object_gizmo = None;
+        // The gizmo follows the selection (owner 2026-11-25): objects
+        // selected -> object gizmo on them; nothing selected -> the model.
+        // It does not jump while a gizmo drag or its edit is running.
+        if self.model_preview.is_none() && !self.model_pending {
+            self.ui.object_gizmo = self.ui.tree.selected.filter(|n| {
+                self.current
+                    .as_ref()
+                    .is_some_and(|a| n.0 < a.document().nodes().len())
+            });
         }
         let gizmo_bounds = self.gizmo_bounds();
         self.ui.model_gizmo = gizmo_bounds.and_then(|bounds| {
@@ -2694,28 +2839,25 @@ impl App {
         let outline = self.outline_settings();
         // ADR-0048: an object gizmo or a left-button drag previews only the
         // object's draws; the model gizmo previews the whole model.
-        let object_preview = self
-            .ui
-            .object_gizmo
-            .zip(self.model_preview)
-            .map(|(node, delta)| (node, delta.matrix()))
-            .or(self
-                .object_drag
+        // A gizmo drag previews the whole selection; a left drag or a grab
+        // previews every dragged object.
+        let gizmo_nodes = self.gizmo_nodes();
+        let object_preview = if let (Some(_), Some(delta)) =
+            (self.ui.object_gizmo, self.model_preview)
+        {
+            Some((delta.matrix(), gizmo_nodes))
+        } else {
+            self.object_drag
                 .as_ref()
                 .filter(|d| d.active)
-                .map(|d| (d.node, glam::Mat4::from_translation(d.offset))))
-            .map(|(node, m)| {
-                let nodes = self
-                    .object_drag
-                    .as_ref()
-                    .filter(|d| d.active && self.ui.object_gizmo.is_none())
-                    .map_or_else(|| vec![node], |d| d.nodes.clone());
-                let mut draws: Vec<usize> =
-                    nodes.iter().flat_map(|n| self.subtree_draws(*n)).collect();
-                draws.sort_unstable();
-                draws.dedup();
-                (m.to_cols_array_2d(), draws)
-            });
+                .map(|d| (glam::Mat4::from_translation(d.offset), d.nodes.clone()))
+        }
+        .map(|(m, nodes)| {
+            let mut draws: Vec<usize> = nodes.iter().flat_map(|n| self.subtree_draws(*n)).collect();
+            draws.sort_unstable();
+            draws.dedup();
+            (m.to_cols_array_2d(), draws)
+        });
         let renderer = self.renderer.as_mut().expect("Drawable renderer checked");
         renderer.set_outline(outline);
         let (width, height) = frame.scene.map_or((1, 1), |r| (r.width, r.height));
@@ -3337,8 +3479,23 @@ impl ApplicationHandler for App {
                 let inside = self.cursor.is_some_and(|(x, y)| self.ui.camera_at(x, y));
                 if state == ElementState::Pressed && self.ui.input_capture.is_some() {
                     self.capture_chord(chord, false, false);
+                } else if state == ElementState::Pressed
+                    && matches!(button, MouseButton::Left | MouseButton::Right)
+                    && self.object_drag.as_ref().is_some_and(|d| d.grab)
+                {
+                    // A grab: left puts the objects down, right cancels.
+                    let drag = self.object_drag.take().expect("grab checked");
+                    if button == MouseButton::Left {
+                        self.finish_object_drag(drag);
+                    } else {
+                        self.ui.set_status("Захват отменён", false);
+                    }
                 } else if state == ElementState::Pressed && !consumed {
-                    if button == MouseButton::Left && inside {
+                    // Over a gizmo ring or handle, the lamp or a joint the
+                    // left button only drives that (egui may get the area a
+                    // frame late, so its press is not always "consumed").
+                    let on_gizmo = button == MouseButton::Left && self.ui.pointer_on_gizmo;
+                    if button == MouseButton::Left && inside && !on_gizmo {
                         // Shift / Ctrl + click add to / remove from the
                         // selection (Shift + drag still turns the camera).
                         self.press = self.cursor;
@@ -3349,7 +3506,7 @@ impl ApplicationHandler for App {
                     } else if inside && let Some(drag) = self.ui.bindings.drag(button, chord.mods) {
                         self.mouse = Some(button);
                         self.mouse_drag = Some(drag);
-                    } else if inside && button == MouseButton::Left {
+                    } else if inside && button == MouseButton::Left && !on_gizmo {
                         // The left button is the cursor: a click selects, a
                         // drag on an object moves it (the whole selection
                         // when the object is part of it), a drag on empty
@@ -3369,6 +3526,7 @@ impl ApplicationHandler for App {
                                 self.object_drag = Some(ObjectDrag {
                                     node,
                                     nodes,
+                                    grab: false,
                                     hit,
                                     offset: glam::Vec3::ZERO,
                                     start,
@@ -3572,6 +3730,9 @@ struct ObjectDrag {
     /// Every object the drag moves (the grabbed one, or the whole
     /// selection when it was part of it), without nodes under another one.
     nodes: Vec<ad_document::NodeId>,
+    /// Middle-button grab: follows the pointer without a held button until
+    /// a left / middle click puts it down (right click or Esc cancels).
+    grab: bool,
     /// Grabbed world point and how far it moved.
     hit: glam::Vec3,
     offset: glam::Vec3,
@@ -4009,6 +4170,7 @@ fn run() -> GpuResult<()> {
         press_right: None,
         pick_cache: None,
         applied_window_mode: viewer_ui::WindowMode::Normal,
+        normal_window: None,
         updates,
         update_ok_file,
         exit_after_start,

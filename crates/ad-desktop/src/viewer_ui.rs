@@ -27,6 +27,8 @@ pub enum WindowMode {
     Normal,
     /// The window fills the screen and keeps its frame and title.
     Maximized,
+    /// No frame, the whole desktop except the taskbar.
+    Borderless,
     /// Borderless full screen (F11; Esc returns to the window).
     Fullscreen,
 }
@@ -35,13 +37,19 @@ impl WindowMode {
         match self {
             Self::Normal => "normal",
             Self::Maximized => "maximized",
+            Self::Borderless => "borderless",
             Self::Fullscreen => "fullscreen",
         }
     }
     pub fn from_key(key: &str) -> Option<Self> {
-        [Self::Normal, Self::Maximized, Self::Fullscreen]
-            .into_iter()
-            .find(|m| m.key() == key)
+        [
+            Self::Normal,
+            Self::Maximized,
+            Self::Borderless,
+            Self::Fullscreen,
+        ]
+        .into_iter()
+        .find(|m| m.key() == key)
     }
 }
 
@@ -313,6 +321,8 @@ pub struct ViewerUi {
     /// is set by the application from the pointer.
     pub outline_on: bool,
     pub outline_color: Option<usize>,
+    /// Outline width in pixels (1..32).
+    pub outline_width: f32,
     pub hover_node: Option<ad_document::NodeId>,
     /// ADR-0048: the gizmo works on this object instead of the whole model.
     pub object_gizmo: Option<ad_document::NodeId>,
@@ -358,6 +368,9 @@ pub struct ViewerUi {
     pub helper_overlay: Option<crate::helpers::Overlay>,
     /// Window mode chosen in «Настройки → Окно» (applied by the app).
     pub window_mode: WindowMode,
+    /// The pointer was over a gizmo ring/handle, the lamp or a joint in the
+    /// last frame: the left button belongs to that, not to selection.
+    pub pointer_on_gizmo: bool,
     /// Selection box in viewport coordinates (corners, remove mode).
     pub marquee: Option<([f32; 2], [f32; 2], bool)>,
     /// P7 skeleton overlay (bones and joints of the skins) and its switch.
@@ -488,6 +501,7 @@ impl Default for ViewerUi {
             update: Default::default(),
             outline_on: true,
             outline_color: None,
+            outline_width: ad_render_vulkan::outline::DEFAULT_WIDTH,
             hover_node: None,
             object_gizmo: None,
             context_menu: None,
@@ -517,6 +531,7 @@ impl Default for ViewerUi {
             skeleton_on: true,
             skeleton: None,
             marquee: None,
+            pointer_on_gizmo: false,
             window_mode: WindowMode::Normal,
             helper_overlay: None,
             placement: ad_document::Placement::IDENTITY,
@@ -946,6 +961,7 @@ impl ViewerUi {
                 })
             });
             let hot = dragging || near;
+            self.pointer_on_gizmo |= hot;
             let color = if hot {
                 colors[axis]
             } else {
@@ -996,6 +1012,8 @@ impl ViewerUi {
             }
         }
         handles.push((Handle::Scale, pivot, Color32::from_rgb(235, 235, 235)));
+        self.pointer_on_gizmo |=
+            pointer.is_some_and(|p| handles.iter().any(|(_, at, _)| at.distance(p) < 13.));
         for (handle, position, color) in handles {
             let id = egui::Id::new(("model_gizmo", format!("{handle:?}")));
             egui::Area::new(id)
@@ -1387,6 +1405,7 @@ impl ViewerUi {
         loading: bool,
     ) -> (egui::FullOutput, egui::Rect, Actions) {
         let context = self.context.clone();
+        self.pointer_on_gizmo = false;
         // Tab is the outline switch: egui must not use it to move keyboard
         // focus over the top menus, except inside a text field.
         if !context.egui_wants_keyboard_input() {
@@ -1463,6 +1482,7 @@ impl ViewerUi {
                 if !(asset.is_some() && self.lamp_icon && self.lamp_gizmo.is_some()) {
                     self.lamp_hot=None;
                 }
+                self.pointer_on_gizmo |= self.lamp_hot.is_some();
                 self.work_tree_strip(&context,width);
                 self.corner_overlay(&context,width,loading,&mut actions);
                 if asset.is_none() {
@@ -2059,6 +2079,10 @@ FORMAT=32-bit_rle_rgbe
             Some(WindowMode::Fullscreen)
         );
         assert_eq!(WindowMode::from_key("big"), None);
+        assert_eq!(
+            WindowMode::from_key("borderless"),
+            Some(WindowMode::Borderless)
+        );
     }
     #[test]
     fn view_buttons_choose_camera_views_and_the_bug_opens_the_log() {
