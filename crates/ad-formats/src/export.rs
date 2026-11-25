@@ -485,7 +485,10 @@ fn placed_roots(
     let placed = !placement.is_identity();
     for root in document.roots() {
         cancel.check()?;
-        if edits.is_detached(*root) || (!placed && !edits.locals.contains_key(&root.0)) {
+        // Detaching unlinks the root from the active scene. Its explicit
+        // object edit still belongs to the node retained in the file.
+        let place_root = placed && !edits.is_detached(*root);
+        if !place_root && !edits.locals.contains_key(&root.0) {
             continue;
         }
         let node = parsed.document.nodes().nth(root.0).ok_or_else(invalid)?;
@@ -494,14 +497,14 @@ fn placed_roots(
             None => node.transform(),
         };
         let transform = match own {
-            Transform::Matrix { matrix } if placed => Transform::Matrix {
+            Transform::Matrix { matrix } if place_root => Transform::Matrix {
                 matrix: placement.apply_matrix(matrix),
             },
             Transform::Decomposed {
                 translation,
                 rotation,
                 scale,
-            } if placed => Transform::Decomposed {
+            } if place_root => Transform::Decomposed {
                 translation: placement.apply(translation),
                 rotation: placement.apply_rotation(rotation),
                 scale: scale.map(|v| v * placement.scale),
