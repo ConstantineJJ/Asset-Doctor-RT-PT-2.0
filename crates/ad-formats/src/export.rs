@@ -24,10 +24,10 @@ pub struct ExportLimits {
 impl Default for ExportLimits {
     fn default() -> Self {
         Self {
-            output_bytes: 192 << 20,
-            json_bytes: 16 << 20,
-            metadata_values: 200_000,
-            changed_primitives: 4096,
+            output_bytes: 1 << 30,
+            json_bytes: 64 << 20,
+            metadata_values: 1_000_000,
+            changed_primitives: 16_384,
         }
     }
 }

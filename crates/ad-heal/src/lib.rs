@@ -17,9 +17,9 @@ pub struct PlanLimits {
 impl Default for PlanLimits {
     fn default() -> Self {
         Self {
-            triangles: 4_000_000,
-            scratch_bytes: 64 << 20,
-            result_bytes: 16 << 20,
+            triangles: 16_000_000,
+            scratch_bytes: 512 << 20,
+            result_bytes: 128 << 20,
         }
     }
 }
@@ -30,7 +30,7 @@ pub struct VerificationLimits {
 impl Default for VerificationLimits {
     fn default() -> Self {
         Self {
-            scratch_bytes: 128 << 20,
+            scratch_bytes: 1 << 30,
         }
     }
 }

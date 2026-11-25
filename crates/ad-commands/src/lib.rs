@@ -12,8 +12,8 @@ pub struct HistoryLimits {
 impl Default for HistoryLimits {
     fn default() -> Self {
         Self {
-            bytes: 64 << 20,
-            entries: 128,
+            bytes: 512 << 20,
+            entries: 256,
         }
     }
 }

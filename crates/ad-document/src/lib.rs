@@ -105,15 +105,17 @@ pub struct ImportLimits {
 impl Default for ImportLimits {
     fn default() -> Self {
         Self {
-            source_bytes: 192 << 20,
-            json_bytes: 16 << 20,
-            decoded_bytes: 512 << 20,
-            snapshot_bytes: 512 << 20,
-            nodes: 50_000,
-            draws: 100_000,
-            texture_bytes: 256 << 20,
-            texture_side: 8192,
-            textures: 256,
+            // Owner 2026-11-25: use more RAM/VRAM (x4-x8 over the first
+            // engineering caps); see RESOURCE_BUDGETS.md.
+            source_bytes: 1 << 30,
+            json_bytes: 64 << 20,
+            decoded_bytes: 3 << 30,
+            snapshot_bytes: 2 << 30,
+            nodes: 200_000,
+            draws: 400_000,
+            texture_bytes: 2 << 30,
+            texture_side: 16384,
+            textures: 1024,
         }
     }
 }
