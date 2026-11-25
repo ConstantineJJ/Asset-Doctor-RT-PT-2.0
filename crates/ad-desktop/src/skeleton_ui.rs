@@ -157,3 +157,172 @@ impl ViewerUi {
         }
     }
 }
+
+/// A part of the joint gizmo.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum JointHandle {
+    Ring(usize),
+    Arrow(usize),
+}
+
+const AXIS_COLORS: [Color32; 3] = [
+    Color32::from_rgb(235, 70, 70),
+    Color32::from_rgb(90, 210, 90),
+    Color32::from_rgb(80, 140, 245),
+];
+
+fn segment_distance(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
+    let ab = b - a;
+    let t = ((p - a).dot(ab) / ab.length_sq().max(1e-6)).clamp(0., 1.);
+    (p - (a + ab * t)).length()
+}
+
+impl ViewerUi {
+    /// Rings turn the joint, arrows move it: preview while dragging, one key
+    /// of the current clip on release.
+    pub(super) fn joint_gizmo_ui(
+        &mut self,
+        context: &egui::Context,
+        root: &egui::Ui,
+        gizmo: &crate::joint_gizmo::JointGizmo,
+        actions: &mut Actions,
+    ) {
+        use ad_document::{AnimationKey, ChannelValue, TrackKind};
+        let scene = self.scene;
+        let at = |p: [f32; 2]| {
+            egui::pos2(
+                scene.min.x + p[0] * scene.width(),
+                scene.min.y + p[1] * scene.height(),
+            )
+        };
+        let uv = |p: egui::Pos2| {
+            [
+                (p.x - scene.min.x) / scene.width(),
+                (p.y - scene.min.y) / scene.height(),
+            ]
+        };
+        let aspect = scene.width() / scene.height().max(1.);
+        let painter = root.painter().with_clip_rect(scene);
+        let pointer = context.pointer_hover_pos();
+        let centre = at(gizmo.center);
+        // Dragged handle first, so a ring under an arrow does not steal it.
+        let mut handles: Vec<(JointHandle, egui::Pos2)> = Vec::new();
+        for axis in 0..3 {
+            let ring = &gizmo.rings[axis];
+            let hot = self
+                .joint_drag
+                .is_some_and(|d| d.0 == JointHandle::Ring(axis))
+                || pointer.is_some_and(|p| {
+                    (0..ring.len()).any(|i| match (ring[i], ring[(i + 1) % ring.len()]) {
+                        (Some(a), Some(b)) => segment_distance(p, at(a), at(b)) < 6.,
+                        _ => false,
+                    })
+                });
+            for i in 0..ring.len() {
+                if let (Some(a), Some(b)) = (ring[i], ring[(i + 1) % ring.len()]) {
+                    painter.line_segment(
+                        [at(a), at(b)],
+                        egui::Stroke::new(if hot { 3. } else { 1.6 }, AXIS_COLORS[axis]),
+                    );
+                }
+            }
+            if hot && let Some(p) = pointer {
+                handles.push((JointHandle::Ring(axis), p));
+            }
+            if let Some(tip) = gizmo.arrows[axis].map(at) {
+                painter.line_segment([centre, tip], egui::Stroke::new(2., AXIS_COLORS[axis]));
+                handles.push((JointHandle::Arrow(axis), tip));
+            }
+        }
+        painter.circle_filled(centre, 3., Color32::WHITE);
+        self.pointer_on_gizmo |= handles.iter().any(|(h, p)| match h {
+            JointHandle::Ring(_) => true,
+            JointHandle::Arrow(_) => pointer.is_some_and(|q| q.distance(*p) < 12.),
+        });
+        for (handle, position) in handles {
+            let id = egui::Id::new(("joint_gizmo", gizmo.document, format!("{handle:?}")));
+            let area = egui::Area::new(id.with("area"))
+                .order(egui::Order::Middle)
+                .fixed_pos(position - egui::vec2(10., 10.))
+                .show(context, |ui| {
+                    let rect = egui::Rect::from_center_size(position, egui::vec2(20., 20.));
+                    let response = ui.interact(rect, id, egui::Sense::drag());
+                    if let JointHandle::Arrow(axis) = handle {
+                        let r = if response.hovered() || response.dragged() {
+                            7.
+                        } else {
+                            5.
+                        };
+                        ui.painter().circle(
+                            rect.center(),
+                            r,
+                            AXIS_COLORS[axis],
+                            egui::Stroke::new(1.5, OUTLINE),
+                        );
+                    }
+                    response
+                });
+            let response = area.inner;
+            if response.drag_started()
+                && let Some(p) = response.interact_pointer_pos()
+            {
+                let base = match handle {
+                    JointHandle::Ring(_) => gizmo.rotation,
+                    JointHandle::Arrow(_) => {
+                        let t = gizmo.translation;
+                        [t[0], t[1], t[2], 0.]
+                    }
+                };
+                self.joint_drag = Some((handle, uv(p), base));
+            }
+            if response.dragged()
+                && let (Some(p), Some((h, start, _))) =
+                    (response.interact_pointer_pos(), self.joint_drag)
+                && h == handle
+            {
+                let (kind, value) = match handle {
+                    JointHandle::Ring(axis) => (
+                        TrackKind::Rotation,
+                        gizmo.turned(axis, gizmo.drag_angle(axis, start, uv(p), aspect)),
+                    ),
+                    JointHandle::Arrow(axis) => {
+                        let d = [uv(p)[0] - start[0], uv(p)[1] - start[1]];
+                        let t = gizmo.moved(axis, gizmo.drag_distance(axis, d, aspect));
+                        (TrackKind::Translation, [t[0], t[1], t[2], 0.])
+                    }
+                };
+                self.joint_drag = Some((handle, start, value));
+                actions.animation_preview = Some(Some(ChannelValue {
+                    node: gizmo.node,
+                    kind,
+                    value,
+                }));
+            }
+            if response.drag_stopped()
+                && let Some((h, _, value)) = self.joint_drag.take()
+                && h == handle
+            {
+                let kind = match handle {
+                    JointHandle::Ring(_) => TrackKind::Rotation,
+                    JointHandle::Arrow(_) => TrackKind::Translation,
+                };
+                actions.animation_key = Some(AnimationKey {
+                    clip: gizmo.clip,
+                    time: gizmo.time,
+                    channel: ChannelValue {
+                        node: gizmo.node,
+                        kind,
+                        value,
+                    },
+                    remove: false,
+                });
+            }
+            response.on_hover_text(match handle {
+                JointHandle::Ring(0) => "Тяните по красному кольцу — поворот сустава вокруг X; отпускание — ключ в текущем времени",
+                JointHandle::Ring(1) => "Тяните по зелёному кольцу — поворот вокруг Y; отпускание — ключ",
+                JointHandle::Ring(_) => "Тяните по синему кольцу — поворот вокруг Z; отпускание — ключ",
+                JointHandle::Arrow(_) => "Тяните — сдвинуть сустав вдоль оси; отпускание — ключ в текущем времени",
+            });
+        }
+    }
+}

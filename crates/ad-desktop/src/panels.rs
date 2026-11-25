@@ -952,7 +952,13 @@ impl ViewerUi {
                 ui.separator();
                 if self.tab == Tab::Rigging {
                     ui.add_enabled_ui(self.edit.busy.is_none(), |ui| {
-                        super::rig_ui::show(ui, asset, self.playback, actions);
+                        super::rig_ui::show(
+                            ui,
+                            asset,
+                            self.playback,
+                            &mut self.joint_local_axes,
+                            actions,
+                        );
                     });
                 } else {
                     egui::ScrollArea::vertical()
