@@ -30,7 +30,6 @@ pub(super) fn show(
         }
         ui.separator();
     }
-    let node_id = egui::Id::new(("animation_node", document.id().0));
     let Some(rig) = document.rig() else {
         ui.label("У этой модели нет скина.");
         actions.playback = (controls != before).then_some(controls);
@@ -76,35 +75,158 @@ pub(super) fn show(
     }
     ui.separator();
 
-    let row_height = ui.text_style_height(&egui::TextStyle::Body);
+    ui.horizontal(|ui| {
+        ui.label("Суставы");
+        ui.weak("· клик по суставу во вьюпорте тоже выбирает его");
+    });
     egui::ScrollArea::vertical()
         .id_salt((selector_id, selected))
         .auto_shrink([false, false])
-        .show_rows(ui, row_height, skin.joints.len(), |ui, rows| {
-            for slot in rows {
-                let node = skin.joints[slot];
-                let status = if report.unused_joints.binary_search(&slot).is_ok() {
-                    " · без веса"
-                } else {
-                    ""
-                };
-                let label = format!("{} · {}{}", slot, document.nodes()[node.0].name, status);
-                let selected = ui.ctx().data(|data| data.get_temp::<NodeId>(node_id));
-                let response = ui
-                    .add_enabled(
-                        controls.clip.is_some()
-                            && !controls.playing
-                            && document.can_animate_node(node),
-                        egui::Button::selectable(selected == Some(node), label).truncate(),
-                    )
-                    .on_hover_text(format!("Узел glTF №{}", node.0));
-                if response.clicked() {
-                    ui.ctx().data_mut(|data| data.insert_temp(node_id, node));
-                    actions.animation_preview = Some(None);
-                }
+        .show(ui, |ui| joint_tree(ui, document, skin, report, actions));
+    actions.playback = (controls != before).then_some(controls);
+}
+
+/// Joints of `skin` as a tree (parent → children by the scene hierarchy;
+/// helper nodes between joints are skipped). The selection is shared with
+/// the skeleton overlay; a joint picked in the viewport opens its branch and
+/// scrolls into view.
+fn joint_tree(
+    ui: &mut egui::Ui,
+    document: &AssetDocument,
+    skin: &ad_document::Skin,
+    report: &ad_document::SkinReport,
+    actions: &mut Actions,
+) {
+    use crate::viewer_ui::skeleton_ui::{joint_id, select_joint};
+    let nodes = document.nodes();
+    let mut parents = vec![None; nodes.len()];
+    for (index, node) in nodes.iter().enumerate() {
+        for child in &node.children {
+            if let Some(slot) = parents.get_mut(child.0) {
+                *slot = Some(index);
+            }
+        }
+    }
+    let mut slot_of = vec![None; nodes.len()];
+    for (slot, joint) in skin.joints.iter().enumerate() {
+        if joint.0 < nodes.len() {
+            slot_of[joint.0] = Some(slot);
+        }
+    }
+    let joint_parent = |node: usize| {
+        let mut parent = parents[node];
+        let mut steps = 0;
+        while let Some(p) = parent
+            && slot_of[p].is_none()
+            && steps < nodes.len()
+        {
+            parent = parents[p];
+            steps += 1;
+        }
+        parent.filter(|p| slot_of[*p].is_some())
+    };
+    let mut children = vec![Vec::new(); skin.joints.len()];
+    let mut roots = Vec::new();
+    for (slot, joint) in skin.joints.iter().enumerate() {
+        match joint_parent(joint.0).and_then(|p| slot_of[p]) {
+            Some(parent) if parent != slot => children[parent].push(slot),
+            _ => roots.push(slot),
+        }
+    }
+    let document_id = document.id().0;
+    let selected = ui
+        .ctx()
+        .data(|d| d.get_temp::<NodeId>(joint_id(document_id)));
+    // A new selection (from the viewport or here) opens its ancestors once.
+    let seen_id = joint_id(document_id).with("seen");
+    let seen = ui
+        .ctx()
+        .data(|d| d.get_temp::<Option<NodeId>>(seen_id))
+        .flatten();
+    let reveal = selected != seen;
+    ui.ctx().data_mut(|d| d.insert_temp(seen_id, selected));
+    let mut open = vec![false; skin.joints.len()];
+    if let Some(slot) = selected.and_then(|n| slot_of.get(n.0).copied().flatten()) {
+        let mut at = joint_parent(skin.joints[slot].0).and_then(|p| slot_of[p]);
+        let mut steps = 0;
+        while let Some(parent) = at
+            && steps < skin.joints.len()
+        {
+            open[parent] = true;
+            at = joint_parent(skin.joints[parent].0).and_then(|p| slot_of[p]);
+            steps += 1;
+        }
+    }
+    struct Tree<'a> {
+        document: &'a AssetDocument,
+        skin: &'a ad_document::Skin,
+        report: &'a ad_document::SkinReport,
+        children: &'a [Vec<usize>],
+        open: &'a [bool],
+        selected: Option<NodeId>,
+        reveal: bool,
+    }
+    fn row(ui: &mut egui::Ui, tree: &Tree, slot: usize, depth: usize, actions: &mut Actions) {
+        let node = tree.skin.joints[slot];
+        let unused = tree.report.unused_joints.binary_search(&slot).is_ok();
+        let label = format!(
+            "{} · {}{}",
+            slot,
+            tree.document.nodes()[node.0].name,
+            if unused { " · без веса" } else { "" }
+        );
+        let is_selected = tree.selected == Some(node);
+        let draw = |ui: &mut egui::Ui, actions: &mut Actions| {
+            let response = ui
+                .add(egui::Button::selectable(is_selected, label.clone()).truncate())
+                .on_hover_text(format!("Узел glTF №{}", node.0));
+            if is_selected && tree.reveal {
+                response.scroll_to_me(Some(egui::Align::Center));
+            }
+            if response.clicked() {
+                select_joint(
+                    ui.ctx(),
+                    tree.document.id().0,
+                    node,
+                    tree.document.can_animate_node(node),
+                    actions,
+                );
+            }
+        };
+        if tree.children[slot].is_empty() {
+            ui.horizontal(|ui| {
+                ui.add_space(18.);
+                draw(ui, actions);
+            });
+            return;
+        }
+        let id = ui.make_persistent_id(("joint_branch", tree.document.id().0, slot));
+        let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
+            ui.ctx(),
+            id,
+            depth < 2,
+        );
+        if tree.reveal && tree.open[slot] {
+            state.set_open(true);
+        }
+        state.show_header(ui, |ui| draw(ui, actions)).body(|ui| {
+            for &child in &tree.children[slot] {
+                row(ui, tree, child, depth + 1, actions);
             }
         });
-    actions.playback = (controls != before).then_some(controls);
+    }
+    let tree = Tree {
+        document,
+        skin,
+        report,
+        children: &children,
+        open: &open,
+        selected,
+        reveal,
+    };
+    for &root in &roots {
+        row(ui, &tree, root, 0, actions);
+    }
 }
 
 fn clip_controls(ui: &mut egui::Ui, clips: &[Arc<AnimationClip>], controls: &mut Controls) {

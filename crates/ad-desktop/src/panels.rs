@@ -508,6 +508,7 @@ impl ViewerUi {
         .on_disabled_hover_text("Видеокарта не поддерживает отрисовку линиями (fillModeNonSolid).");
         ui.checkbox(&mut self.show_axes, "Оси").on_hover_text("Мировые оси из начала координат: X красная, Y зелёная, Z синяя; отрицательные половины тусклее.");
         ui.checkbox(&mut self.show_bounds, "Габариты").on_hover_text("Ограничивающий бокс модели и её размеры (ширина x высота x глубина, в единицах файла).");
+        ui.checkbox(&mut self.skeleton_on, "Скелет").on_hover_text("Кости и суставы скина поверх модели в текущей позе. Клик по суставу выбирает его во вкладке Rigging.");
     }
 
     fn light_menu(&mut self, ui: &mut egui::Ui) {

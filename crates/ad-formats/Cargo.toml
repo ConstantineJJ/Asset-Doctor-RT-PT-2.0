@@ -13,3 +13,7 @@ serde_json = { version = "=1.0.150", features = ["float_roundtrip"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# Rig tests compare joint matrices; same pinned version as ad-document.
+glam = { version = "=0.34.3", default-features = false, features = ["std"] }

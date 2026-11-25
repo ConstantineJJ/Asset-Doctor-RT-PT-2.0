@@ -105,6 +105,12 @@ impl Playback {
         self.preview(None);
     }
 
+    /// The pose on screen: (clip, time, previewed key) or None for the
+    /// authored pose.
+    pub fn shown_pose(&self) -> Option<(usize, f32, Option<ChannelValue>)> {
+        self.shown.map(|s| (s.clip, s.time, s.preview))
+    }
+
     pub fn is_idle(&self) -> bool {
         self.worker.is_idle()
     }

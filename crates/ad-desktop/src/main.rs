@@ -2040,6 +2040,74 @@ impl App {
             max: hi.to_array(),
         })
     }
+    /// P7 skeleton overlay: the joints of every skin in the pose on screen,
+    /// projected into the viewport, each linked to its nearest joint
+    /// ancestor.
+    fn skeleton_overlay(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> Option<viewer_ui::skeleton_ui::SkeletonOverlay> {
+        use viewer_ui::skeleton_ui::{OverlayJoint, SkeletonOverlay};
+        let asset = self.current.as_ref()?;
+        let document = asset.document();
+        let rig = document.rig()?;
+        let worlds = document
+            .view()
+            .node_worlds(
+                self.playback.shown_pose(),
+                &ad_document::Cancellation::default(),
+            )
+            .ok()?;
+        let nodes = document.nodes();
+        let mut parents = vec![None; nodes.len()];
+        for (index, node) in nodes.iter().enumerate() {
+            for child in &node.children {
+                if let Some(slot) = parents.get_mut(child.0) {
+                    *slot = Some(index);
+                }
+            }
+        }
+        let mut slot_of = vec![None; nodes.len()];
+        let mut order = Vec::new();
+        for joint in rig.skins.iter().flat_map(|skin| skin.joints.iter()) {
+            if joint.0 < nodes.len() && slot_of[joint.0].is_none() {
+                slot_of[joint.0] = Some(order.len());
+                order.push(*joint);
+            }
+        }
+        let joints = order
+            .iter()
+            .map(|node| {
+                // Nearest ancestor that is a joint (helper nodes in between
+                // are skipped); a few hundred steps at most.
+                let mut parent = parents[node.0];
+                let mut steps = 0;
+                while let Some(p) = parent
+                    && slot_of[p].is_none()
+                    && steps < nodes.len()
+                {
+                    parent = parents[p];
+                    steps += 1;
+                }
+                let at = worlds[node.0].and_then(|m| {
+                    let [x, y, z, _] = m[3];
+                    self.camera.project([x, y, z], width, height)
+                });
+                OverlayJoint {
+                    node: *node,
+                    name: nodes[node.0].name.clone(),
+                    at,
+                    parent: parent.and_then(|p| slot_of[p]),
+                    animatable: document.can_animate_node(*node),
+                }
+            })
+            .collect();
+        Some(SkeletonOverlay {
+            document: document.id().0,
+            joints,
+        })
+    }
     /// Point lamp frame: model centre and radius (half the box diagonal).
     fn lamp_frame(&self) -> Option<([f32; 3], f32)> {
         let asset = self.current.as_ref()?;
@@ -2350,6 +2418,11 @@ impl App {
         self.save_view_settings(false);
         // ADR-0040 lamp gizmo: lamp 1.25 model radii from the centre.
         let (view_w, view_h) = self.last_view;
+        self.ui.skeleton = if self.ui.skeleton_on {
+            self.skeleton_overlay(view_w, view_h)
+        } else {
+            None
+        };
         // ADR-0041 model gizmo at the (previewed) bottom centre.
         if self.ui.object_gizmo.is_some_and(|n| {
             self.current

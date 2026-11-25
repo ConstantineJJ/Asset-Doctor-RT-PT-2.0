@@ -61,6 +61,7 @@ impl ViewerUi {
             "wireframe": self.wireframe,
             "axes": self.show_axes,
             "bounds": self.show_bounds,
+            "skeleton": self.skeleton_on,
             "lamp": {
                 "enabled": l.enabled,
                 "direction": l.direction,
@@ -172,6 +173,7 @@ impl ViewerUi {
         flag(value, "wireframe", &mut self.wireframe, &mut bad);
         flag(value, "axes", &mut self.show_axes, &mut bad);
         flag(value, "bounds", &mut self.show_bounds, &mut bad);
+        flag(value, "skeleton", &mut self.skeleton_on, &mut bad);
         let mut lighting = self.lighting;
         number(
             value,

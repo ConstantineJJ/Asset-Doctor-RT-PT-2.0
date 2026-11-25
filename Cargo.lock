@@ -63,6 +63,7 @@ name = "ad-formats"
 version = "2.6.0"
 dependencies = [
  "ad-document",
+ "glam",
  "gltf",
  "image",
  "serde",

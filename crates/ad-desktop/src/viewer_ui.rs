@@ -11,6 +11,8 @@ use winit::{event::WindowEvent, window::Window};
 mod panels;
 #[path = "rig_ui.rs"]
 mod rig_ui;
+#[path = "skeleton_ui.rs"]
+pub mod skeleton_ui;
 #[path = "update_ui.rs"]
 mod update_ui;
 pub(crate) use panels::MARK_COLORS;
@@ -326,6 +328,9 @@ pub struct ViewerUi {
     pub shadow_strength: f32,
     pub show_bounds: bool,
     pub helper_overlay: Option<crate::helpers::Overlay>,
+    /// P7 skeleton overlay (bones and joints of the skins) and its switch.
+    pub skeleton_on: bool,
+    pub skeleton: Option<skeleton_ui::SkeletonOverlay>,
     pub placement: ad_document::Placement,
     /// Numeric fields being edited (None: they follow the model).
     placement_draft: Option<ad_document::Placement>,
@@ -475,6 +480,8 @@ impl Default for ViewerUi {
             shadows: true,
             shadow_strength: 0.7,
             show_bounds: false,
+            skeleton_on: true,
+            skeleton: None,
             helper_overlay: None,
             placement: ad_document::Placement::IDENTITY,
             placement_draft: None,
@@ -1372,6 +1379,10 @@ impl ViewerUi {
                 self.scene=root.available_rect_before_wrap();
                 if asset.is_some() && let Some(overlay)=self.helper_overlay.as_ref() {
                     Self::helpers_ui(root,self.scene,overlay);
+                }
+                if asset.is_some() && self.skeleton_on && let Some(overlay)=self.skeleton.take() {
+                    self.skeleton_ui(&context,root,&overlay,&mut actions);
+                    self.skeleton=Some(overlay);
                 }
                 if asset.is_some() && !read_only && self.model_gizmo_on && let Some(gizmo)=self.model_gizmo {
                     self.model_gizmo_ui(&context,root,gizmo,&mut actions);
@@ -2560,6 +2571,106 @@ FORMAT=32-bit_rle_rgbe
         let (out, _, _) = ui.layout(raw(1400., 1000.), Some(&asset), false);
         out.drop_without_applying_deltas();
         assert!(ui.model_gizmo_rects.is_empty());
+    }
+    #[test]
+    fn skeleton_joints_are_picked_in_the_viewport_and_shown_in_the_rigging_tree() {
+        use ad_document::NodeId;
+        use skeleton_ui::{OverlayJoint, SkeletonOverlay, joint_id};
+        let mut ui = ViewerUi::default();
+        let asset = crate::imports::prepare(&crate::worker::Request {
+            ticket: 1,
+            input: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/Skin_Checker.glb"),
+            cancel: ad_document::Cancellation::default(),
+        })
+        .unwrap();
+        let document = asset.document();
+        let joints = &document.rig().unwrap().skins[0].joints;
+        assert!(joints.len() >= 2, "fixture has a joint chain");
+        let (first, second) = (joints[0], joints[1]);
+        ui.tab = Tab::Rigging;
+        ui.skeleton = Some(SkeletonOverlay {
+            document: document.id().0,
+            joints: vec![
+                OverlayJoint {
+                    node: first,
+                    name: "first".into(),
+                    at: Some([0.4, 0.5]),
+                    parent: None,
+                    animatable: true,
+                },
+                OverlayJoint {
+                    node: second,
+                    name: "second".into(),
+                    at: Some([0.6, 0.5]),
+                    parent: Some(0),
+                    animatable: false,
+                },
+            ],
+        });
+        for _ in 0..2 {
+            let (out, _, _) = ui.layout(raw(1400., 1000.), Some(&asset), false);
+            out.drop_without_applying_deltas();
+        }
+        let id = joint_id(document.id().0);
+        let at = ui.scene.min + egui::vec2(0.6 * ui.scene.width(), 0.5 * ui.scene.height());
+        let mut preview = None;
+        for (i, events) in [
+            vec![egui::Event::PointerMoved(at)],
+            vec![egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }],
+            vec![egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut input = raw(1400., 1000.);
+            input.events = events;
+            let (out, _, actions) = ui.layout(input, Some(&asset), false);
+            if i == 0 {
+                assert!(
+                    ui.context.egui_wants_pointer_input(),
+                    "a joint click is not an object pick"
+                );
+            }
+            preview = preview.or(actions.animation_preview);
+            out.drop_without_applying_deltas();
+        }
+        assert_eq!(ui.context.data(|d| d.get_temp::<NodeId>(id)), Some(second));
+        // Not keyable: the key editor keeps its node.
+        assert!(preview.is_none());
+        assert_eq!(
+            ui.context
+                .data(|d| d.get_temp::<NodeId>(skeleton_ui::animation_node_id(document.id().0))),
+            None
+        );
+        // The Rigging tree lists the joints by their node names.
+        let (out, _, _) = ui.layout(raw(1400., 1000.), Some(&asset), false);
+        let text = format!("{:?}", out.shapes);
+        assert!(
+            text.contains(&document.nodes()[first.0].name),
+            "tree shows the root joint"
+        );
+        // Switched off: nothing is drawn and the click is the viewport's.
+        ui.skeleton_on = false;
+        for _ in 0..2 {
+            let (out, _, _) = ui.layout(raw(1400., 1000.), Some(&asset), false);
+            out.drop_without_applying_deltas();
+        }
+        let mut input = raw(1400., 1000.);
+        input.events = vec![egui::Event::PointerMoved(at)];
+        let (out, _, _) = ui.layout(input, Some(&asset), false);
+        assert!(!ui.context.egui_wants_pointer_input());
+        out.drop_without_applying_deltas();
     }
     #[test]
     fn lamp_gizmo_captures_the_pointer_and_reports_drags() {

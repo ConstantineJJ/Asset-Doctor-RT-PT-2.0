@@ -30,6 +30,8 @@ pub fn compare_reimported(
 mod export_tests;
 #[cfg(test)]
 mod export_vertex_tests;
+#[cfg(test)]
+mod rig_tests;
 mod skin;
 mod skin_animation;
 mod source;

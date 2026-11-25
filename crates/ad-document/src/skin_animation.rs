@@ -307,6 +307,18 @@ impl DocumentView<'_> {
         limits: ImportLimits,
         cancel: &Cancellation,
     ) -> AssetResult<GeometrySnapshot> {
+        let locals = self.pose_locals(clip, time, preview, cancel)?;
+        self.snapshot_with_pose(Some(&locals), limits, cancel)
+    }
+
+    /// Animated local matrices of a clip at `time` (None: authored local).
+    fn pose_locals(
+        &self,
+        clip: usize,
+        time: f32,
+        preview: Option<ChannelValue>,
+        cancel: &Cancellation,
+    ) -> AssetResult<Vec<Option<Mat4>>> {
         let clip = self
             .animation_clip(clip)
             .ok_or_else(|| invalid("Unknown animation clip"))?;
@@ -327,11 +339,57 @@ impl DocumentView<'_> {
                 .get_or_insert(base)
                 .set(preview.kind, value);
         }
-        let locals: Vec<_> = pose
+        Ok(pose
             .into_iter()
             .map(|transform| transform.map(Transform::matrix))
+            .collect())
+    }
+
+    /// World matrix of every node in the scene (placement and object edits
+    /// included; detached and unreachable nodes are None), in the authored
+    /// pose or in `pose` = (clip, time, preview). Used for the skeleton
+    /// overlay; cheap, no geometry.
+    pub fn node_worlds(
+        &self,
+        pose: Option<(usize, f32, Option<ChannelValue>)>,
+        cancel: &Cancellation,
+    ) -> AssetResult<Vec<Option<[[f32; 4]; 4]>>> {
+        let locals = match pose {
+            Some((clip, time, preview)) => Some(self.pose_locals(clip, time, preview, cancel)?),
+            None => None,
+        };
+        let document = self.document();
+        let edits = self.node_edits();
+        let mut worlds = vec![None; document.nodes().len()];
+        let mut pending: Vec<_> = document
+            .roots()
+            .iter()
+            .filter(|id| !edits.is_detached(**id))
+            .map(|id| (*id, self.placement().matrix()))
             .collect();
-        self.snapshot_with_pose(Some(&locals), limits, cancel)
+        while let Some((id, parent)) = pending.pop() {
+            cancel.check()?;
+            let Some(slot) = worlds.get_mut(id.0) else {
+                continue;
+            };
+            if slot.is_some() {
+                continue; // a cycle or a second parent: the snapshot refuses these
+            }
+            let local = locals
+                .as_ref()
+                .and_then(|locals| locals[id.0])
+                .unwrap_or_else(|| Mat4::from_cols_array_2d(&edits.local(document, id)));
+            let world = parent * local;
+            *slot = Some(world.to_cols_array_2d());
+            pending.extend(
+                document.nodes()[id.0]
+                    .children
+                    .iter()
+                    .filter(|child| !edits.is_detached(**child))
+                    .map(|child| (*child, world)),
+            );
+        }
+        Ok(worlds)
     }
 }
 
