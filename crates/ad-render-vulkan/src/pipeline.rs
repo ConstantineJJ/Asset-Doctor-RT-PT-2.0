@@ -15,6 +15,8 @@ pub(crate) struct MeshPipeline {
     pub handle: vk::Pipeline,
     /// Wireframe overlay; null when the GPU lacks line polygon mode.
     pub wire: vk::Pipeline,
+    /// glTF BLEND: alpha blending, depth test without depth writes.
+    pub blend: vk::Pipeline,
     pub layout: vk::PipelineLayout,
     texture_layout: TextureLayout,
     frame_layout: FrameLayout,
@@ -56,6 +58,7 @@ impl MeshPipeline {
         let mut pipeline = Self {
             handle: vk::Pipeline::null(),
             wire: vk::Pipeline::null(),
+            blend: vk::Pipeline::null(),
             layout: vk::PipelineLayout::null(),
             texture_layout: TextureLayout::new(gpu.clone())?,
             frame_layout: FrameLayout::new(gpu.clone())?,
@@ -264,6 +267,37 @@ impl MeshPipeline {
                     return Err(error.into());
                 }
             }
+            let blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
+                .blend_enable(true)
+                .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+                .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                .color_blend_op(vk::BlendOp::ADD)
+                .src_alpha_blend_factor(vk::BlendFactor::ONE)
+                .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                .alpha_blend_op(vk::BlendOp::ADD)
+                .color_write_mask(vk::ColorComponentFlags::RGBA)];
+            let blend_state =
+                vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
+            let blend_depth = vk::PipelineDepthStencilStateCreateInfo::default()
+                .depth_test_enable(true)
+                .depth_write_enable(false)
+                .depth_compare_op(vk::CompareOp::GREATER);
+            let blended = fill
+                .color_blend_state(&blend_state)
+                .depth_stencil_state(&blend_depth);
+            match pipeline.gpu.device.create_graphics_pipelines(
+                vk::PipelineCache::null(),
+                &[blended],
+                None,
+            ) {
+                Ok(handles) => pipeline.blend = handles[0],
+                Err((handles, error)) => {
+                    for handle in handles {
+                        pipeline.gpu.device.destroy_pipeline(handle, None);
+                    }
+                    return Err(error.into());
+                }
+            }
         }
         Ok(pipeline)
     }
@@ -274,6 +308,7 @@ impl Drop for MeshPipeline {
         unsafe {
             self.gpu.device.destroy_pipeline(self.handle, None);
             self.gpu.device.destroy_pipeline(self.wire, None);
+            self.gpu.device.destroy_pipeline(self.blend, None);
             self.gpu.device.destroy_pipeline_layout(self.layout, None);
         }
     }

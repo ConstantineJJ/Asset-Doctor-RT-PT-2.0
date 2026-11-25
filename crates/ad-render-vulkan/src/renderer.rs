@@ -112,6 +112,8 @@ pub struct Renderer {
     channel: crate::lighting::Channel,
     wireframe: bool,
     wire_frames: u64,
+    /// Frames that drew glTF BLEND geometry.
+    blend_frames: u64,
     /// ADR-0040 owner panorama; replaced only after waiting for idle.
     skybox: Option<crate::sky::Skybox>,
     panorama_frames: u64,
@@ -201,6 +203,7 @@ impl Renderer {
             channel: crate::lighting::Channel::Lit,
             wireframe: false,
             wire_frames: 0,
+            blend_frames: 0,
             frames: 0,
             mesh_frames: 0,
             pbr_frames: 0,
@@ -424,6 +427,9 @@ impl Renderer {
         self.gpu.wireframe
     }
     /// Frames with the wireframe overlay recorded (smoke evidence).
+    pub fn blend_frames(&self) -> u64 {
+        self.blend_frames
+    }
     pub fn wire_frames(&self) -> u64 {
         self.wire_frames
     }
@@ -959,7 +965,65 @@ impl Renderer {
                     }
                 };
                 let wire = self.wireframe && pipeline.wire != vk::Pipeline::null();
-                for pass in 0..1 + usize::from(wire) {
+                // glTF BLEND draws come last, after the floor, back to front
+                // (by the distance of their centres to the eye); they test
+                // depth but do not write it.
+                let eye = self.model_preview.map_or(self.eye, |p| p.1);
+                let mut blended: Vec<usize> = (0..scene.draws.len())
+                    .filter(|&i| scene.draws[i].blend)
+                    .collect();
+                blended.sort_by(|&a, &b| {
+                    let d = |i: usize| {
+                        let c = scene.draws[i].centre;
+                        (0..3)
+                            .map(|k| (c[k] - eye[k]) * (c[k] - eye[k]))
+                            .sum::<f32>()
+                    };
+                    d(b).total_cmp(&d(a))
+                });
+                // Passes: 0 opaque fill, 1 wireframe, 2 floor grid, 3 blended.
+                let mut passes = vec![0usize];
+                if wire {
+                    passes.push(1);
+                }
+                passes.push(2);
+                if !blended.is_empty() && pipeline.blend != vk::Pipeline::null() {
+                    passes.push(3);
+                }
+                for pass in passes {
+                    if pass == 2 {
+                        // ADR-0040: floor grid after the model, depth-tested only.
+                        if let (Some(grid), Some(pipeline)) = (self.grid, chain.grid.as_ref()) {
+                            let push = crate::grid::GridPush::new(self.view_projection, grid);
+                            device.cmd_bind_pipeline(
+                                self.command,
+                                vk::PipelineBindPoint::GRAPHICS,
+                                pipeline.handle,
+                            );
+                            let bytes = std::slice::from_raw_parts(
+                                (&push as *const crate::grid::GridPush).cast::<u8>(),
+                                std::mem::size_of::<crate::grid::GridPush>(),
+                            );
+                            device.cmd_push_constants(
+                                self.command,
+                                pipeline.layout,
+                                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                                0,
+                                bytes,
+                            );
+                            device.cmd_bind_descriptor_sets(
+                                self.command,
+                                vk::PipelineBindPoint::GRAPHICS,
+                                pipeline.layout,
+                                0,
+                                &[self.frame.as_ref().expect("Frame binding initialized").set],
+                                &[],
+                            );
+                            device.cmd_draw(self.command, 6, 1, 0, 0);
+                            self.grid_frames += 1;
+                        }
+                        continue;
+                    }
                     if pass == 1 {
                         device.cmd_bind_pipeline(
                             self.command,
@@ -968,7 +1032,23 @@ impl Renderer {
                         );
                         self.wire_frames += 1;
                     }
-                    for (index, draw) in scene.draws.iter().enumerate() {
+                    if pass == 3 {
+                        device.cmd_bind_pipeline(
+                            self.command,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            pipeline.blend,
+                        );
+                        self.blend_frames += 1;
+                    }
+                    let order: Vec<usize> = match pass {
+                        0 => (0..scene.draws.len())
+                            .filter(|&i| !scene.draws[i].blend)
+                            .collect(),
+                        3 => blended.clone(),
+                        _ => (0..scene.draws.len()).collect(),
+                    };
+                    for index in order {
+                        let draw = &scene.draws[index];
                         let mark = self.draw_override(index, scene.draws.len());
                         if mark.hidden {
                             continue;
@@ -1026,6 +1106,20 @@ impl Renderer {
                         } else {
                             push
                         };
+                        // mesh.frag bit 256: blended, alpha from the material.
+                        let push = if pass == 3 {
+                            Push {
+                                view: [
+                                    push.view[0] + 256.,
+                                    push.view[1],
+                                    push.view[2],
+                                    push.view[3],
+                                ],
+                                ..push
+                            }
+                        } else {
+                            push
+                        };
                         device.cmd_bind_descriptor_sets(
                             self.command,
                             vk::PipelineBindPoint::GRAPHICS,
@@ -1057,36 +1151,6 @@ impl Renderer {
                             0,
                         );
                     }
-                }
-                // ADR-0040: floor grid after the model, depth-tested only.
-                if let (Some(grid), Some(pipeline)) = (self.grid, chain.grid.as_ref()) {
-                    let push = crate::grid::GridPush::new(self.view_projection, grid);
-                    device.cmd_bind_pipeline(
-                        self.command,
-                        vk::PipelineBindPoint::GRAPHICS,
-                        pipeline.handle,
-                    );
-                    let bytes = std::slice::from_raw_parts(
-                        (&push as *const crate::grid::GridPush).cast::<u8>(),
-                        std::mem::size_of::<crate::grid::GridPush>(),
-                    );
-                    device.cmd_push_constants(
-                        self.command,
-                        pipeline.layout,
-                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                        0,
-                        bytes,
-                    );
-                    device.cmd_bind_descriptor_sets(
-                        self.command,
-                        vk::PipelineBindPoint::GRAPHICS,
-                        pipeline.layout,
-                        0,
-                        &[self.frame.as_ref().expect("Frame binding initialized").set],
-                        &[],
-                    );
-                    device.cmd_draw(self.command, 6, 1, 0, 0);
-                    self.grid_frames += 1;
                 }
                 // Object outline over the scene (before the UI).
                 if let (true, Some(target)) = (outline_on, chain.outline.as_ref()) {

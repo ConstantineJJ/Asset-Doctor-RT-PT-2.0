@@ -176,6 +176,7 @@ pub(crate) fn compare(
             || a.occlusion_strength != b.occlusion_strength
             || a.emissive_factor != b.emissive_factor
             || a.alpha_cutoff != b.alpha_cutoff
+            || a.blend != b.blend
         {
             return Err(mismatch());
         }

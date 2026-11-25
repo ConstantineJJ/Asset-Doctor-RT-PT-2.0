@@ -10,6 +10,10 @@ pub(crate) struct GpuDraw {
     pub base_color: [f32; 4],
     pub metallic_roughness: [f32; 2],
     pub alpha_cutoff: Option<f32>,
+    /// glTF BLEND: drawn after opaque geometry and the floor, back to front.
+    pub blend: bool,
+    /// Centre of the draw's vertices (world), for back-to-front order.
+    pub centre: [f32; 3],
     pub texture_slot: usize,
     pub occlusion_strength: f32,
     pub has_occlusion_map: bool,
@@ -228,6 +232,8 @@ impl GpuScene {
                 base_color: d.base_color,
                 metallic_roughness: d.metallic_roughness,
                 alpha_cutoff: d.alpha_cutoff,
+                blend: d.blend,
+                centre: draw_centre(snapshot, d),
                 texture_slot: textures.draw_slots[i],
                 normal_scale: d.normal_scale,
                 has_normal_map: d.normal_texture.is_some(),
@@ -264,4 +270,26 @@ impl GpuScene {
                 .any(|d| d.emissive_factor.iter().any(|&v| v > 0.)),
         })
     }
+}
+
+/// Mean of a draw's referenced vertex positions (world).
+fn draw_centre(
+    snapshot: &ad_document::GeometrySnapshot,
+    draw: &ad_document::DrawRange,
+) -> [f32; 3] {
+    let start = draw.index_start as usize;
+    let end = start + draw.index_count as usize;
+    let (mut sum, mut n) = ([0f64; 3], 0usize);
+    for &i in snapshot.indices.get(start..end).unwrap_or(&[]) {
+        if let Some(p) = snapshot.positions.get(i as usize) {
+            for k in 0..3 {
+                sum[k] += f64::from(p[k]);
+            }
+            n += 1;
+        }
+    }
+    if n == 0 {
+        return [0.; 3];
+    }
+    sum.map(|v| (v / n as f64) as f32)
 }

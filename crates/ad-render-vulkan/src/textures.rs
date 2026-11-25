@@ -831,6 +831,7 @@ mod tests {
             emissive_factor: [0.; 3],
             emissive_texture: None,
             alpha_cutoff: None,
+            blend: false,
         };
         let plan = TexturePlan::new(
             &[

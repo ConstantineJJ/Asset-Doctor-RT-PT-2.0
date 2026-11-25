@@ -55,6 +55,7 @@ pub(super) fn primitive(
         color_texture: None,
         metallic_roughness_texture: None,
         alpha_cutoff: None,
+        blend: false,
     }
 }
 

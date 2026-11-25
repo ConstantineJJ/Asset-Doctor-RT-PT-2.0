@@ -22,6 +22,7 @@ fn same_material(a: &MeshPrimitive, b: &MeshPrimitive) -> bool {
         && a.normal_scale.to_bits() == b.normal_scale.to_bits()
         && a.occlusion_strength.to_bits() == b.occlusion_strength.to_bits()
         && a.alpha_cutoff.map(f32::to_bits) == b.alpha_cutoff.map(f32::to_bits)
+        && a.blend == b.blend
         && same_texture(&a.color_texture, &b.color_texture)
         && same_texture(&a.metallic_roughness_texture, &b.metallic_roughness_texture)
         && same_texture(&a.normal_texture, &b.normal_texture)

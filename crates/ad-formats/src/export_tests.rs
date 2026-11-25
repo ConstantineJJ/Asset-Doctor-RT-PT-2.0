@@ -360,6 +360,7 @@ fn mismatched_authoring_data_cannot_be_certified_by_copying_original_bytes() {
         base_color: [1.; 4],
         metallic_roughness: [1.; 2],
         alpha_cutoff: None,
+        blend: false,
     };
     let d = AssetDocument::new(
         DocumentParts {

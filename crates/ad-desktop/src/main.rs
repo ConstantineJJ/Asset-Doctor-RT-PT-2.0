@@ -260,6 +260,7 @@ impl App {
             let panorama_frames = renderer.panorama_frames();
             let wire_frames = renderer.wire_frames();
             let outline_frames = renderer.outline_frames();
+            let blend_frames = renderer.blend_frames();
             let shadow_frames = renderer.shadow_frames();
             let wire_supported = renderer.wireframe_supported();
             let mr_frames = renderer.mr_frames;
@@ -353,6 +354,7 @@ impl App {
                         self.ui.lighting.mode
                     );
                     eprintln!("grid_smoke grid_frames={}", grid_frames);
+                    eprintln!("blend_smoke blend_frames={blend_frames}");
                     eprintln!(
                         "outline_smoke on={} color={:?} outline_frames={outline_frames}",
                         self.ui.outline_on, self.ui.outline_color

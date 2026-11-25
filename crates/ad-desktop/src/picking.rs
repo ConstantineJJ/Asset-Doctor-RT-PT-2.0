@@ -545,6 +545,7 @@ mod tests {
             emissive_factor: [0.; 3],
             emissive_texture: None,
             alpha_cutoff: cutoff,
+            blend: false,
         }
     }
     fn snapshot(

@@ -31,6 +31,7 @@ fn document(positions: Vec<[f32; 3]>, parts: Vec<Vec<[u32; 3]>>) -> AssetDocumen
             color_texture: None,
             metallic_roughness_texture: None,
             alpha_cutoff: None,
+            blend: false,
         })
         .collect::<Vec<_>>();
     let identity = [

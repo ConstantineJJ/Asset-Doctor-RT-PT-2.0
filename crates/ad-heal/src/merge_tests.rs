@@ -107,6 +107,7 @@ fn merge_postcheck_refuses_wrong_twins_ranks_and_values() {
             color_texture: after.color_texture.clone(),
             metallic_roughness_texture: after.metallic_roughness_texture.clone(),
             alpha_cutoff: after.alpha_cutoff,
+            blend: false,
         };
         assert!(source.uv_channels.is_empty());
         edit(&mut candidate);

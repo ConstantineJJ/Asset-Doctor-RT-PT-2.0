@@ -83,15 +83,13 @@ pub fn import_glb(
     let mut mesh_ids = Vec::new();
     let mut decoded = 0usize;
     let mut material_images = color::MaterialImages::default();
+    // Material textures whose UV set the primitive does not have (an export
+    // slip): left out of that primitive, with a note.
+    let mut textures_without_uv = 0usize;
     for mesh in doc.meshes() {
         let mut ids = Vec::new();
         for primitive in mesh.primitives() {
             cancel.check()?;
-            if primitive.material().alpha_mode() == gltf::material::AlphaMode::Blend {
-                return Err(unsupported(
-                    "Alpha BLEND materials are not supported by this viewer yet",
-                ));
-            }
             if primitive.mode() != gltf::mesh::Mode::Triangles
                 || primitive.morph_targets().len() > 0
             {
@@ -209,21 +207,40 @@ pub fn import_glb(
                 }
                 normals = Some(values);
             }
+            let uv_channels = uv::read_channels(&primitive, bin, position.count(), cancel)?;
+            let has_set = |set: u32| uv_channels.iter().any(|channel| channel.set == set);
+            let mut dropped = 0usize;
+            let mut keep = |set: u32| {
+                let kept = has_set(set);
+                dropped += usize::from(!kept);
+                kept
+            };
             let color_texture = primitive
                 .material()
                 .pbr_metallic_roughness()
-                .base_color_texture();
+                .base_color_texture()
+                .filter(|i| keep(i.tex_coord()));
             let mr_texture = primitive
                 .material()
                 .pbr_metallic_roughness()
-                .metallic_roughness_texture();
-            let normal_info = primitive.material().normal_texture();
-            let emissive_info = primitive.material().emissive_texture();
+                .metallic_roughness_texture()
+                .filter(|i| keep(i.tex_coord()));
+            let normal_info = primitive
+                .material()
+                .normal_texture()
+                .filter(|i| keep(i.tex_coord()));
+            let emissive_info = primitive
+                .material()
+                .emissive_texture()
+                .filter(|i| keep(i.tex_coord()));
             let emissive_factor = primitive.material().emissive_factor();
-            let occlusion_info = primitive.material().occlusion_texture();
+            let occlusion_info = primitive
+                .material()
+                .occlusion_texture()
+                .filter(|i| keep(i.tex_coord()));
+            textures_without_uv += dropped;
             let occlusion_strength = occlusion_info.as_ref().map_or(1., |info| info.strength());
             let normal_scale = normal_info.as_ref().map_or(1., |info| info.scale());
-            let uv_channels = uv::read_channels(&primitive, bin, position.count(), cancel)?;
             let uv_bindings = UvBindings {
                 color: color_texture.as_ref().map(|i| i.tex_coord()),
                 metallic_roughness: mr_texture.as_ref().map(|i| i.tex_coord()),
@@ -296,6 +313,7 @@ pub fn import_glb(
             let alpha_cutoff = (primitive.material().alpha_mode()
                 == gltf::material::AlphaMode::Mask)
                 .then(|| primitive.material().alpha_cutoff().unwrap_or(0.5));
+            let blend = primitive.material().alpha_mode() == gltf::material::AlphaMode::Blend;
             let occlusion_texture = occlusion_info
                 .map(|info| {
                     material_images.load(
@@ -367,6 +385,7 @@ pub fn import_glb(
                 color_texture,
                 metallic_roughness_texture,
                 alpha_cutoff,
+                blend,
             });
         }
         mesh_ids.push(Arc::<[MeshId]>::from(ids));
@@ -399,6 +418,25 @@ pub fn import_glb(
     }
     if doc.scenes().len() > 1 {
         notes.push("Отображается только основная/первая сцена.".into());
+    }
+    if textures_without_uv > 0 {
+        notes.push(format!(
+            "{textures_without_uv} текстур(ы) материалов ссылаются на UV-набор, которого нет у примитива; они не показываются."
+        ));
+    }
+    if doc
+        .extensions_used()
+        .any(|name| name == "KHR_lights_punctual")
+    {
+        notes.push("Источники света из файла (KHR_lights_punctual) не показываются; сцену освещает лампа программы.".into());
+    }
+    if let Ok(mut raw) = serde_json::from_slice::<serde_json::Value>(&parsed.glb.json)
+        && source::negative_tex_coords(&mut raw, cancel).is_ok_and(|n| n > 0)
+    {
+        notes.push(
+            "В файле есть texCoord = -1 (ошибка экспорта); такие ссылки прочитаны как UV-набор 0."
+                .into(),
+        );
     }
     cancel.check()?;
     let bases = if clips.is_empty() && skins.is_empty() {
@@ -640,7 +678,7 @@ mod tests {
         json["images"] = json!([{"bufferView":0,"mimeType":"image/png"}]);
         json["textures"] = json!([{"source":0}]);
         json["materials"][0]["occlusionTexture"] = json!({"index":0,"texCoord":2});
-        assert!(load(&json).err().unwrap().message.contains("TEXCOORD"));
+        texture_without_uv_is_left_out(&json);
     }
     #[test]
     fn occlusion_only_bad_image_is_not_silently_ignored() {
@@ -734,7 +772,7 @@ mod tests {
         json["images"] = json!([{"bufferView":0,"mimeType":"image/png"}]);
         json["textures"] = json!([{"source":0}]);
         json["materials"][0]["normalTexture"] = json!({"index":0,"texCoord":2});
-        assert!(load(&json).err().unwrap().message.contains("TEXCOORD"));
+        texture_without_uv_is_left_out(&json);
     }
     #[test]
     fn authored_normals_and_material_factors_survive_import_and_bad_layouts_are_refused() {
@@ -855,7 +893,7 @@ mod tests {
         json["textures"] = json!([{"source":0}]);
         json["materials"][0]["pbrMetallicRoughness"]["metallicRoughnessTexture"] =
             json!({"index":0,"texCoord":1});
-        assert!(load(&json).err().unwrap().message.contains("TEXCOORD"));
+        texture_without_uv_is_left_out(&json);
         json["meshes"][0]["primitives"][0]["attributes"]["TEXCOORD_1"] = json!(0);
         assert!(load(&json).is_err());
     }
@@ -985,7 +1023,28 @@ mod tests {
         json["images"] = json!([{"bufferView":0,"mimeType":"image/png"}]);
         json["textures"] = json!([{"source":0}]);
         json["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"] = json!({"index":0});
-        assert!(load(&json).is_err());
+        texture_without_uv_is_left_out(&json);
+    }
+    /// 2026-11-25: a material texture whose UV set the primitive lacks (an
+    /// export slip) no longer refuses the model: that texture is left out
+    /// and a note says so; its image is not even decoded.
+    fn texture_without_uv_is_left_out(json: &Value) {
+        let doc = load(json).unwrap();
+        assert!(
+            doc.notes()
+                .iter()
+                .any(|n| n.contains("UV-набор, которого нет")),
+            "{:?}",
+            doc.notes()
+        );
+        let scene = doc
+            .snapshot(ImportLimits::default(), &Cancellation::default())
+            .unwrap();
+        assert!(scene.draws.iter().all(|d| d.color_texture.is_none()
+            && d.metallic_roughness_texture.is_none()
+            && d.normal_texture.is_none()
+            && d.occlusion_texture.is_none()
+            && d.emissive_texture.is_none()));
     }
     #[test]
     fn static_glb_preserves_source_hierarchy_color_and_authored_translation() {
@@ -1110,17 +1169,57 @@ mod tests {
         assert!(load(&json).is_err());
     }
     #[test]
-    fn blend_materials_remain_explicitly_unsupported() {
-        {
-            let mut json = json_doc();
-            json["materials"][0]["alphaMode"] = json!("BLEND");
-            assert!(matches!(
-                load(&json),
-                Err(AssetError {
-                    code: ErrorCode::Unsupported,
-                    ..
-                })
-            ));
+    fn blend_materials_lights_and_negative_tex_coords_open() {
+        let c = Cancellation::default();
+        // BLEND: opens, marked for the blended pass.
+        let mut json = json_doc();
+        json["materials"][0]["alphaMode"] = json!("BLEND");
+        json["materials"][0]["pbrMetallicRoughness"]["baseColorFactor"] = json!([1, 1, 1, 0.4]);
+        let doc = load(&json).unwrap();
+        let scene = doc.snapshot(ImportLimits::default(), &c).unwrap();
+        assert!(
+            scene
+                .draws
+                .iter()
+                .all(|d| d.blend && d.alpha_cutoff.is_none())
+        );
+        assert!((scene.draws[0].base_color[3] - 0.4).abs() < 1e-6);
+        // A required KHR_lights_punctual is left out with a note; another
+        // required extension is still refused.
+        let mut lit = json_doc();
+        lit["extensionsUsed"] = json!(["KHR_lights_punctual"]);
+        lit["extensionsRequired"] = json!(["KHR_lights_punctual"]);
+        let doc = load(&lit).unwrap();
+        assert!(
+            doc.notes()
+                .iter()
+                .any(|n| n.contains("KHR_lights_punctual"))
+        );
+        let mut other = json_doc();
+        other["extensionsUsed"] = json!(["EXT_unknown"]);
+        other["extensionsRequired"] = json!(["EXT_unknown"]);
+        assert!(matches!(
+            load(&other),
+            Err(AssetError {
+                code: ErrorCode::Unsupported,
+                ..
+            })
+        ));
+        // texCoord -1 (an exporter slip) reads as set 0, with a note.
+        let mut slip = json_doc();
+        slip["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"] =
+            json!({"index": 0, "texCoord": -1});
+        if slip.get("textures").is_some() {
+            let doc = load(&slip).unwrap();
+            assert!(doc.notes().iter().any(|n| n.contains("texCoord")));
+        } else {
+            // The base fixture has no texture: the slip is still read.
+            let mut metadata = slip.clone();
+            assert_eq!(source::negative_tex_coords(&mut metadata, &c).unwrap(), 1);
+            assert_eq!(
+                metadata["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]["texCoord"],
+                json!(0)
+            );
         }
     }
     #[test]
