@@ -6,7 +6,9 @@ mod roundtrip;
 mod uv;
 pub use color::decode_image_file;
 mod hdr;
-pub use export::{ExportLimits, VerifiedGlb, preflight_changed_export, prepare_glb};
+pub use export::{
+    ExportLimits, VerifiedGlb, preflight_changed_export, prepare_glb, verify_animation_export,
+};
 pub use hdr::{HdrImage, decode_hdr_file, is_hdr};
 
 /// Independent comparison of a freshly reimported document with the document
@@ -18,8 +20,9 @@ pub fn compare_reimported(
     reimported: &ad_document::AssetDocument,
     cancel: &ad_document::Cancellation,
 ) -> ad_document::AssetResult<()> {
-    original.require_editable()?;
-    reimported.require_editable()?;
+    if original.is_read_only() || reimported.is_read_only() {
+        return export::compare_rig_readback(&original.view(), reimported, cancel);
+    }
     let roots = export::expected_roots(original, ad_document::ImportLimits::default(), cancel)?;
     roundtrip::compare(original, reimported, &roots, cancel)
 }
@@ -27,7 +30,10 @@ pub fn compare_reimported(
 mod export_tests;
 #[cfg(test)]
 mod export_vertex_tests;
+#[cfg(test)]
+mod rig_tests;
 mod skin;
+mod skin_animation;
 mod source;
 use ad_document::{
     AssetDocument, AssetError, AssetResult, Cancellation, DocumentId, DocumentParts, ErrorCode,
@@ -67,6 +73,10 @@ pub fn import_glb(
     let skins = doc
         .skins()
         .map(|skin| skin::read_skin(skin, bin, &mut remaining, cancel))
+        .collect::<AssetResult<Vec<_>>>()?;
+    let clips = doc
+        .animations()
+        .map(|clip| skin_animation::read_clip(clip, bin, &mut remaining, cancel))
         .collect::<AssetResult<Vec<_>>>()?;
     let mut influences = Vec::new();
     let mut meshes = Vec::new();
@@ -391,6 +401,24 @@ pub fn import_glb(
         notes.push("Отображается только основная/первая сцена.".into());
     }
     cancel.check()?;
+    let bases = if clips.is_empty() && skins.is_empty() {
+        Vec::new()
+    } else {
+        doc.nodes()
+            .map(|node| match node.transform() {
+                gltf::scene::Transform::Decomposed {
+                    translation,
+                    rotation,
+                    scale,
+                } => Some(ad_document::Transform {
+                    translation,
+                    rotation,
+                    scale,
+                }),
+                gltf::scene::Transform::Matrix { .. } => None,
+            })
+            .collect()
+    };
     let document = AssetDocument::new(
         DocumentParts {
             id,
@@ -403,7 +431,8 @@ pub fn import_glb(
         },
         limits,
         cancel,
-    )?;
+    )?
+    .with_animation_clips(clips, bases)?;
     if skins.is_empty() {
         Ok(document)
     } else {

@@ -14,7 +14,7 @@ use ad_document::{
 use ad_heal::{DuplicatePreview, PlanLimits, RepairKind, VerificationLimits};
 use std::sync::Arc;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum EditKind {
     /// G002 for one explicit source primitive and all its references.
     RemoveDuplicates(MeshId),
@@ -32,20 +32,35 @@ pub enum EditKind {
     Place(ad_document::Placement),
     /// ADR-0048: one object edit (node transform or delete).
     Node(ad_document::NodeOp),
+    Animation(AnimationEdit, Option<(usize, f32)>),
     Undo,
     Redo,
 }
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AnimationEdit {
+    Key(ad_document::AnimationKey),
+    Clip,
+    Undo,
+    Redo,
+}
+
+pub struct AnimationFrame {
+    pub clip: usize,
+    pub time: f32,
+    pub rest: Arc<GeometrySnapshot>,
+}
+
 impl EditKind {
     /// The source primitive and repair kind of a repair edit.
-    pub fn repair(self) -> Option<(MeshId, RepairKind)> {
-        match self {
+    pub fn repair(&self) -> Option<(MeshId, RepairKind)> {
+        match *self {
             Self::RemoveDuplicates(mesh) => Some((mesh, RepairKind::DuplicateTriangles)),
             Self::RemoveDegenerate(mesh) => Some((mesh, RepairKind::DegenerateTriangles)),
             Self::RemoveUnused(mesh) => Some((mesh, RepairKind::UnusedVertices)),
             Self::MergeVertices(mesh) => Some((mesh, RepairKind::DuplicateVertices)),
             Self::CreateNormals(mesh) => Some((mesh, RepairKind::MissingNormals)),
             Self::FixNormals(mesh) => Some((mesh, RepairKind::ZeroNormals)),
-            Self::Undo | Self::Redo | Self::Place(_) | Self::Node(_) => None,
+            Self::Undo | Self::Redo | Self::Place(_) | Self::Node(_) | Self::Animation(..) => None,
         }
     }
     pub fn from_repair(mesh: MeshId, kind: RepairKind) -> Self {
@@ -112,11 +127,12 @@ pub struct EditCandidate {
     /// G006 boundary edges of the primitive before/after a merge.
     boundary: Option<(usize, usize)>,
     snapshot: Arc<GeometrySnapshot>,
+    pub animation_frame: Option<AnimationFrame>,
     diagnostics: AssetResult<ad_analysis::Report>,
 }
 impl EditCandidate {
     pub fn kind(&self) -> EditKind {
-        self.kind
+        self.kind.clone()
     }
     pub fn mesh(&self) -> MeshId {
         self.mesh
@@ -176,11 +192,22 @@ fn stale() -> AssetError {
     )
 }
 
-/// Read-only preparation. Never mutates the Session.
+#[cfg(test)]
 pub fn prepare_edit(
     session: &Session,
     base: &DocumentStamp,
     kind: EditKind,
+    cancel: &Cancellation,
+) -> AssetResult<EditOutcome> {
+    prepare_edit_with_clip(session, base, kind, None, cancel)
+}
+
+/// Read-only preparation. Never mutates the Session.
+fn prepare_edit_with_clip(
+    session: &Session,
+    base: &DocumentStamp,
+    kind: EditKind,
+    clip_edit: Option<&ad_document::ClipEdit>,
     cancel: &Cancellation,
 ) -> AssetResult<EditOutcome> {
     cancel.check()?;
@@ -189,7 +216,7 @@ pub fn prepare_edit(
         return Err(stale());
     }
     let (change, preview, removal);
-    match kind {
+    match kind.clone() {
         EditKind::RemoveDuplicates(mesh)
         | EditKind::RemoveDegenerate(mesh)
         | EditKind::RemoveUnused(mesh)
@@ -259,11 +286,34 @@ pub fn prepare_edit(
             preview = None;
             change = Change::Remove(plan);
         }
-        EditKind::Undo => {
+        EditKind::Animation(AnimationEdit::Key(key), _) => {
+            let plan = session.prepare_animation_key(base.tag(), key, cancel)?;
+            if !plan.changes() {
+                return Err(AssetError::new(
+                    ad_document::ErrorCode::Unsupported,
+                    "Ключ не изменился",
+                ));
+            }
+            preview = None;
+            change = Change::Remove(plan);
+        }
+        EditKind::Animation(AnimationEdit::Clip, _) => {
+            let plan =
+                session.prepare_clip_edit(base.tag(), clip_edit.ok_or_else(stale)?, cancel)?;
+            if !plan.changes() {
+                return Err(AssetError::new(
+                    ad_document::ErrorCode::Unsupported,
+                    "Клип не изменился",
+                ));
+            }
+            preview = None;
+            change = Change::Remove(plan);
+        }
+        EditKind::Undo | EditKind::Animation(AnimationEdit::Undo, _) => {
             preview = None;
             change = Change::Undo;
         }
-        EditKind::Redo => {
+        EditKind::Redo | EditKind::Animation(AnimationEdit::Redo, _) => {
             preview = None;
             change = Change::Redo;
         }
@@ -286,7 +336,27 @@ pub fn prepare_edit(
             cancel,
         )?;
     }
-    let snapshot = Arc::new(view.snapshot(ImportLimits::default(), cancel)?);
+    if candidate.changes_animation()
+        && matches!(
+            kind,
+            EditKind::Animation(AnimationEdit::Key(_) | AnimationEdit::Clip, _)
+        )
+    {
+        ad_formats::verify_animation_export(
+            &view,
+            ad_formats::ExportLimits::default(),
+            ImportLimits::default(),
+            cancel,
+        )?;
+    }
+    let rest = Arc::new(view.snapshot(ImportLimits::default(), cancel)?);
+    let position = animation_position(kind.clone(), clip_edit, document, &view);
+    let (snapshot, animation_frame) = if let Some((clip, time)) = position {
+        let pose = view.animated_snapshot(clip, time, None, ImportLimits::default(), cancel)?;
+        (Arc::new(pose), Some(AnimationFrame { clip, time, rest }))
+    } else {
+        (rest, None)
+    };
     // Like import, an analysis resource refusal keeps a viewable result with
     // an incomplete report; whole-job cancellation still discards everything.
     let diagnostics = ad_analysis::analyze_view(&view, ad_analysis::Limits::default(), cancel);
@@ -306,8 +376,46 @@ pub fn prepare_edit(
         appended,
         boundary,
         snapshot,
+        animation_frame,
         diagnostics,
     })))
+}
+
+fn animation_position(
+    kind: EditKind,
+    clip_edit: Option<&ad_document::ClipEdit>,
+    document: &ad_document::AssetDocument,
+    view: &ad_document::DocumentView<'_>,
+) -> Option<(usize, f32)> {
+    use ad_document::ClipEdit;
+    let EditKind::Animation(_, current) = kind else {
+        return None;
+    };
+    if matches!(
+        clip_edit,
+        Some(ClipEdit::Create { .. } | ClipEdit::Duplicate { .. })
+    ) {
+        return view
+            .animation_clips()
+            .len()
+            .checked_sub(1)
+            .map(|last| (last, 0.));
+    }
+    let (index, time) = current?;
+    let previous = document.animation_clips().get(index)?;
+    let (next_index, next) = view
+        .animation_clips()
+        .enumerate()
+        .find(|(_, clip)| clip.id() == previous.id())?;
+    let time = if previous.duration > 0.
+        && previous.duration != next.duration
+        && matches!(clip_edit, Some(ClipEdit::Retime { .. }))
+    {
+        (time.clamp(0., previous.duration) / previous.duration) * next.duration
+    } else {
+        time.clamp(0., next.duration)
+    };
+    Some((next_index, time))
 }
 
 /// Per-primitive counts a merge must not increase (ADR-0034 decision 6):
@@ -364,15 +472,49 @@ fn merge_regression(
     Ok((b[2], a[2]))
 }
 
-pub type Edits = Worker<EditInput, EditOutcome>;
+struct EditRequest {
+    edit: EditInput,
+    clip: Option<ad_document::ClipEdit>,
+}
+
+pub struct Edits(Worker<EditRequest, EditOutcome>);
+impl Edits {
+    #[cfg(test)]
+    pub fn request(&mut self, edit: EditInput) -> u64 {
+        self.request_with_clip(edit, None)
+    }
+    pub fn request_with_clip(
+        &mut self,
+        edit: EditInput,
+        clip: Option<ad_document::ClipEdit>,
+    ) -> u64 {
+        self.0.request(EditRequest { edit, clip })
+    }
+    pub fn cancel(&mut self) {
+        self.0.cancel();
+    }
+    pub fn ticket(&self) -> u64 {
+        self.0.ticket()
+    }
+    pub fn poll(&mut self) -> Option<crate::worker::Completion<EditOutcome>> {
+        self.0.poll()
+    }
+}
+
 pub fn new_edits() -> Edits {
-    Worker::new(
-        |request: &Request<EditInput>| {
-            let input = &request.input;
-            prepare_edit(&input.session, &input.base, input.kind, &request.cancel)
+    Edits(Worker::new(
+        |request: &Request<EditRequest>| {
+            let input = &request.input.edit;
+            prepare_edit_with_clip(
+                &input.session,
+                &input.base,
+                input.kind.clone(),
+                request.input.clip.as_ref(),
+                &request.cancel,
+            )
         },
         "Edit preparation stopped unexpectedly; the model was not changed",
-    )
+    ))
 }
 
 /// GPU side of publication, implemented by the Vulkan renderer and by test fakes.

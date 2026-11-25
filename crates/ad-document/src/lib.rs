@@ -5,6 +5,7 @@ mod node_edits;
 mod normals;
 mod placement;
 mod skin;
+mod skin_animation;
 mod uv;
 mod vertices;
 mod view;
@@ -15,6 +16,9 @@ pub use indices::{
 pub use node_edits::{NodeEdits, NodeOp};
 pub use placement::Placement;
 pub use skin::{Influence, Rig, RigInspection, Skin, SkinReport};
+pub use skin_animation::{
+    AnimationClip, AnimationKey, ChannelValue, ClipEdit, Interpolation, Track, TrackKind, Transform,
+};
 pub use view::{CandidateIndices, DocumentView, Primitives};
 #[cfg(test)]
 mod index_tests;
@@ -101,15 +105,17 @@ pub struct ImportLimits {
 impl Default for ImportLimits {
     fn default() -> Self {
         Self {
-            source_bytes: 192 << 20,
-            json_bytes: 16 << 20,
-            decoded_bytes: 512 << 20,
-            snapshot_bytes: 512 << 20,
-            nodes: 50_000,
-            draws: 100_000,
-            texture_bytes: 256 << 20,
-            texture_side: 8192,
-            textures: 256,
+            // Owner 2026-11-25: use more RAM/VRAM (x4-x8 over the first
+            // engineering caps); see RESOURCE_BUDGETS.md.
+            source_bytes: 1 << 30,
+            json_bytes: 64 << 20,
+            decoded_bytes: 3 << 30,
+            snapshot_bytes: 2 << 30,
+            nodes: 200_000,
+            draws: 400_000,
+            texture_bytes: 2 << 30,
+            texture_side: 16384,
+            textures: 1024,
         }
     }
 }
@@ -170,6 +176,9 @@ pub struct AssetDocument {
     /// ADR-0048 object edits (node transforms, nodes taken out).
     node_edits: NodeEdits,
     rig: Option<RigInspection>,
+    animation_clips: Vec<Arc<AnimationClip>>,
+    animation_bases: Vec<Option<Transform>>,
+    source_clip_count: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -392,6 +401,9 @@ impl AssetDocument {
             placement: Placement::IDENTITY,
             node_edits: NodeEdits::default(),
             rig: None,
+            animation_clips: Vec::new(),
+            animation_bases: Vec::new(),
+            source_clip_count: 0,
             vertex_maps,
             parts,
             texture_stats: textures.stats,
@@ -445,6 +457,15 @@ impl DocumentView<'_> {
         limits: ImportLimits,
         cancel: &Cancellation,
     ) -> AssetResult<GeometrySnapshot> {
+        self.snapshot_with_pose(None, limits, cancel)
+    }
+
+    pub(crate) fn snapshot_with_pose(
+        &self,
+        locals: Option<&[Option<glam::Mat4>]>,
+        limits: ImportLimits,
+        cancel: &Cancellation,
+    ) -> AssetResult<GeometrySnapshot> {
         use glam::{Mat4, Vec3};
         let document = self.document();
         cancel.check()?;
@@ -475,7 +496,10 @@ impl DocumentView<'_> {
             }
             visited[id.0] = true;
             let node = &document.parts.nodes[id.0];
-            let world = parent * Mat4::from_cols_array_2d(&edits.local(document, id));
+            let local = locals
+                .and_then(|locals| locals[id.0])
+                .unwrap_or_else(|| Mat4::from_cols_array_2d(&edits.local(document, id)));
+            let world = parent * local;
             if !world.is_finite() {
                 return Err(AssetError::new(
                     ErrorCode::InvalidScene,

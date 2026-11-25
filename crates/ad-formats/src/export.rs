@@ -1,3 +1,8 @@
+#[path = "rig_export.rs"]
+mod rig_export;
+pub(crate) use rig_export::compare as compare_rig_readback;
+pub use rig_export::verify_animation_export;
+
 use crate::{metadata, roundtrip, source};
 use ad_document::{
     AssetDocument, AssetError, AssetResult, Cancellation, DocumentStamp, DocumentTag, DocumentView,
@@ -19,10 +24,10 @@ pub struct ExportLimits {
 impl Default for ExportLimits {
     fn default() -> Self {
         Self {
-            output_bytes: 192 << 20,
-            json_bytes: 16 << 20,
-            metadata_values: 200_000,
-            changed_primitives: 4096,
+            output_bytes: 1 << 30,
+            json_bytes: 64 << 20,
+            metadata_values: 1_000_000,
+            changed_primitives: 16_384,
         }
     }
 }
@@ -438,7 +443,7 @@ pub fn preflight_changed_export(
     cancel.check()?;
     let document = view.document();
     document.require_editable()?;
-    let parsed = source::parse(document.source(), import, cancel)?;
+    let parsed = source::parse_for_export(document.source(), import, cancel)?;
     if parsed.glb.json.len() > limits.json_bytes {
         return Err(budget());
     }
@@ -480,7 +485,10 @@ fn placed_roots(
     let placed = !placement.is_identity();
     for root in document.roots() {
         cancel.check()?;
-        if edits.is_detached(*root) || (!placed && !edits.locals.contains_key(&root.0)) {
+        // Detaching unlinks the root from the active scene. Its explicit
+        // object edit still belongs to the node retained in the file.
+        let place_root = placed && !edits.is_detached(*root);
+        if !place_root && !edits.locals.contains_key(&root.0) {
             continue;
         }
         let node = parsed.document.nodes().nth(root.0).ok_or_else(invalid)?;
@@ -489,14 +497,14 @@ fn placed_roots(
             None => node.transform(),
         };
         let transform = match own {
-            Transform::Matrix { matrix } if placed => Transform::Matrix {
+            Transform::Matrix { matrix } if place_root => Transform::Matrix {
                 matrix: placement.apply_matrix(matrix),
             },
             Transform::Decomposed {
                 translation,
                 rotation,
                 scale,
-            } if placed => Transform::Decomposed {
+            } if place_root => Transform::Decomposed {
                 translation: placement.apply(translation),
                 rotation: placement.apply_rotation(rotation),
                 scale: scale.map(|v| v * placement.scale),
@@ -615,7 +623,7 @@ pub(crate) fn expected_roots(
     if document.placement().is_identity() && document.node_edits().locals.is_empty() {
         return Ok(Vec::new());
     }
-    let parsed = source::parse(document.source(), import, cancel)?;
+    let parsed = source::parse_for_export(document.source(), import, cancel)?;
     Ok(placed_roots(
         &parsed,
         document,
@@ -689,8 +697,14 @@ pub fn prepare_glb(
 ) -> AssetResult<VerifiedGlb> {
     document.verify_tag(expected, cancel)?;
     let stamp = document.stamp();
+    if document.is_read_only() {
+        let bytes = rig_export::verify(&document.view(), limits, import, cancel)?;
+        let verified = VerifiedGlb { stamp, bytes };
+        verified.verify_current(document, cancel)?;
+        return Ok(verified);
+    }
     document.require_editable()?;
-    let parsed = source::parse(document.source(), import, cancel)?;
+    let parsed = source::parse_for_export(document.source(), import, cancel)?;
     if parsed.glb.json.len() > limits.json_bytes {
         return Err(budget());
     }

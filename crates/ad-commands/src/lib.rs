@@ -12,8 +12,8 @@ pub struct HistoryLimits {
 impl Default for HistoryLimits {
     fn default() -> Self {
         Self {
-            bytes: 64 << 20,
-            entries: 128,
+            bytes: 512 << 20,
+            entries: 256,
         }
     }
 }
@@ -258,6 +258,30 @@ impl Session {
     ) -> AssetResult<PreparedRemoval> {
         self.document.verify_tag(expected, cancel)?;
         let plan = self.document.prepare_node_op(expected, op, cancel)?;
+        if plan.changes() {
+            self.admit(plan.retained_bytes())?;
+        }
+        Ok(plan)
+    }
+    pub fn prepare_animation_key(
+        &self,
+        expected: DocumentTag,
+        key: ad_document::AnimationKey,
+        cancel: &Cancellation,
+    ) -> AssetResult<PreparedRemoval> {
+        let plan = self.document.prepare_animation_key(expected, key, cancel)?;
+        if plan.changes() {
+            self.admit(plan.retained_bytes())?;
+        }
+        Ok(plan)
+    }
+    pub fn prepare_clip_edit(
+        &self,
+        expected: DocumentTag,
+        edit: &ad_document::ClipEdit,
+        cancel: &Cancellation,
+    ) -> AssetResult<PreparedRemoval> {
+        let plan = self.document.prepare_clip_edit(expected, edit, cancel)?;
         if plan.changes() {
             self.admit(plan.retained_bytes())?;
         }

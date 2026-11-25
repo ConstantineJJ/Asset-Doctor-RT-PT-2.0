@@ -140,7 +140,9 @@ fn triangle(origin: Vec3, direction: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<
     let (e1, e2) = (b - a, c - a);
     let p = direction.cross(e2);
     let det = e1.dot(p);
-    if det.abs() < 1e-12 {
+    // Relative to the triangle's size: a tiny triangle (a small object far
+    // from the origin, or a model in small units) is not "parallel".
+    if det == 0. || det.abs() <= 1e-7 * e1.length() * e2.length() || !det.is_finite() {
         return None;
     }
     let inv = 1. / det;
@@ -375,6 +377,68 @@ impl Tree {
     }
 }
 
+/// Draws with a vertex inside the viewport rectangle `lo..hi` (0..1, y
+/// down) under the view-projection `matrix`, skipping `hidden` draws. A
+/// draw whose screen box misses the rectangle is skipped and one whose
+/// whole box is inside is taken without looking at its vertices.
+pub fn draws_in_box(
+    snapshot: &GeometrySnapshot,
+    data: &PickData,
+    matrix: Mat4,
+    lo: [f32; 2],
+    hi: [f32; 2],
+    hidden: impl Fn(usize) -> bool,
+) -> Vec<usize> {
+    let to_uv = |p: Vec3| {
+        let c = matrix * p.extend(1.);
+        (c.w > 1e-6 && c.is_finite()).then(|| {
+            let n = c.truncate() / c.w;
+            [n.x * 0.5 + 0.5, n.y * 0.5 + 0.5]
+        })
+    };
+    let inside =
+        |uv: [f32; 2]| (lo[0]..=hi[0]).contains(&uv[0]) && (lo[1]..=hi[1]).contains(&uv[1]);
+    let mut found = Vec::new();
+    for (index, draw) in snapshot.draws.iter().enumerate() {
+        if hidden(index) {
+            continue;
+        }
+        if let Some(&(blo, bhi)) = data.bounds.get(index) {
+            let corners: Vec<_> = (0..8)
+                .filter_map(|i| {
+                    to_uv(Vec3::new(
+                        if i & 1 == 0 { blo.x } else { bhi.x },
+                        if i & 2 == 0 { blo.y } else { bhi.y },
+                        if i & 4 == 0 { blo.z } else { bhi.z },
+                    ))
+                })
+                .collect();
+            if corners.len() == 8 {
+                let (mut clo, mut chi) = ([f32::MAX; 2], [f32::MIN; 2]);
+                for c in &corners {
+                    clo = [clo[0].min(c[0]), clo[1].min(c[1])];
+                    chi = [chi[0].max(c[0]), chi[1].max(c[1])];
+                }
+                if chi[0] < lo[0] || clo[0] > hi[0] || chi[1] < lo[1] || clo[1] > hi[1] {
+                    continue;
+                }
+                if corners.iter().all(|c| inside(*c)) {
+                    found.push(index);
+                    continue;
+                }
+            }
+        }
+        let hit = draw_indices(snapshot, draw)
+            .iter()
+            .filter_map(|&i| snapshot.positions.get(i as usize))
+            .any(|p| to_uv(Vec3::from_array(*p)).is_some_and(inside));
+        if hit {
+            found.push(index);
+        }
+    }
+    found
+}
+
 /// Nearest draw hit by the ray, skipping `hidden` draws.
 pub fn pick(
     snapshot: &GeometrySnapshot,
@@ -534,6 +598,40 @@ mod tests {
             false
         })
         .map(|h| h.0)
+    }
+
+    #[test]
+    fn a_selection_box_takes_the_draws_with_geometry_inside() {
+        // Two quads side by side (x -1..1 at z 1, and the second shifted to
+        // x 2..4) seen from +Z through an orthographic matrix.
+        let mut quads = two_quads(draw(0, 6, 1., None));
+        for p in &mut quads.positions[4..] {
+            p[0] += 3.;
+        }
+        let data = PickData::built(&quads, 1);
+        // Orthographic: screen x/y = world x/y / 5, depth from z.
+        let matrix = Mat4::from_scale(Vec3::new(0.2, 0.2, 0.1));
+        let uv = |x: f32, y: f32| [x / 10. + 0.5, y / 10. + 0.5];
+        // A box around the first quad only.
+        let lo = uv(-1.5, -1.5);
+        let hi = uv(1.5, 1.5);
+        let ordered = |a: [f32; 2], b: [f32; 2]| {
+            (
+                [a[0].min(b[0]), a[1].min(b[1])],
+                [a[0].max(b[0]), a[1].max(b[1])],
+            )
+        };
+        let (l, h) = ordered(lo, hi);
+        assert_eq!(draws_in_box(&quads, &data, matrix, l, h, |_| false), [0]);
+        // A box over the corner of the second quad catches it by a vertex.
+        let (l, h) = ordered(uv(3.5, 0.5), uv(4.5, 1.5));
+        assert_eq!(draws_in_box(&quads, &data, matrix, l, h, |_| false), [1]);
+        // Everything, minus a hidden draw; empty space finds nothing.
+        let (l, h) = ordered(uv(-4.9, -4.9), uv(4.9, 4.9));
+        assert_eq!(draws_in_box(&quads, &data, matrix, l, h, |_| false), [0, 1]);
+        assert_eq!(draws_in_box(&quads, &data, matrix, l, h, |i| i == 0), [1]);
+        let (l, h) = ordered(uv(-4.9, 3.), uv(-3., 4.9));
+        assert!(draws_in_box(&quads, &data, matrix, l, h, |_| false).is_empty());
     }
 
     #[test]

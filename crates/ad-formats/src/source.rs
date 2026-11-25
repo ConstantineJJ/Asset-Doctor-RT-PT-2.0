@@ -5,6 +5,63 @@ pub(crate) struct Parsed<'a> {
     pub document: gltf::Document,
     pub glb: gltf::binary::Glb<'a>,
 }
+pub(crate) fn parse_for_export<'a>(
+    source: &'a [u8],
+    limits: ImportLimits,
+    cancel: &Cancellation,
+) -> AssetResult<Parsed<'a>> {
+    let parsed = parse(source, limits, cancel)?;
+    if parsed.document.skins().len() > 0 || parsed.document.animations().len() > 0 {
+        return Err(AssetError::new(
+            ErrorCode::Unsupported,
+            "Экспорт GLB со скином или анимацией пока не поддерживается.",
+        ));
+    }
+    Ok(parsed)
+}
+
+fn read_root(json: &[u8], cancel: &Cancellation) -> AssetResult<gltf::json::Root> {
+    let invalid = |error| {
+        AssetError::new(
+            ErrorCode::InvalidFormat,
+            format!("Invalid glTF metadata: {error}"),
+        )
+    };
+    match gltf::json::deserialize::from_slice(json) {
+        Ok(root) => Ok(root),
+        Err(error)
+            if error
+                .to_string()
+                .starts_with("missing field `nodes` at line ") =>
+        {
+            // glTF allows an empty scene to omit nodes. gltf-json 1.4.1
+            // requires the field. Adapt the decoded metadata only.
+            let (mut metadata, _) = crate::metadata::parse(
+                json,
+                crate::ExportLimits::default().metadata_values,
+                cancel,
+            )?;
+            let Some(scenes) = metadata
+                .get_mut("scenes")
+                .and_then(serde_json::Value::as_array_mut)
+            else {
+                return Err(invalid(error));
+            };
+            for scene in scenes
+                .iter_mut()
+                .filter_map(serde_json::Value::as_object_mut)
+            {
+                cancel.check()?;
+                scene
+                    .entry("nodes")
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+            gltf::json::deserialize::from_value(metadata).map_err(invalid)
+        }
+        Err(error) => Err(invalid(error)),
+    }
+}
+
 pub(crate) fn parse<'a>(
     source: &'a [u8],
     limits: ImportLimits,
@@ -40,8 +97,7 @@ pub(crate) fn parse<'a>(
     }
     let glb = gltf::binary::Glb::from_slice(source)
         .map_err(|e| invalid(&format!("Invalid GLB container: {e}")))?;
-    let root: gltf::json::Root = gltf::json::deserialize::from_slice(&glb.json)
-        .map_err(|e| invalid(&format!("Invalid glTF metadata: {e}")))?;
+    let root = read_root(&glb.json, cancel)?;
     if !root.extensions_required.is_empty() {
         return Err(unsupported(
             "This build does not support required glTF extensions",
@@ -64,6 +120,16 @@ pub(crate) fn parse<'a>(
             }
         }
     }
+    for animation in &root.animations {
+        cancel.check()?;
+        if animation
+            .channels
+            .iter()
+            .any(|channel| channel.sampler.value() >= animation.samplers.len())
+        {
+            return Err(invalid("Animation channel references a missing sampler"));
+        }
+    }
     let doc = gltf::Document::from_json(root)
         .map_err(|e| invalid(&format!("glTF validation failed: {e}")))?;
     cancel.check()?;
@@ -79,9 +145,6 @@ pub(crate) fn parse<'a>(
         return Err(unsupported(
             "Compressed/quantized geometry is not supported in this build",
         ));
-    }
-    if doc.animations().len() > 0 {
-        return Err(unsupported("Animated assets are not supported yet"));
     }
     let bin = glb
         .bin

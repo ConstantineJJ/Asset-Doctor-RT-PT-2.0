@@ -436,8 +436,31 @@ impl ViewerUi {
             self.menu = None;
         }
         ui.separator();
+        Self::heading(ui, "Окно");
+        ui.horizontal(|ui| {
+            use super::WindowMode as W;
+            ui.selectable_value(&mut self.window_mode, W::Normal, "Окно")
+                .on_hover_text("Обычное окно с рамкой");
+            ui.selectable_value(&mut self.window_mode, W::Maximized, "Во весь экран")
+                .on_hover_text("Окно на весь экран, с рамкой и заголовком");
+            ui.selectable_value(&mut self.window_mode, W::Fullscreen, "Полный экран")
+                .on_hover_text("Без рамки · F11 — переключить, Esc — вернуть окно");
+        });
+        ui.separator();
         Self::heading(ui, "Обновления");
         self.update_settings(ui, actions);
+        ui.separator();
+        let exit = ui
+            .button("Выход")
+            .on_hover_text("Закрыть программу; о несохранённых правках будет вопрос");
+        #[cfg(test)]
+        {
+            self.exit_rect = exit.rect;
+        }
+        if exit.clicked() {
+            actions.exit = true;
+            self.menu = None;
+        }
     }
 
     fn view_menu(&mut self, ui: &mut egui::Ui) {
@@ -508,6 +531,7 @@ impl ViewerUi {
         .on_disabled_hover_text("Видеокарта не поддерживает отрисовку линиями (fillModeNonSolid).");
         ui.checkbox(&mut self.show_axes, "Оси").on_hover_text("Мировые оси из начала координат: X красная, Y зелёная, Z синяя; отрицательные половины тусклее.");
         ui.checkbox(&mut self.show_bounds, "Габариты").on_hover_text("Ограничивающий бокс модели и её размеры (ширина x высота x глубина, в единицах файла).");
+        ui.checkbox(&mut self.skeleton_on, "Скелет").on_hover_text("Кости и суставы скина поверх модели в текущей позе. Клик по суставу выбирает его во вкладке Rigging.");
     }
 
     fn light_menu(&mut self, ui: &mut egui::Ui) {
@@ -828,8 +852,8 @@ impl ViewerUi {
             ui.label("Откройте модель.");
             return;
         };
-        if asset.document().rig().is_some() {
-            ui.label("Модель со скином открыта только для просмотра.");
+        if asset.document().is_read_only() {
+            ui.label("Модель со скином или анимацией открыта только для просмотра.");
             return;
         }
         ui.horizontal(|ui| {
@@ -891,7 +915,9 @@ impl ViewerUi {
                 });
                 ui.separator();
                 if self.tab == Tab::Rigging {
-                    super::rig_ui::show(ui, asset);
+                    ui.add_enabled_ui(self.edit.busy.is_none(), |ui| {
+                        super::rig_ui::show(ui, asset, self.playback, actions);
+                    });
                 } else {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
@@ -929,7 +955,7 @@ impl ViewerUi {
             }
         });
         ui.separator();
-        let read_only = asset.is_some_and(|asset| asset.document().rig().is_some());
+        let read_only = asset.is_some_and(|asset| asset.document().is_read_only());
         let can_preview = !read_only && !loading && self.edit.busy.is_none();
         let mut buttons = Vec::new();
         let preview = match self.health_page {
@@ -975,7 +1001,7 @@ impl ViewerUi {
         let Some(asset) = asset else {
             ui.label("Откройте модель, чтобы увидеть её состав и размеры.");
             ui.add_space(16.);
-            ui.weak("Статические GLB: PNG/JPEG, цвета вершин, нормали, OPAQUE/MASK. PBR — предварительный режим. Скины GLB доступны для просмотра во вкладке Rigging. BLEND и анимации пока не поддерживаются.");
+            ui.weak("Статические GLB: PNG/JPEG, цвета вершин, нормали, OPAQUE/MASK. PBR — предварительный режим. Скины и клипы GLB доступны во вкладке Rigging. BLEND и морф-цели пока не поддерживаются.");
             return;
         };
         ui.strong(asset.document().name());
@@ -1029,6 +1055,12 @@ impl ViewerUi {
             ));
             ui.label(format!("Масштаб: x{:.4}", f.scale));
         }
+        let count = self.tree.all_selected().len();
+        if count > 1 {
+            ui.separator();
+            ui.strong(format!("Выбрано объектов: {count}"));
+            ui.weak("Shift + клик — добавить, Ctrl + клик — убрать, рамка — выбрать область. Ниже — последний выбранный.");
+        }
         if let Some(id) = self.tree.selected
             && let Some(node) = asset.document().nodes().get(id.0)
         {
@@ -1056,7 +1088,7 @@ impl ViewerUi {
         ui.add_space(16.);
         ui.separator();
         ui.weak("Металл и шероховатость: параметры × карты. Заполнение приблизительное. Свет окружения от панорамы (IBL) — в меню «Освещение» при показанном скайбоксе.");
-        ui.weak("Статические GLB: PNG/JPEG, цвета вершин, нормали, OPAQUE/MASK. PBR — предварительный режим. Скины GLB доступны для просмотра во вкладке Rigging. BLEND и анимации пока не поддерживаются.");
+        ui.weak("Статические GLB: PNG/JPEG, цвета вершин, нормали, OPAQUE/MASK. PBR — предварительный режим. Скины и клипы GLB доступны во вкладке Rigging. BLEND и морф-цели пока не поддерживаются.");
     }
 
     /// Right-click menu: the object under the pointer (gizmo, delete, hide,
@@ -1097,7 +1129,7 @@ impl ViewerUi {
                             })
                             .strong(),
                         );
-                        let editable = asset.document().rig().is_none();
+                        let editable = !asset.document().is_read_only();
                         if ui
                             .add_enabled(
                                 editable,
@@ -1437,10 +1469,18 @@ impl ViewerUi {
                             let text = if hidden { RichText::new(&name).weak() } else { RichText::new(&name) };
                             let response = ui.add_sized(
                                 [ui.available_width(), 22.],
-                                egui::Button::selectable(self.tree.selected == Some(id), text).truncate(),
+                                egui::Button::selectable(self.tree.is_selected(id), text).truncate(),
                             );
                             if response.on_hover_text(&name).clicked() {
-                                self.tree.selected = Some(id);
+                                // Shift adds, Ctrl removes, a plain click selects only this node.
+                                let mods = ui.input(|i| i.modifiers);
+                                if mods.ctrl {
+                                    self.tree.select_remove(id);
+                                } else if mods.shift {
+                                    self.tree.select_add(id);
+                                } else {
+                                    self.tree.select_only(Some(id));
+                                }
                             }
                         });
                     }

@@ -112,8 +112,8 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            triangles: 4_000_000,
-            scratch_bytes: 64 << 20,
+            triangles: 16_000_000,
+            scratch_bytes: 512 << 20,
             findings: 4096,
         }
     }

@@ -22,6 +22,7 @@ mod model_gizmo;
 mod native;
 mod picking;
 mod queue;
+mod rig_playback;
 mod saving;
 mod skybox;
 mod skybox_library;
@@ -107,6 +108,7 @@ struct App {
     imports: Imports,
     importing: bool,
     current: Option<PreparedAsset>,
+    playback: rig_playback::Playback,
     camera: Camera,
     mouse: Option<MouseButton>,
     /// ADR-0043: drag action of the held mouse button.
@@ -132,6 +134,8 @@ struct App {
     /// Picking: draw boxes and node parents of the shown snapshot; where the
     /// left button went down (a click selects).
     pick_cache: Option<PickCache>,
+    /// The window mode last given to the OS window.
+    applied_window_mode: viewer_ui::WindowMode,
     /// ADR-0049 updates: background check/download, the start marker the
     /// updater waits for, and the exit for an update.
     updates: updates::Updates,
@@ -142,6 +146,10 @@ struct App {
     /// frame: one pick per frame however many moves arrive.
     hover_request: Option<(f64, f64)>,
     press: Option<(f64, f64)>,
+    /// Modifiers held when the left button went down (Shift adds, Ctrl
+    /// removes) and the selection box started on empty space.
+    press_mods: input::Mods,
+    marquee: Option<Marquee>,
     smoke_select: bool,
     /// --camera-view: applied once a model is shown.
     initial_view: Option<camera::View>,
@@ -389,7 +397,7 @@ impl App {
         let window = Arc::new(
             event_loop.create_window(
                 Window::default_attributes()
-                    .with_title(format!("{APP_TITLE} | Static GLB viewer prototype"))
+                    .with_title(format!("{APP_TITLE} | GLB viewer prototype"))
                     .with_inner_size(PhysicalSize::new(1200, 760))
                     .with_min_inner_size(PhysicalSize::new(320, 240))
                     .with_window_icon(Some(icon()?)),
@@ -504,6 +512,7 @@ impl App {
                     .set_status(format!("Открыт {}", asset.document().name()), false);
                 self.ui.error = None;
                 self.confirmed = Some(Confirmed::imported(&asset));
+                self.playback.reset();
                 self.current = Some(asset);
                 self.working_path = self.pending_path.take();
                 eprintln!("import_published ticket={}", completion.ticket);
@@ -595,24 +604,34 @@ impl App {
         Ok(())
     }
     fn request_edit(&mut self, kind: EditKind) -> bool {
+        self.request_edit_with_clip(kind, None)
+    }
+    fn request_edit_with_clip(
+        &mut self,
+        kind: EditKind,
+        clip: Option<ad_document::ClipEdit>,
+    ) -> bool {
         let Some(asset) = self.current.as_ref() else {
             return false;
         };
         if self.importing || self.editing || self.saving {
             return false;
         }
-        if let Err(error) = asset.document().require_editable() {
+        if matches!(kind, EditKind::Animation(..)) {
+            self.playback.pause_for_edit();
+        } else if let Err(error) = asset.document().require_editable() {
             self.ui.set_status(error.to_string(), false);
             return false;
         }
-        let ticket = self.edits.request(EditInput {
+        let input = EditInput {
             session: asset.session.clone(),
             base: asset.generation.stamp.clone(),
-            kind,
-        });
+            kind: kind.clone(),
+        };
+        let ticket = self.edits.request_with_clip(input, clip);
         self.editing = true;
         self.edit_started = Instant::now();
-        self.edit_busy = match kind {
+        self.edit_busy = match &kind {
             EditKind::RemoveDuplicates(_) => "Расчёт и проверка ремонта G002…",
             EditKind::RemoveDegenerate(_) => "Расчёт и проверка ремонта G001…",
             EditKind::RemoveUnused(_) => "Расчёт и проверка ремонта G003…",
@@ -622,14 +641,26 @@ impl App {
             EditKind::Place(_) => "Перемещение модели…",
             EditKind::Node(ad_document::NodeOp::Local(..)) => "Перемещение объекта…",
             EditKind::Node(ad_document::NodeOp::Detach(_)) => "Удаление объекта…",
-            EditKind::Undo => "Подготовка отмены правки…",
-            EditKind::Redo => "Подготовка повтора правки…",
+            EditKind::Node(ad_document::NodeOp::Many(_)) => "Правка нескольких объектов…",
+            EditKind::Animation(edits::AnimationEdit::Key(_), _) => {
+                "Проверка ключа и экспорта GLB…"
+            }
+            EditKind::Animation(edits::AnimationEdit::Clip, _) => "Проверка клипа и экспорта GLB…",
+            EditKind::Undo | EditKind::Animation(edits::AnimationEdit::Undo, _) => {
+                "Подготовка отмены правки…"
+            }
+            EditKind::Redo | EditKind::Animation(edits::AnimationEdit::Redo, _) => {
+                "Подготовка повтора правки…"
+            }
         }
         .into();
         eprintln!("edit_started ticket={ticket} kind={kind:?}");
         true
     }
     fn poll_edit(&mut self) -> GpuResult<()> {
+        if !self.playback.is_idle() {
+            return Ok(());
+        }
         let Some(completion) = self.edits.poll() else {
             return Ok(());
         };
@@ -727,7 +758,7 @@ impl App {
         }
         eprintln!(
             "edit_timing stage=prepare kind={} prepare_ms={prepare_ms}",
-            edit_name(candidate.kind())
+            edit_name(&candidate.kind())
         );
         self.publish_candidate(candidate)
     }
@@ -737,7 +768,7 @@ impl App {
             None => Ok(()),
         }
     }
-    fn publish_candidate(&mut self, candidate: EditCandidate) -> GpuResult<()> {
+    fn publish_candidate(&mut self, mut candidate: EditCandidate) -> GpuResult<()> {
         // Any publication attempt invalidates an older preview.
         self.pending_preview = None;
         let kind = candidate.kind();
@@ -759,20 +790,24 @@ impl App {
             )
         });
         let rule = kind.repair().map(|(_, k)| k);
+        let animation_frame = candidate.animation_frame.take();
         let published = publish_edit(asset, renderer, candidate, &Cancellation::default());
         eprintln!(
             "edit_timing stage=publish kind={} publish_ms={}",
-            edit_name(kind),
+            edit_name(&kind),
             started.elapsed().as_millis()
         );
         match published {
             Ok(tag) => {
+                if matches!(kind, EditKind::Animation(..)) {
+                    self.playback.edit_published(animation_frame);
+                }
                 let report = asset.diagnostics().as_ref().ok();
                 let count =
                     |kind| report.map_or(usize::MAX, |r| edits::findings_in_mesh(r, mesh, kind));
                 eprintln!(
                     "edit_published kind={} removed={removed} mesh={} revision={} scene_revision={} mesh_triangles={} analysis={} g001_in_mesh={} g002_in_mesh={} undo={} redo={} consistent={} mesh_vertices={} g003_in_mesh={} g012_in_mesh={} g004_in_mesh={} g005_in_mesh={}",
-                    edit_name(kind),
+                    edit_name(&kind),
                     mesh.0,
                     tag.revision,
                     renderer.scene_tag().map_or(u64::MAX, |t| t.1),
@@ -814,7 +849,7 @@ impl App {
                     session: 0,
                     model: asset.document().name().to_owned(),
                     source_bytes: asset.document().source().len() as u64,
-                    action: if queued { "queue" } else { edit_name(kind) }.into(),
+                    action: if queued { "queue" } else { edit_name(&kind) }.into(),
                     rule: rule.map_or("-", edits::repair_label).into(),
                     mesh: Some(mesh.0),
                     triangles,
@@ -833,7 +868,7 @@ impl App {
                 if !self.smoke_edit
                     && matches!(error, PublishError::Stale | PublishError::Busy) =>
             {
-                eprintln!("edit_refused kind={} reason={error:?}", edit_name(kind));
+                eprintln!("edit_refused kind={} reason={error:?}", edit_name(&kind));
                 self.ui.set_status(
                     format!("Правка не применена: {error}. Повторите предпросмотр."),
                     true,
@@ -846,7 +881,7 @@ impl App {
                 let revision = asset.document().revision();
                 eprintln!(
                     "edit_refused kind={} reason={error:?} revision={revision}",
-                    edit_name(kind)
+                    edit_name(&kind)
                 );
                 if queued {
                     queue_failure = Some(format!("шаг не применён: {error}"));
@@ -1098,7 +1133,7 @@ impl App {
         if self
             .current
             .as_ref()
-            .is_none_or(|asset| asset.document().rig().is_some())
+            .is_none_or(|asset| asset.document().is_read_only())
             || self.importing
             || self.saving
         {
@@ -1335,10 +1370,6 @@ impl App {
             return;
         };
         if self.saving || self.editing || self.importing {
-            return;
-        }
-        if let Err(error) = asset.document().require_editable() {
-            self.ui.set_status(error.to_string(), false);
             return;
         }
         let Some(window) = self.window.as_ref() else {
@@ -1785,8 +1816,20 @@ impl App {
             A::ToggleModelGizmo => self.ui.model_gizmo_on = !self.ui.model_gizmo_on,
             A::ToggleOutline => self.ui.outline_on = !self.ui.outline_on,
             A::DeleteObject => self.delete_selected(),
+            A::ToggleLeftPanel => self.ui.show_tree = !self.ui.show_tree,
+            A::ToggleRightPanel => self.ui.show_summary = !self.ui.show_summary,
+            A::ToggleFullscreen => {
+                self.ui.window_mode = if self.ui.window_mode == viewer_ui::WindowMode::Fullscreen {
+                    viewer_ui::WindowMode::Normal
+                } else {
+                    viewer_ui::WindowMode::Fullscreen
+                };
+            }
             A::Help => self.ui.help(),
             A::Cancel => {
+                if self.ui.window_mode == viewer_ui::WindowMode::Fullscreen {
+                    self.ui.window_mode = viewer_ui::WindowMode::Normal;
+                }
                 self.ui.dismiss_help();
                 if self.importing {
                     self.cancel_import();
@@ -1801,20 +1844,45 @@ impl App {
         self.pick_hit(x, y).map(|(node, _)| node)
     }
     /// Scene node and world point under a window position (pixels).
+    /// Exactly under the pointer first; if that misses, the nearest hit on
+    /// rings 3 and 6 pixels around it, so small or far objects (a few
+    /// pixels on screen) can still be clicked.
     fn pick_hit(&mut self, x: f64, y: f64) -> Option<(ad_document::NodeId, glam::Vec3)> {
+        const RINGS: [f64; 3] = [0., 3., 6.];
         self.current.as_ref()?;
-        let uv = self.ui.viewport_uv(x, y)?;
+        self.ui.viewport_uv(x, y)?;
         self.ensure_pick_cache();
         let asset = self.current.as_ref()?;
         let cache = self.pick_cache.as_ref()?;
         let (w, h) = self.last_view;
-        let (origin, direction) = picking::ray(&self.camera, uv, w, h)?;
         let marks = ui_model::node_marks(asset.document(), &self.ui.tree);
         let snapshot = asset.snapshot();
-        let (draw, t) = picking::pick(snapshot, &cache.data, origin, direction, |i| {
-            marks.get(snapshot.draws[i].node.0).is_some_and(|m| m.0)
-        })?;
-        Some((snapshot.draws[draw].node, origin + direction * t))
+        for radius in RINGS {
+            let steps = if radius == 0. { 1 } else { 8 };
+            let mut best: Option<(usize, glam::Vec3, f32)> = None;
+            for k in 0..steps {
+                let angle = k as f64 * std::f64::consts::TAU / 8.;
+                let (px, py) = (x + radius * angle.cos(), y + radius * angle.sin());
+                let Some(uv) = self.ui.viewport_uv(px, py) else {
+                    continue;
+                };
+                let Some((origin, direction)) = picking::ray(&self.camera, uv, w, h) else {
+                    continue;
+                };
+                if let Some((draw, t)) =
+                    picking::pick(snapshot, &cache.data, origin, direction, |i| {
+                        marks.get(snapshot.draws[i].node.0).is_some_and(|m| m.0)
+                    })
+                    && best.is_none_or(|b| t < b.2)
+                {
+                    best = Some((draw, origin + direction * t, t));
+                }
+            }
+            if let Some((draw, hit, _)) = best {
+                return Some((snapshot.draws[draw].node, hit));
+            }
+        }
+        None
     }
     /// Left-button drag of an object: move it in the plane facing the camera
     /// through the grabbed point.
@@ -1838,6 +1906,32 @@ impl App {
         if t > 0. {
             drag.offset = origin + direction * t - drag.hit;
         }
+    }
+    /// Gives the OS window the mode chosen in «Настройки → Окно» / F11.
+    fn apply_window_mode(&mut self) {
+        use viewer_ui::WindowMode as W;
+        let mode = self.ui.window_mode;
+        if mode == self.applied_window_mode || self.smoke.is_some() {
+            return;
+        }
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        match mode {
+            W::Fullscreen => {
+                window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)))
+            }
+            W::Maximized => {
+                window.set_fullscreen(None);
+                window.set_maximized(true);
+            }
+            W::Normal => {
+                window.set_fullscreen(None);
+                window.set_maximized(false);
+            }
+        }
+        eprintln!("window_mode {}", mode.key());
+        self.applied_window_mode = mode;
     }
     /// Hover pick of the latest pointer move, at most once per frame.
     fn update_hover(&mut self) {
@@ -1876,17 +1970,23 @@ impl App {
             return Default::default();
         }
         self.ensure_pick_cache();
-        let selected = self.ui.tree.selected;
-        let hovered = self.ui.hover_node.filter(|h| Some(*h) != selected);
+        let selected = self.ui.tree.all_selected();
+        let hovered = self.ui.hover_node.filter(|h| !self.ui.tree.is_selected(*h));
+        let mut selected_draws: Vec<usize> = selected
+            .iter()
+            .flat_map(|n| self.subtree_draws(*n))
+            .collect();
+        selected_draws.sort_unstable();
+        selected_draws.dedup();
         ad_render_vulkan::outline::OutlineSettings {
-            selected: selected.map(|n| self.subtree_draws(n)).unwrap_or_default(),
+            selected: selected_draws,
             hovered: hovered.map(|n| self.subtree_draws(n)).unwrap_or_default(),
             color: self.ui.outline_color.map(|i| viewer_ui::MARK_COLORS[i % 7]),
         }
     }
     /// Selects a node (Work-Tree, Info, outline) or clears the selection.
     fn select(&mut self, node: Option<ad_document::NodeId>) {
-        self.ui.tree.selected = node;
+        self.ui.tree.select_only(node);
         let name = node
             .and_then(|n| {
                 self.current
@@ -1939,21 +2039,134 @@ impl App {
     /// X / Delete: takes the selected object out of the scene (one edit,
     /// Undo brings it back; «Сохранить» writes it).
     fn delete_selected(&mut self) {
-        let Some(node) = self.ui.tree.selected else {
+        let nodes = self.top_level(self.ui.tree.all_selected());
+        if nodes.is_empty() {
             self.ui
                 .set_status("Нет выбранного объекта: выберите его левой кнопкой", true);
             return;
+        }
+        let op = if let [node] = nodes[..] {
+            ad_document::NodeOp::Detach(node)
+        } else {
+            ad_document::NodeOp::Many(
+                nodes
+                    .iter()
+                    .map(|n| ad_document::NodeOp::Detach(*n))
+                    .collect(),
+            )
         };
-        if self.request_edit(EditKind::Node(ad_document::NodeOp::Detach(node))) {
-            self.ui.tree.selected = None;
+        if self.request_edit(EditKind::Node(op)) {
+            self.ui.tree.select_only(None);
             self.ui.hover_node = None;
-            if self.ui.object_gizmo == Some(node) {
+            if self.ui.object_gizmo.is_some_and(|g| nodes.contains(&g)) {
                 self.ui.object_gizmo = None;
             }
         } else {
             self.ui
                 .set_status("Объект сейчас нельзя удалить: идёт другая работа", true);
         }
+    }
+    /// Shift + click adds the object under the pointer, Ctrl + click removes
+    /// it; a click on empty space with a modifier changes nothing.
+    fn modified_click(&mut self, x: f64, y: f64) {
+        let Some(node) = self.pick_at(x, y) else {
+            return;
+        };
+        if self.press_mods.ctrl {
+            self.ui.tree.select_remove(node);
+        } else {
+            self.ui.tree.select_add(node);
+        }
+        eprintln!(
+            "select_modified ctrl={} selected={}",
+            self.press_mods.ctrl,
+            self.ui.tree.all_selected().len()
+        );
+    }
+    /// A left-button drag ends: one edit moves every dragged object.
+    fn finish_object_drag(&mut self, drag: ObjectDrag) {
+        if drag.offset.length() <= 0. {
+            return;
+        }
+        let delta = glam::Mat4::from_translation(drag.offset);
+        let ops: Option<Vec<_>> = drag
+            .nodes
+            .iter()
+            .map(|node| match self.object_edit(*node, delta)? {
+                EditKind::Node(op) => Some(op),
+                _ => None,
+            })
+            .collect();
+        let Some(mut ops) = ops.filter(|ops| !ops.is_empty()) else {
+            return;
+        };
+        let op = if ops.len() == 1 {
+            ops.remove(0)
+        } else {
+            ad_document::NodeOp::Many(ops.into())
+        };
+        if !self.request_edit(EditKind::Node(op)) {
+            self.ui
+                .set_status("Объект сейчас нельзя переместить: идёт другая работа", true);
+        }
+    }
+    /// `nodes` without those that lie under another one of them (moving or
+    /// deleting the parent already takes them along).
+    fn top_level(&mut self, nodes: Vec<ad_document::NodeId>) -> Vec<ad_document::NodeId> {
+        self.ensure_pick_cache();
+        let Some(cache) = self.pick_cache.as_ref() else {
+            return nodes;
+        };
+        nodes
+            .iter()
+            .copied()
+            .filter(|node| {
+                let mut at = cache.parents.get(node.0).copied().flatten();
+                let mut steps = 0;
+                while let Some(parent) = at
+                    && steps <= cache.parents.len()
+                {
+                    if nodes.iter().any(|n| n.0 == parent) {
+                        return false;
+                    }
+                    at = cache.parents.get(parent).copied().flatten();
+                    steps += 1;
+                }
+                true
+            })
+            .collect()
+    }
+    /// Nodes whose geometry has a vertex inside the window-pixel rectangle
+    /// (hidden ones skipped), in draw order.
+    fn nodes_in_box(&mut self, a: (f64, f64), b: (f64, f64)) -> Vec<ad_document::NodeId> {
+        self.ensure_pick_cache();
+        let (Some(asset), Some(cache)) = (self.current.as_ref(), self.pick_cache.as_ref()) else {
+            return Vec::new();
+        };
+        let (Some(ua), Some(ub)) = (
+            self.ui.viewport_uv_unclamped(a.0, a.1),
+            self.ui.viewport_uv_unclamped(b.0, b.1),
+        ) else {
+            return Vec::new();
+        };
+        let (lo, hi) = (
+            [ua[0].min(ub[0]), ua[1].min(ub[1])],
+            [ua[0].max(ub[0]), ua[1].max(ub[1])],
+        );
+        let (w, h) = self.last_view;
+        let matrix = glam::Mat4::from_cols_array_2d(&self.camera.matrix(w, h));
+        let marks = ui_model::node_marks(asset.document(), &self.ui.tree);
+        let snapshot = asset.snapshot();
+        let mut found = Vec::new();
+        for draw in picking::draws_in_box(snapshot, &cache.data, matrix, lo, hi, |i| {
+            marks.get(snapshot.draws[i].node.0).is_some_and(|m| m.0)
+        }) {
+            let node = snapshot.draws[draw].node;
+            if !found.contains(&node) {
+                found.push(node);
+            }
+        }
+        found
     }
     /// World matrix of a node: placement, then every effective local from
     /// the root down.
@@ -2016,9 +2229,78 @@ impl App {
             max: hi.to_array(),
         })
     }
+    /// P7 skeleton overlay: the joints of every skin in the pose on screen,
+    /// projected into the viewport, each linked to its nearest joint
+    /// ancestor.
+    fn skeleton_overlay(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> Option<viewer_ui::skeleton_ui::SkeletonOverlay> {
+        use viewer_ui::skeleton_ui::{OverlayJoint, SkeletonOverlay};
+        let asset = self.current.as_ref()?;
+        let document = asset.document();
+        let rig = document.rig()?;
+        let worlds = document
+            .view()
+            .node_worlds(
+                self.playback.shown_pose(),
+                &ad_document::Cancellation::default(),
+            )
+            .ok()?;
+        let nodes = document.nodes();
+        let mut parents = vec![None; nodes.len()];
+        for (index, node) in nodes.iter().enumerate() {
+            for child in &node.children {
+                if let Some(slot) = parents.get_mut(child.0) {
+                    *slot = Some(index);
+                }
+            }
+        }
+        let mut slot_of = vec![None; nodes.len()];
+        let mut order = Vec::new();
+        for joint in rig.skins.iter().flat_map(|skin| skin.joints.iter()) {
+            if joint.0 < nodes.len() && slot_of[joint.0].is_none() {
+                slot_of[joint.0] = Some(order.len());
+                order.push(*joint);
+            }
+        }
+        let joints = order
+            .iter()
+            .map(|node| {
+                // Nearest ancestor that is a joint (helper nodes in between
+                // are skipped); a few hundred steps at most.
+                let mut parent = parents[node.0];
+                let mut steps = 0;
+                while let Some(p) = parent
+                    && slot_of[p].is_none()
+                    && steps < nodes.len()
+                {
+                    parent = parents[p];
+                    steps += 1;
+                }
+                let at = worlds[node.0].and_then(|m| {
+                    let [x, y, z, _] = m[3];
+                    self.camera.project([x, y, z], width, height)
+                });
+                OverlayJoint {
+                    node: *node,
+                    name: nodes[node.0].name.clone(),
+                    at,
+                    parent: parent.and_then(|p| slot_of[p]),
+                    animatable: document.can_animate_node(*node),
+                }
+            })
+            .collect();
+        Some(SkeletonOverlay {
+            document: document.id().0,
+            joints,
+        })
+    }
     /// Point lamp frame: model centre and radius (half the box diagonal).
     fn lamp_frame(&self) -> Option<([f32; 3], f32)> {
-        let bounds = self.current.as_ref()?.snapshot().bounds;
+        let asset = self.current.as_ref()?;
+        let bounds = self.playback.reference_snapshot(asset).bounds;
         let (min, max) = (
             glam::Vec3::from_array(bounds.min),
             glam::Vec3::from_array(bounds.max),
@@ -2231,7 +2513,7 @@ impl App {
             // ADR-0048: the object gizmo edits the node, not the placement.
             if let Some(delta) = self.model_preview.filter(|d| !d.is_noop()) {
                 match self.object_edit(node, delta.matrix()) {
-                    Some(kind) if self.request_edit(kind) => self.model_pending = true,
+                    Some(kind) if self.request_edit(kind.clone()) => self.model_pending = true,
                     _ => {
                         self.model_preview = None;
                         self.ui
@@ -2303,6 +2585,7 @@ impl App {
             return Ok(());
         }
         self.refresh_edit_ui();
+        self.ui.playback = self.playback.controls;
         if self.current.is_some()
             && let Some(view) = self.initial_view.take()
         {
@@ -2324,6 +2607,11 @@ impl App {
         self.save_view_settings(false);
         // ADR-0040 lamp gizmo: lamp 1.25 model radii from the centre.
         let (view_w, view_h) = self.last_view;
+        self.ui.skeleton = if self.ui.skeleton_on {
+            self.skeleton_overlay(view_w, view_h)
+        } else {
+            None
+        };
         // ADR-0041 model gizmo at the (previewed) bottom centre.
         if self.ui.object_gizmo.is_some_and(|n| {
             self.current
@@ -2387,9 +2675,9 @@ impl App {
                 guides: Some(std::sync::Arc::new(guides)),
             })
         });
-        let (mut frame, actions) = self
-            .ui
-            .frame(&window, self.current.as_ref(), self.importing);
+        let (mut frame, mut actions) =
+            self.ui
+                .frame(&window, self.current.as_ref(), self.importing);
         if actions.cancel {
             self.cancel_import();
         }
@@ -2416,7 +2704,18 @@ impl App {
                 .as_ref()
                 .filter(|d| d.active)
                 .map(|d| (d.node, glam::Mat4::from_translation(d.offset))))
-            .map(|(node, m)| (m.to_cols_array_2d(), self.subtree_draws(node)));
+            .map(|(node, m)| {
+                let nodes = self
+                    .object_drag
+                    .as_ref()
+                    .filter(|d| d.active && self.ui.object_gizmo.is_none())
+                    .map_or_else(|| vec![node], |d| d.nodes.clone());
+                let mut draws: Vec<usize> =
+                    nodes.iter().flat_map(|n| self.subtree_draws(*n)).collect();
+                draws.sort_unstable();
+                draws.dedup();
+                (m.to_cols_array_2d(), draws)
+            });
         let renderer = self.renderer.as_mut().expect("Drawable renderer checked");
         renderer.set_outline(outline);
         let (width, height) = frame.scene.map_or((1, 1), |r| (r.width, r.height));
@@ -2451,7 +2750,7 @@ impl App {
             self.current.as_ref().and_then(|asset| {
                 // ADR-0041: the floor stays at the imported model's bottom,
                 // so a moved or turned model is seen moving against it.
-                let bounds = asset.snapshot().source_bounds;
+                let bounds = self.playback.reference_snapshot(asset).source_bounds;
                 ad_render_vulkan::grid::grid_for_bounds(bounds.min, bounds.max)
                     .map(|grid| ad_render_vulkan::grid::GridSettings { theme, ..grid })
             })
@@ -2585,6 +2884,9 @@ impl App {
         if actions.skybox_load {
             self.pending_skybox_choose = true;
         }
+        if actions.exit {
+            self.pending_guard = Some(AfterSave::Close);
+        }
         if actions.update_check {
             self.updates.check(&mut self.ui.update, false);
         }
@@ -2603,12 +2905,37 @@ impl App {
                 self.updates.install(&mut self.ui.update, release);
             }
         }
+        if let Some(controls) = actions.playback {
+            self.playback.apply(controls);
+        }
+        if let Some(preview) = actions.animation_preview {
+            self.playback.preview(preview);
+        }
+        if let Some(clip_edit) = actions.clip_edit.take() {
+            let controls = self.playback.controls;
+            self.request_edit_with_clip(
+                EditKind::Animation(
+                    edits::AnimationEdit::Clip,
+                    controls.clip.map(|clip| (clip, controls.time)),
+                ),
+                Some(clip_edit),
+            );
+        }
+        if let Some(key) = actions.animation_key {
+            self.request_edit(EditKind::Animation(
+                edits::AnimationEdit::Key(key),
+                Some((key.clip, key.time)),
+            ));
+        }
         if let Some(path) = actions.skybox_open.clone() {
             self.skybox_job = Some(skybox::spawn(path, self.skybox_width()));
             self.ui.set_status("Загрузка скайбокса...", false);
         }
         if let Some(node) = actions.delete_object {
-            self.ui.tree.selected = Some(node);
+            // «Удалить» on a selected object deletes the whole selection.
+            if !self.ui.tree.is_selected(node) {
+                self.ui.tree.select_only(Some(node));
+            }
             self.delete_selected();
         }
         if let Some(view) = actions.camera_view {
@@ -2693,6 +3020,20 @@ impl App {
             _ => asset.session.can_redo(),
         });
         if allowed {
+            let kind = if self
+                .current
+                .as_ref()
+                .is_some_and(|asset| asset.document().is_read_only())
+            {
+                let action = match kind {
+                    EditKind::Undo => edits::AnimationEdit::Undo,
+                    _ => edits::AnimationEdit::Redo,
+                };
+                let controls = self.playback.controls;
+                EditKind::Animation(action, controls.clip.map(|clip| (clip, controls.time)))
+            } else {
+                kind
+            };
             self.request_edit(kind);
         }
     }
@@ -2713,10 +3054,7 @@ impl App {
             .current
             .as_ref()
             .map(|asset| (asset.session.can_undo(), asset.session.can_redo()));
-        let can_save = self
-            .current
-            .as_ref()
-            .is_some_and(|asset| asset.document().rig().is_none());
+        let can_save = self.current.is_some();
         self.ui.edit = viewer_ui::EditUi {
             busy: self.editing.then(|| self.edit_busy.clone()),
             preview: self.pending_preview.as_ref().and_then(EditCandidate::info),
@@ -2751,12 +3089,26 @@ impl App {
             return Ok(());
         }
         self.poll_import()?;
+        if !self.suspended
+            && !self.editing
+            && let (Some(asset), Some(renderer)) = (&mut self.current, &mut self.renderer)
+        {
+            match self.playback.tick(asset, renderer) {
+                Ok(true) => self.pick_cache = None,
+                Ok(false) => {}
+                Err(error) => {
+                    self.playback.stop_after_error();
+                    self.ui.set_status(format!("Анимация: {error}"), true);
+                }
+            }
+        }
         self.poll_edit()?;
         self.poll_save(event_loop)?;
         if std::mem::take(&mut self.pending_overwrite) {
             self.start_overwrite();
         }
         self.poll_skybox();
+        self.apply_window_mode();
         self.poll_updates();
         if self.exit_for_update {
             self.finish(event_loop);
@@ -2986,6 +3338,12 @@ impl ApplicationHandler for App {
                 if state == ElementState::Pressed && self.ui.input_capture.is_some() {
                     self.capture_chord(chord, false, false);
                 } else if state == ElementState::Pressed && !consumed {
+                    if button == MouseButton::Left && inside {
+                        // Shift / Ctrl + click add to / remove from the
+                        // selection (Shift + drag still turns the camera).
+                        self.press = self.cursor;
+                        self.press_mods = chord.mods;
+                    }
                     if let Some(action) = self.ui.bindings.command(chord) {
                         self.run_command(action);
                     } else if inside && let Some(drag) = self.ui.bindings.drag(button, chord.mods) {
@@ -2993,20 +3351,42 @@ impl ApplicationHandler for App {
                         self.mouse_drag = Some(drag);
                     } else if inside && button == MouseButton::Left {
                         // The left button is the cursor: a click selects, a
-                        // drag on an object moves it (ADR-0048).
-                        self.press = self.cursor;
-                        if let Some((x, y)) = self.cursor
-                            && !self.model_pending
-                            && !self.editing
-                            && let Some((node, hit)) = self.pick_hit(x, y)
-                        {
-                            self.object_drag = Some(ObjectDrag {
-                                node,
-                                hit,
-                                offset: glam::Vec3::ZERO,
-                                start: (x, y),
-                                active: false,
-                            });
+                        // drag on an object moves it (the whole selection
+                        // when the object is part of it), a drag on empty
+                        // space draws a selection box (ADR-0048).
+                        let plain = !chord.mods.ctrl && !chord.mods.shift;
+                        let hit = self
+                            .cursor
+                            .filter(|_| !self.model_pending && !self.editing)
+                            .and_then(|(x, y)| self.pick_hit(x, y).map(|h| (h, (x, y))));
+                        match hit {
+                            Some(((node, hit), start)) if plain => {
+                                let nodes = if self.ui.tree.is_selected(node) {
+                                    self.top_level(self.ui.tree.all_selected())
+                                } else {
+                                    vec![node]
+                                };
+                                self.object_drag = Some(ObjectDrag {
+                                    node,
+                                    nodes,
+                                    hit,
+                                    offset: glam::Vec3::ZERO,
+                                    start,
+                                    active: false,
+                                });
+                            }
+                            // Ctrl on an object or anything on empty space: a
+                            // click changes the selection, a drag draws a box.
+                            _ => {
+                                if let Some(start) = self.cursor {
+                                    self.marquee = Some(Marquee {
+                                        start,
+                                        now: start,
+                                        remove: chord.mods.ctrl,
+                                        active: false,
+                                    });
+                                }
+                            }
                         }
                     } else if inside && button == MouseButton::Right {
                         self.press_right = self.cursor;
@@ -3014,26 +3394,42 @@ impl ApplicationHandler for App {
                 } else if state == ElementState::Released && self.mouse == Some(button) {
                     self.mouse = None;
                     self.mouse_drag = None;
+                    if button == MouseButton::Left
+                        && let (Some((px, py)), Some((x, y))) = (self.press.take(), self.cursor)
+                        && (px - x).hypot(py - y) < 5.
+                    {
+                        self.modified_click(x, y);
+                    }
                 } else if state == ElementState::Released && button == MouseButton::Left {
                     let drag = self.object_drag.take();
+                    let marquee = self.marquee.take();
+                    self.ui.marquee = None;
                     if let Some(drag) = drag.filter(|d| d.active) {
                         self.press = None;
-                        let delta = glam::Mat4::from_translation(drag.offset);
-                        match self.object_edit(drag.node, delta) {
-                            Some(kind) if drag.offset.length() > 0. && self.request_edit(kind) => {
-                                self.ui.tree.selected = Some(drag.node);
+                        self.finish_object_drag(drag);
+                    } else if let Some(m) = marquee.filter(|m| m.active) {
+                        self.press = None;
+                        let nodes = self.nodes_in_box(m.start, m.now);
+                        if m.remove {
+                            for node in nodes {
+                                self.ui.tree.select_remove(node);
                             }
-                            Some(_) => self.ui.set_status(
-                                "Объект сейчас нельзя переместить: идёт другая работа",
-                                true,
-                            ),
-                            None => (),
+                        } else {
+                            self.ui.tree.select_many(nodes);
                         }
+                        let count = self.ui.tree.all_selected().len();
+                        eprintln!("select_box remove={} selected={count}", m.remove);
+                        self.ui
+                            .set_status(format!("Выбрано объектов: {count}"), false);
                     } else if let (Some((px, py)), Some((x, y))) = (self.press.take(), self.cursor)
                         && (px - x).hypot(py - y) < 5.
                     {
-                        let picked = self.pick_at(x, y);
-                        self.select(picked);
+                        if self.press_mods.ctrl || self.press_mods.shift {
+                            self.modified_click(x, y);
+                        } else {
+                            let picked = self.pick_at(x, y);
+                            self.select(picked);
+                        }
                     }
                 } else if state == ElementState::Released
                     && button == MouseButton::Right
@@ -3042,8 +3438,10 @@ impl ApplicationHandler for App {
                 {
                     // Context menu on the object under the pointer (or the scene).
                     let picked = self.pick_at(x, y);
-                    if picked.is_some() {
-                        self.ui.tree.selected = picked;
+                    if let Some(node) = picked
+                        && !self.ui.tree.is_selected(node)
+                    {
+                        self.ui.tree.select_only(Some(node));
                     }
                     self.ui.open_context_menu(x, y, picked);
                 }
@@ -3069,13 +3467,30 @@ impl ApplicationHandler for App {
                     && (drag.start.0 - position.x).hypot(drag.start.1 - position.y) >= 5.
                 {
                     drag.active = true;
-                    self.ui.tree.selected = Some(drag.node);
+                    if !self.ui.tree.is_selected(drag.node) {
+                        self.ui.tree.select_only(Some(drag.node));
+                    }
+                }
+                if let Some(m) = self.marquee.as_mut() {
+                    m.now = (position.x, position.y);
+                    m.active |= (m.start.0 - m.now.0).hypot(m.start.1 - m.now.1) >= 5.;
+                    if m.active {
+                        self.ui.marquee = self
+                            .ui
+                            .viewport_uv_unclamped(m.start.0, m.start.1)
+                            .zip(self.ui.viewport_uv_unclamped(m.now.0, m.now.1))
+                            .map(|(a, b)| (a, b, m.remove));
+                    }
                 }
                 if self.object_drag.as_ref().is_some_and(|d| d.active) {
                     self.drag_object(position.x, position.y);
                 }
                 // The pick itself waits for the frame (see `update_hover`).
-                if self.mouse_drag.is_none() && self.object_drag.is_none() && !consumed {
+                if self.mouse_drag.is_none()
+                    && self.object_drag.is_none()
+                    && self.marquee.as_ref().is_none_or(|m| !m.active)
+                    && !consumed
+                {
                     self.hover_request = Some((position.x, position.y));
                 } else {
                     self.hover_request = None;
@@ -3154,10 +3569,21 @@ impl ApplicationHandler for App {
 /// A left-button drag of one object.
 struct ObjectDrag {
     node: ad_document::NodeId,
+    /// Every object the drag moves (the grabbed one, or the whole
+    /// selection when it was part of it), without nodes under another one.
+    nodes: Vec<ad_document::NodeId>,
     /// Grabbed world point and how far it moved.
     hit: glam::Vec3,
     offset: glam::Vec3,
     start: (f64, f64),
+    active: bool,
+}
+
+/// Selection box: left drag that starts on empty space (Ctrl: removes).
+struct Marquee {
+    start: (f64, f64),
+    now: (f64, f64),
+    remove: bool,
     active: bool,
 }
 
@@ -3171,7 +3597,7 @@ struct PickCache {
     parents: Vec<Option<usize>>,
 }
 
-fn edit_name(kind: EditKind) -> &'static str {
+fn edit_name(kind: &EditKind) -> &'static str {
     match kind {
         EditKind::RemoveDuplicates(_)
         | EditKind::RemoveDegenerate(_)
@@ -3182,8 +3608,19 @@ fn edit_name(kind: EditKind) -> &'static str {
         EditKind::Place(_) => "place",
         EditKind::Node(ad_document::NodeOp::Local(..)) => "move_object",
         EditKind::Node(ad_document::NodeOp::Detach(_)) => "delete_object",
-        EditKind::Undo => "undo",
-        EditKind::Redo => "redo",
+        EditKind::Node(ad_document::NodeOp::Many(ops))
+            if ops
+                .iter()
+                .all(|op| matches!(op, ad_document::NodeOp::Detach(_))) =>
+        {
+            "delete_objects"
+        }
+        EditKind::Node(ad_document::NodeOp::Many(_)) => "move_objects",
+        EditKind::Animation(edits::AnimationEdit::Key(key), _) if key.remove => "delete_key",
+        EditKind::Animation(edits::AnimationEdit::Key(_), _) => "set_key",
+        EditKind::Animation(edits::AnimationEdit::Clip, _) => "edit_clip",
+        EditKind::Undo | EditKind::Animation(edits::AnimationEdit::Undo, _) => "undo",
+        EditKind::Redo | EditKind::Animation(edits::AnimationEdit::Redo, _) => "redo",
     }
 }
 
@@ -3556,6 +3993,7 @@ fn run() -> GpuResult<()> {
         imports: new_imports(),
         importing: false,
         current: None,
+        playback: rig_playback::Playback::new(),
         camera: Camera::default(),
         mouse: None,
         mouse_drag: None,
@@ -3570,12 +4008,15 @@ fn run() -> GpuResult<()> {
         object_drag: None,
         press_right: None,
         pick_cache: None,
+        applied_window_mode: viewer_ui::WindowMode::Normal,
         updates,
         update_ok_file,
         exit_after_start,
         exit_for_update: false,
         hover_request: None,
         press: None,
+        press_mods: input::Mods::NONE,
+        marquee: None,
         smoke_select,
         initial_view,
         smoke_input,

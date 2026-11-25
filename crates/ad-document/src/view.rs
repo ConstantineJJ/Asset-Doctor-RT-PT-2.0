@@ -17,6 +17,7 @@ pub(crate) enum CandidateData<'a> {
     Placement(crate::Placement),
     /// ADR-0048: a new object edit state; primitives stay current.
     Nodes(&'a crate::NodeEdits),
+    Animation(&'a [Arc<crate::AnimationClip>]),
 }
 impl<'a> CandidateData<'a> {
     /// Proposed indices, or None when the primitive data stays current.
@@ -24,7 +25,7 @@ impl<'a> CandidateData<'a> {
         match self {
             Self::Indices(v) => Some(v),
             Self::Primitive(p, ..) => Some(&p.indices),
-            Self::Placement(_) | Self::Nodes(_) => None,
+            Self::Placement(_) | Self::Nodes(_) | Self::Animation(..) => None,
         }
     }
 }
@@ -82,6 +83,9 @@ impl<'a> CandidateIndices<'a> {
     pub fn changes_nodes(&self) -> bool {
         matches!(self.data, CandidateData::Nodes(_))
     }
+    pub fn changes_animation(&self) -> bool {
+        matches!(self.data, CandidateData::Animation(..))
+    }
 }
 
 /// Immutable view used by snapshots and analysis. A candidate view never
@@ -94,6 +98,23 @@ pub struct DocumentView<'a> {
     candidate: Option<(MeshId, CandidateData<'a>)>,
 }
 impl<'a> DocumentView<'a> {
+    fn animation_list(&self) -> &'a [Arc<crate::AnimationClip>] {
+        match self.candidate {
+            Some((_, CandidateData::Animation(clips))) => clips,
+            _ => self.document.animation_clips(),
+        }
+    }
+    pub fn animation_clip(&self, index: usize) -> Option<&'a crate::AnimationClip> {
+        self.animation_list().get(index).map(Arc::as_ref)
+    }
+    pub fn animation_clips(&self) -> impl ExactSizeIterator<Item = &'a crate::AnimationClip> {
+        self.animation_list().iter().map(Arc::as_ref)
+    }
+    pub fn animations_changed(&self) -> bool {
+        let clips = self.animation_list();
+        clips.len() != self.document.source_clip_count()
+            || clips.iter().any(|clip| clip.is_edited())
+    }
     pub fn document(&self) -> &'a AssetDocument {
         self.document
     }
@@ -236,6 +257,14 @@ impl AssetDocument {
                 if !p.valid() {
                     return Err(invalid());
                 }
+                cancel.check()?;
+                return Ok(DocumentView {
+                    document: self,
+                    tag: candidate.next,
+                    candidate: Some((candidate.mesh, candidate.data)),
+                });
+            }
+            CandidateData::Animation(_) => {
                 cancel.check()?;
                 return Ok(DocumentView {
                     document: self,

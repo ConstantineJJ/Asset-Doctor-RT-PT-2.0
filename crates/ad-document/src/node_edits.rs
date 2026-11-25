@@ -11,12 +11,15 @@ use crate::{
 use std::collections::{BTreeMap, BTreeSet};
 
 /// One object edit.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum NodeOp {
     /// Replace the node's local transform (column-major matrix).
     Local(NodeId, [[f32; 4]; 4]),
     /// Take the node (and so everything under it) out of the scene.
     Detach(NodeId),
+    /// Several of the above as one edit (multi-selection move or delete):
+    /// one Undo step.
+    Many(std::sync::Arc<[NodeOp]>),
 }
 
 /// All object edits of a document.
@@ -95,32 +98,10 @@ impl AssetDocument {
         self.verify_tag(expected, cancel)?;
         let refused = |m: &str| AssetError::new(ErrorCode::Unsupported, m.to_string());
         let mut edits = self.node_edits.clone();
-        match op {
-            NodeOp::Local(node, matrix) => {
-                if node.0 >= self.parts.nodes.len() {
-                    return Err(refused("Unknown object"));
-                }
-                if !NodeEdits::valid_local(matrix) {
-                    return Err(refused(
-                        "The new object transform cannot be stored (shear or invalid scale)",
-                    ));
-                }
-                if matrix == self.parts.nodes[node.0].local {
-                    edits.locals.remove(&node.0);
-                } else {
-                    edits.locals.insert(node.0, matrix);
-                }
-            }
-            NodeOp::Detach(node) => {
-                if node.0 >= self.parts.nodes.len() {
-                    return Err(refused("Unknown object"));
-                }
-                edits.detached.insert(node.0);
-                // Something must stay in the scene.
-                if !Self::shallow_edits(self, &edits).iter().any(|shown| *shown) {
-                    return Err(refused("The last object of the scene cannot be deleted"));
-                }
-            }
+        self.apply_node_op(&mut edits, &op, 0, cancel)?;
+        // Something must stay in the scene.
+        if !Self::shallow_edits(self, &edits).iter().any(|shown| *shown) {
+            return Err(refused("The last object of the scene cannot be deleted"));
         }
         let first = self
             .parts
@@ -143,6 +124,48 @@ impl AssetDocument {
             replacement,
             bytes,
         ))
+    }
+    fn apply_node_op(
+        &self,
+        edits: &mut NodeEdits,
+        op: &NodeOp,
+        depth: usize,
+        cancel: &Cancellation,
+    ) -> AssetResult<()> {
+        let refused = |m: &str| AssetError::new(ErrorCode::Unsupported, m.to_string());
+        cancel.check()?;
+        match op {
+            NodeOp::Local(node, matrix) => {
+                if node.0 >= self.parts.nodes.len() {
+                    return Err(refused("Unknown object"));
+                }
+                if !NodeEdits::valid_local(*matrix) {
+                    return Err(refused(
+                        "The new object transform cannot be stored (shear or invalid scale)",
+                    ));
+                }
+                if *matrix == self.parts.nodes[node.0].local {
+                    edits.locals.remove(&node.0);
+                } else {
+                    edits.locals.insert(node.0, *matrix);
+                }
+            }
+            NodeOp::Detach(node) => {
+                if node.0 >= self.parts.nodes.len() {
+                    return Err(refused("Unknown object"));
+                }
+                edits.detached.insert(node.0);
+            }
+            NodeOp::Many(ops) => {
+                if depth > 0 || ops.is_empty() || ops.len() > self.parts.nodes.len() * 2 {
+                    return Err(refused("Invalid group of object edits"));
+                }
+                for op in ops.iter() {
+                    self.apply_node_op(edits, op, depth + 1, cancel)?;
+                }
+            }
+        }
+        Ok(())
     }
     /// For each node: does it reach a primitive in the scene with `edits`?
     fn shallow_edits(document: &AssetDocument, edits: &NodeEdits) -> Vec<bool> {

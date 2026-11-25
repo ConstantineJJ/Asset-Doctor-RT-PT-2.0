@@ -520,7 +520,7 @@ fn unused_vertex_repair_compacts_publishes_undoes_and_saves() {
         kind
     );
     assert_eq!(repair_label(ad_heal::RepairKind::UnusedVertices), "G003");
-    let candidate = candidate(&asset, kind);
+    let candidate = candidate(&asset, kind.clone());
     let info = candidate.info().unwrap();
     assert_eq!(info.kind, ad_heal::RepairKind::UnusedVertices);
     assert_eq!((info.before, info.after), (1, 1), "triangles are kept");

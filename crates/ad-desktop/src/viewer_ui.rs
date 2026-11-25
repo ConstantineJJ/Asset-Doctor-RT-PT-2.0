@@ -11,11 +11,39 @@ use winit::{event::WindowEvent, window::Window};
 mod panels;
 #[path = "rig_ui.rs"]
 mod rig_ui;
+#[path = "skeleton_ui.rs"]
+pub mod skeleton_ui;
 #[path = "update_ui.rs"]
 mod update_ui;
 pub(crate) use panels::MARK_COLORS;
 #[path = "view_settings.rs"]
 pub mod view_settings;
+
+/// How the program window is shown («Настройки → Окно», F11).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WindowMode {
+    /// A normal window with its frame.
+    #[default]
+    Normal,
+    /// The window fills the screen and keeps its frame and title.
+    Maximized,
+    /// Borderless full screen (F11; Esc returns to the window).
+    Fullscreen,
+}
+impl WindowMode {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Maximized => "maximized",
+            Self::Fullscreen => "fullscreen",
+        }
+    }
+    pub fn from_key(key: &str) -> Option<Self> {
+        [Self::Normal, Self::Maximized, Self::Fullscreen]
+            .into_iter()
+            .find(|m| m.key() == key)
+    }
+}
 
 /// Drop-down menus of the top bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -48,6 +76,10 @@ pub enum HealthPage {
 
 #[derive(Default)]
 pub struct Actions {
+    pub(crate) playback: Option<crate::rig_playback::Controls>,
+    pub(crate) animation_key: Option<ad_document::AnimationKey>,
+    pub(crate) clip_edit: Option<ad_document::ClipEdit>,
+    pub(crate) animation_preview: Option<Option<ad_document::ChannelValue>>,
     pub open: bool,
     pub fit: bool,
     pub cancel: bool,
@@ -82,6 +114,8 @@ pub struct Actions {
     /// ADR-0049: check for updates; download and install the shown one;
     /// stop a running check or download.
     pub update_check: bool,
+    /// «Настройки → Выход»: close the program (unsaved edits are asked about).
+    pub exit: bool,
     pub update_install: bool,
     pub update_cancel: bool,
     /// ADR-0040 lamp gizmo dragged by (dx, dy) logical points this frame.
@@ -241,6 +275,7 @@ pub struct EditUi {
     pub dirty: bool,
 }
 pub struct ViewerUi {
+    pub(crate) playback: crate::rig_playback::Controls,
     pub context: egui::Context,
     input: Option<egui_winit::State>,
     pub show_tree: bool,
@@ -321,6 +356,13 @@ pub struct ViewerUi {
     pub shadow_strength: f32,
     pub show_bounds: bool,
     pub helper_overlay: Option<crate::helpers::Overlay>,
+    /// Window mode chosen in «Настройки → Окно» (applied by the app).
+    pub window_mode: WindowMode,
+    /// Selection box in viewport coordinates (corners, remove mode).
+    pub marquee: Option<([f32; 2], [f32; 2], bool)>,
+    /// P7 skeleton overlay (bones and joints of the skins) and its switch.
+    pub skeleton_on: bool,
+    pub skeleton: Option<skeleton_ui::SkeletonOverlay>,
     pub placement: ad_document::Placement,
     /// Numeric fields being edited (None: they follow the model).
     placement_draft: Option<ad_document::Placement>,
@@ -350,6 +392,8 @@ pub struct ViewerUi {
     pub history: HistoryUi,
     pub error: Option<String>,
     pub edit: EditUi,
+    #[cfg(test)]
+    exit_rect: egui::Rect,
     #[cfg(test)]
     open_rect: egui::Rect,
     #[cfg(test)]
@@ -470,6 +514,10 @@ impl Default for ViewerUi {
             shadows: true,
             shadow_strength: 0.7,
             show_bounds: false,
+            skeleton_on: true,
+            skeleton: None,
+            marquee: None,
+            window_mode: WindowMode::Normal,
             helper_overlay: None,
             placement: ad_document::Placement::IDENTITY,
             placement_draft: None,
@@ -482,6 +530,7 @@ impl Default for ViewerUi {
             menu_buttons: Vec::new(),
             menu_group_width: 0.,
             tab: Tab::Health,
+            playback: crate::rig_playback::Controls::default(),
             health_page: HealthPage::Analysis,
             carousel: Default::default(),
             lamp_hot: None,
@@ -493,6 +542,8 @@ impl Default for ViewerUi {
             history: HistoryUi::default(),
             error: None,
             edit: EditUi::default(),
+            #[cfg(test)]
+            exit_rect: egui::Rect::NOTHING,
             #[cfg(test)]
             open_rect: egui::Rect::NOTHING,
             #[cfg(test)]
@@ -1256,6 +1307,17 @@ impl ViewerUi {
             ]
         })
     }
+    /// Like `viewport_uv`, also outside the viewport (selection box ends).
+    pub fn viewport_uv_unclamped(&self, x: f64, y: f64) -> Option<[f32; 2]> {
+        let scale = self.context.pixels_per_point() as f64;
+        let (w, h) = (self.scene.width(), self.scene.height());
+        (w > 0. && h > 0.).then(|| {
+            [
+                ((x / scale) as f32 - self.scene.min.x) / w,
+                ((y / scale) as f32 - self.scene.min.y) / h,
+            ]
+        })
+    }
     pub fn camera_at(&self, x: f64, y: f64) -> bool {
         let scale = self.context.pixels_per_point() as f64;
         self.scene
@@ -1320,16 +1382,29 @@ impl ViewerUi {
     }
     fn layout(
         &mut self,
-        raw: egui::RawInput,
+        mut raw: egui::RawInput,
         asset: Option<&PreparedAsset>,
         loading: bool,
     ) -> (egui::FullOutput, egui::Rect, Actions) {
         let context = self.context.clone();
+        // Tab is the outline switch: egui must not use it to move keyboard
+        // focus over the top menus, except inside a text field.
+        if !context.egui_wants_keyboard_input() {
+            raw.events.retain(|event| {
+                !matches!(
+                    event,
+                    egui::Event::Key {
+                        key: egui::Key::Tab,
+                        ..
+                    }
+                )
+            });
+        }
         let mut actions = Actions::default();
         let output=context.run_ui(raw,|root| {
             let width=root.max_rect().width();
             let height=root.max_rect().height();
-            let read_only = asset.is_some_and(|asset| asset.document().rig().is_some());
+            let read_only = asset.is_some_and(|asset| asset.document().is_read_only());
             self.top_bar(root, width, loading, read_only, &mut actions);
             egui::Panel::bottom("status").exact_size(if self.error.is_some(){64.}else{32.}).resizable(false).show(root,|ui| {
                 if let Some(error)=&self.error {
@@ -1366,6 +1441,18 @@ impl ViewerUi {
                 self.scene=root.available_rect_before_wrap();
                 if asset.is_some() && let Some(overlay)=self.helper_overlay.as_ref() {
                     Self::helpers_ui(root,self.scene,overlay);
+                }
+                if let Some((a,b,remove))=self.marquee {
+                    let at=|p:[f32;2]| egui::pos2(self.scene.min.x+p[0]*self.scene.width(),self.scene.min.y+p[1]*self.scene.height());
+                    let rect=egui::Rect::from_two_pos(at(a),at(b));
+                    let color=if remove {Color32::from_rgb(255,120,90)} else {Color32::from_rgb(120,190,255)};
+                    let painter=root.painter().with_clip_rect(self.scene);
+                    painter.rect_filled(rect,0.,color.gamma_multiply(0.12));
+                    painter.rect_stroke(rect,0.,egui::Stroke::new(1.,color),egui::StrokeKind::Inside);
+                }
+                if asset.is_some() && self.skeleton_on && let Some(overlay)=self.skeleton.take() {
+                    self.skeleton_ui(&context,root,&overlay,&mut actions);
+                    self.skeleton=Some(overlay);
                 }
                 if asset.is_some() && !read_only && self.model_gizmo_on && let Some(gizmo)=self.model_gizmo {
                     self.model_gizmo_ui(&context,root,gizmo,&mut actions);
@@ -1938,6 +2025,40 @@ FORMAT=32-bit_rle_rgbe
         ui.menu = Some(TopMenu::Settings);
         warm(&mut ui, None, size);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+    #[test]
+    fn tab_does_not_walk_the_menus_and_settings_offer_window_modes_and_exit() {
+        let mut ui = ViewerUi::default();
+        let size = (1600., 900.);
+        warm(&mut ui, None, size);
+        for _ in 0..3 {
+            let mut input = raw(size.0, size.1);
+            input.events = vec![egui::Event::Key {
+                key: egui::Key::Tab,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::default(),
+            }];
+            let (out, _, _) = ui.layout(input, None, false);
+            out.drop_without_applying_deltas();
+        }
+        assert!(
+            ui.context.memory(|m| m.focused()).is_none(),
+            "Tab must not focus the top menus"
+        );
+        ui.menu = Some(TopMenu::Settings);
+        warm(&mut ui, None, size);
+        assert!(ui.exit_rect.is_positive(), "Settings has «Выход»");
+        let exit = ui.exit_rect;
+        let actions = click(&mut ui, None, exit, size);
+        assert!(actions.exit);
+        assert_eq!(ui.window_mode, WindowMode::Normal);
+        assert_eq!(
+            WindowMode::from_key("fullscreen"),
+            Some(WindowMode::Fullscreen)
+        );
+        assert_eq!(WindowMode::from_key("big"), None);
     }
     #[test]
     fn view_buttons_choose_camera_views_and_the_bug_opens_the_log() {
@@ -2554,6 +2675,106 @@ FORMAT=32-bit_rle_rgbe
         let (out, _, _) = ui.layout(raw(1400., 1000.), Some(&asset), false);
         out.drop_without_applying_deltas();
         assert!(ui.model_gizmo_rects.is_empty());
+    }
+    #[test]
+    fn skeleton_joints_are_picked_in_the_viewport_and_shown_in_the_rigging_tree() {
+        use ad_document::NodeId;
+        use skeleton_ui::{OverlayJoint, SkeletonOverlay, joint_id};
+        let mut ui = ViewerUi::default();
+        let asset = crate::imports::prepare(&crate::worker::Request {
+            ticket: 1,
+            input: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/Skin_Checker.glb"),
+            cancel: ad_document::Cancellation::default(),
+        })
+        .unwrap();
+        let document = asset.document();
+        let joints = &document.rig().unwrap().skins[0].joints;
+        assert!(joints.len() >= 2, "fixture has a joint chain");
+        let (first, second) = (joints[0], joints[1]);
+        ui.tab = Tab::Rigging;
+        ui.skeleton = Some(SkeletonOverlay {
+            document: document.id().0,
+            joints: vec![
+                OverlayJoint {
+                    node: first,
+                    name: "first".into(),
+                    at: Some([0.4, 0.5]),
+                    parent: None,
+                    animatable: true,
+                },
+                OverlayJoint {
+                    node: second,
+                    name: "second".into(),
+                    at: Some([0.6, 0.5]),
+                    parent: Some(0),
+                    animatable: false,
+                },
+            ],
+        });
+        for _ in 0..2 {
+            let (out, _, _) = ui.layout(raw(1400., 1000.), Some(&asset), false);
+            out.drop_without_applying_deltas();
+        }
+        let id = joint_id(document.id().0);
+        let at = ui.scene.min + egui::vec2(0.6 * ui.scene.width(), 0.5 * ui.scene.height());
+        let mut preview = None;
+        for (i, events) in [
+            vec![egui::Event::PointerMoved(at)],
+            vec![egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }],
+            vec![egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut input = raw(1400., 1000.);
+            input.events = events;
+            let (out, _, actions) = ui.layout(input, Some(&asset), false);
+            if i == 0 {
+                assert!(
+                    ui.context.egui_wants_pointer_input(),
+                    "a joint click is not an object pick"
+                );
+            }
+            preview = preview.or(actions.animation_preview);
+            out.drop_without_applying_deltas();
+        }
+        assert_eq!(ui.context.data(|d| d.get_temp::<NodeId>(id)), Some(second));
+        // Not keyable: the key editor keeps its node.
+        assert!(preview.is_none());
+        assert_eq!(
+            ui.context
+                .data(|d| d.get_temp::<NodeId>(skeleton_ui::animation_node_id(document.id().0))),
+            None
+        );
+        // The Rigging tree lists the joints by their node names.
+        let (out, _, _) = ui.layout(raw(1400., 1000.), Some(&asset), false);
+        let text = format!("{:?}", out.shapes);
+        assert!(
+            text.contains(&document.nodes()[first.0].name),
+            "tree shows the root joint"
+        );
+        // Switched off: nothing is drawn and the click is the viewport's.
+        ui.skeleton_on = false;
+        for _ in 0..2 {
+            let (out, _, _) = ui.layout(raw(1400., 1000.), Some(&asset), false);
+            out.drop_without_applying_deltas();
+        }
+        let mut input = raw(1400., 1000.);
+        input.events = vec![egui::Event::PointerMoved(at)];
+        let (out, _, _) = ui.layout(input, Some(&asset), false);
+        assert!(!ui.context.egui_wants_pointer_input());
+        out.drop_without_applying_deltas();
     }
     #[test]
     fn lamp_gizmo_captures_the_pointer_and_reports_drags() {

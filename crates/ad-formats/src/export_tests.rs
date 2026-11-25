@@ -789,6 +789,55 @@ fn object_edits_export_node_matrices_and_detach_nodes() {
     }
 }
 
+/// Multi-selection: several object edits as one edit (one Undo step),
+/// verified and exported like single ones; nested or empty groups and a
+/// group that deletes everything are refused.
+#[test]
+fn a_group_of_object_edits_is_one_edit() {
+    use ad_document::{NodeId, NodeOp};
+    let (mut j, b) = tiny();
+    j["nodes"] = serde_json::json!([{"mesh":0},{"mesh":0},{"mesh":0},{"mesh":0}]);
+    j["scenes"] = serde_json::json!([{"nodes":[0,1,2,3]}]);
+    let source = bytes(j, b);
+    let mut doc = fixture(&source);
+    let c = Cancellation::default();
+    let mut moved = [[0f32; 4]; 4];
+    for (i, row) in moved.iter_mut().enumerate() {
+        row[i] = 1.;
+    }
+    moved[3] = [4., 0., 0., 1.];
+    let group = NodeOp::Many(
+        vec![
+            NodeOp::Detach(NodeId(0)),
+            NodeOp::Detach(NodeId(1)),
+            NodeOp::Local(NodeId(2), moved),
+        ]
+        .into(),
+    );
+    let revision = doc.revision();
+    let plan = doc.prepare_node_op(doc.tag(), group, &c).unwrap();
+    doc.apply_triangle_removal(plan, ImportLimits::default(), &c)
+        .unwrap();
+    assert_eq!(doc.revision(), revision + 1, "one edit");
+    assert_eq!(doc.scene_roots(), [NodeId(2), NodeId(3)]);
+    let read = import_glb(
+        export(&doc).unwrap().bytes().clone(),
+        "group".into(),
+        ad_document::DocumentId(24),
+        ImportLimits::default(),
+        &c,
+    )
+    .unwrap();
+    crate::compare_reimported(&doc, &read, &c).unwrap();
+    for refused in [
+        NodeOp::Many(Vec::new().into()),
+        NodeOp::Many(vec![NodeOp::Many(vec![NodeOp::Detach(NodeId(2))].into())].into()),
+        NodeOp::Many(vec![NodeOp::Detach(NodeId(2)), NodeOp::Detach(NodeId(3))].into()),
+    ] {
+        assert!(doc.prepare_node_op(doc.tag(), refused, &c).is_err());
+    }
+}
+
 #[test]
 fn detaching_a_shared_root_only_changes_the_active_scene() {
     use ad_document::{NodeId, NodeOp};
