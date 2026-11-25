@@ -5,7 +5,7 @@
 Native Windows application for diagnosing, repairing and preparing 3D assets,
 written from scratch in Rust with a Vulkan renderer. Engineering prototype.
 
-Current build: **AD RT-PT v2.5.3**. Versions are MAJOR.MINOR.PATCH by
+Current build: **AD RT-PT v2.7.0**. Versions are MAJOR.MINOR.PATCH by
 significance: major reworks, notable features or large sets of fixes, and
 hotfixes.
 
@@ -35,17 +35,19 @@ hotfixes.
   Vulkan: base colour, vertex colours, optional direct PBR with
   metallic/roughness, normal, occlusion and emission maps.
 - **Layout (ADR-0045).**
-  - Top bar: «Настройки» (help, keys and mouse, outline colour, updates) and
-    the file buttons on the left. On the right, the drop-down menus «Вид»,
+  - Top bar: «Настройки» (help, keys and mouse, outline colour, window
+    mode, updates, Exit) and the file buttons on the left. On the right, the drop-down menus «Вид»,
     «Сетка и помощники», «Освещение», «Лампа», «Экспозиция и сила света»,
     «Сцена», «Окружение», the «SkyBox» button and «Модель», then the outline
     («амёба») and lamp switches.
   - Right block, with tabs:
     - «Здоровье»: finding cards, repair list, queue, history;
     - «Инфо»;
-    - «Rigging» (later).
+    - «Rigging»: skins, joints and animation clips (see below).
   - A light grey strip under the top bar holds the «Work-Tree» button, which
-    opens the left block.
+    opens the left block. **Q** / **E** hide or show the left / right block.
+  - Window: normal, maximized with its frame, or borderless full screen
+    (**F11**; **Esc** returns to the window).
   - Bottom-right corner: Undo/Redo and the views Front, Back, Left, Right, Top,
     Bottom (orthographic) and 3/4.
   - Status bar: the bug icon opens the program log. The window title and
@@ -53,20 +55,33 @@ hotfixes.
 - **Mouse (ADR-0043, defaults).**
   - Left button selects and drags objects; right button opens the context
     menu.
+  - Multi-selection: drag on empty space for a selection box, **Shift**+click
+    adds an object, **Ctrl**+click (or Ctrl + box) removes it.
   - Orbit: side button Forward or Shift+left drag. Pan: side button Back or
     Shift+right drag. Wheel: zoom.
   - **F** or middle click: frame the model.
-  - **Tab**: outline. **X** / **Delete**: delete the object.
+  - **Tab**: outline. **X** / **Delete**: delete the selected objects.
   - **Esc**: cancel loading. **H**: help.
   - Every key and mouse button can be rebound in «Клавиши и мышь…».
 - **Objects (ADR-0048).**
-  - Outline: the object under the cursor and the selected one are outlined.
-    The click respects transparent MASK parts.
-  - Edits: move with a left drag or the object gizmo, or delete. Each change
-    is one edit (Ctrl+Z).
+  - Outline: the object under the cursor and the selected ones are outlined.
+    The click respects transparent MASK parts and has a few pixels of
+    tolerance for small or far objects.
+  - Edits: move with a left drag (the whole selection moves together) or the
+    object gizmo, or delete. Each change, also for a group, is one edit
+    (Ctrl+Z).
   - «Сохранить» writes the node matrices and removes deleted nodes; the GLB's
     other scenes are kept.
 - **Work-Tree.** The node tree, with hide and colour marks; view only.
+- **Rigging (P7).**
+  - Opens GLB files with skins (JOINTS_0/WEIGHTS_0) and TRS animation clips
+    (STEP, LINEAR, CUBICSPLINE).
+  - The skeleton is drawn over the model in the current pose («Сетка и
+    помощники → Скелет»); click a joint to select it. The Rigging tab shows
+    the joint tree.
+  - Clips: play, pause, loop, speed, scrub. Edit a joint's keys; create,
+    copy, rename, delete and retime clips; all with Undo/Redo.
+  - Saving writes the animation back and verifies it by reimporting.
 - **Model gizmo.** Arrows move the model, rings turn it, the centre square
   scales it. Exact values are in «Модель».
 - **Light and scene.**
@@ -100,9 +115,10 @@ hotfixes.
 - **View settings.** Kept between runs in
   `%LOCALAPPDATA%\AssetDoctorRTPT\view-settings.json`.
 
-Skins, animations, morph targets, alpha BLEND, compressed geometry and external
-resources are refused at import. Rigging, multi-model comparison, RT and PT are
-planned.
+Morph targets, alpha BLEND, compressed geometry and external resources are
+refused at import. Geometry and object edits are not yet available for skinned
+or animated models. Joint gizmos, GPU skinning, multi-model comparison, RT and
+PT are planned.
 
 ## Build
 
@@ -121,7 +137,8 @@ The executables are `target/release/AssetDoctorRTPT.exe` and
 `target/release/AssetDoctorRTPT-Updater.exe`. `--require-validation` fails if
 Vulkan validation layers are unavailable. CI packages the program folder as
 `AssetDoctorRTPT-win-x64.zip` and its `.sha256`. A release is published only
-by a manual run with `publish` set.
+by a manual run with `publish` set. Memory budgets are generous: GLB up to
+1 GiB, textures up to 2 GiB and 16384 px.
 
 ## Source layout
 
@@ -137,4 +154,4 @@ by a manual run with `publish` set.
 - `tests/fixtures`: small authored models and packages used by the tests
 - `assets`: application icon and bundled panoramas
 
-Product licensing has not been decided yet.
+Licensed under the MIT License (see [LICENSE](LICENSE)).
