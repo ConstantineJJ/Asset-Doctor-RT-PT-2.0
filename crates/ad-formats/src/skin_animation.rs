@@ -109,19 +109,22 @@ pub(crate) fn read_clip(
             _ => return Err(invalid("Cannot read animation values")),
         };
         let (translation, rotation, scale) = node.transform().decomposed();
-        tracks.push(Track::new(
-            NodeId(node.index()),
-            Transform {
-                translation,
-                rotation,
-                scale,
-            },
-            kind,
-            interpolation,
-            times,
-            values,
-            cancel,
-        )?.from_source_channel(channel.index()));
+        tracks.push(
+            Track::new(
+                NodeId(node.index()),
+                Transform {
+                    translation,
+                    rotation,
+                    scale,
+                },
+                kind,
+                interpolation,
+                times,
+                values,
+                cancel,
+            )?
+            .from_source_channel(channel.index()),
+        );
     }
     let name = source
         .name()

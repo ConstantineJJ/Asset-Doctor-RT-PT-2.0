@@ -22,22 +22,39 @@ pub(crate) fn parse_for_export<'a>(
 
 fn read_root(json: &[u8], cancel: &Cancellation) -> AssetResult<gltf::json::Root> {
     let invalid = |error| {
-        AssetError::new(ErrorCode::InvalidFormat, format!("Invalid glTF metadata: {error}"))
+        AssetError::new(
+            ErrorCode::InvalidFormat,
+            format!("Invalid glTF metadata: {error}"),
+        )
     };
     match gltf::json::deserialize::from_slice(json) {
         Ok(root) => Ok(root),
-        Err(error) if error.to_string().starts_with("missing field `nodes` at line ") => {
+        Err(error)
+            if error
+                .to_string()
+                .starts_with("missing field `nodes` at line ") =>
+        {
             // glTF allows an empty scene to omit nodes. gltf-json 1.4.1
             // requires the field. Adapt the decoded metadata only.
-            let (mut metadata, _) =
-                crate::metadata::parse(json, crate::ExportLimits::default().metadata_values, cancel)?;
-            let Some(scenes) = metadata.get_mut("scenes").and_then(serde_json::Value::as_array_mut)
+            let (mut metadata, _) = crate::metadata::parse(
+                json,
+                crate::ExportLimits::default().metadata_values,
+                cancel,
+            )?;
+            let Some(scenes) = metadata
+                .get_mut("scenes")
+                .and_then(serde_json::Value::as_array_mut)
             else {
                 return Err(invalid(error));
             };
-            for scene in scenes.iter_mut().filter_map(serde_json::Value::as_object_mut) {
+            for scene in scenes
+                .iter_mut()
+                .filter_map(serde_json::Value::as_object_mut)
+            {
                 cancel.check()?;
-                scene.entry("nodes").or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                scene
+                    .entry("nodes")
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
             }
             gltf::json::deserialize::from_value(metadata).map_err(invalid)
         }

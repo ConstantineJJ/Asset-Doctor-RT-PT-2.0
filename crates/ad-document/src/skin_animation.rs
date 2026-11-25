@@ -1,6 +1,6 @@
 use crate::{
-    AssetDocument, AssetError, AssetResult, Cancellation, ErrorCode, GeometrySnapshot, ImportLimits,
-    NodeId, DocumentView,
+    AssetDocument, AssetError, AssetResult, Cancellation, DocumentView, ErrorCode,
+    GeometrySnapshot, ImportLimits, NodeId,
 };
 use glam::{Mat4, Quat, Vec3, Vec4};
 use std::{collections::HashSet, sync::Arc};
@@ -75,7 +75,9 @@ impl Track {
                 cancel.check()?;
             }
             if !time.is_finite() || time < 0. || time <= last {
-                return Err(invalid("Animation times must be finite and strictly increasing"));
+                return Err(invalid(
+                    "Animation times must be finite and strictly increasing",
+                ));
             }
             last = time;
             let keys = &mut values[i * stride..(i + 1) * stride];
@@ -202,7 +204,12 @@ pub struct AnimationClip {
 
 impl AnimationClip {
     pub fn new(name: String, tracks: Vec<Track>, cancel: &Cancellation) -> AssetResult<Self> {
-        Self::build(name, tracks.into_iter().map(Arc::new).collect(), false, cancel)
+        Self::build(
+            name,
+            tracks.into_iter().map(Arc::new).collect(),
+            false,
+            cancel,
+        )
     }
 
     fn build(
@@ -219,7 +226,9 @@ impl AnimationClip {
         for track in &tracks {
             cancel.check()?;
             if !targets.insert((track.node.0, track.kind)) {
-                return Err(invalid("Duplicate animation channel targeting the same property"));
+                return Err(invalid(
+                    "Duplicate animation channel targeting the same property",
+                ));
             }
             duration = duration.max(track.times[track.times.len() - 1]);
         }
@@ -284,7 +293,8 @@ impl AssetDocument {
         limits: ImportLimits,
         cancel: &Cancellation,
     ) -> AssetResult<GeometrySnapshot> {
-        self.view().animated_snapshot(clip, time, None, limits, cancel)
+        self.view()
+            .animated_snapshot(clip, time, None, limits, cancel)
     }
 }
 
@@ -394,7 +404,10 @@ impl AnimationClip {
     }
 
     pub fn track(&self, node: NodeId, kind: TrackKind) -> Option<&Track> {
-        self.tracks.iter().map(Arc::as_ref).find(|t| t.node == node && t.kind == kind)
+        self.tracks
+            .iter()
+            .map(Arc::as_ref)
+            .find(|t| t.node == node && t.kind == kind)
     }
 
     pub fn is_edited(&self) -> bool {
@@ -402,23 +415,39 @@ impl AnimationClip {
     }
 
     pub(crate) fn retained_bytes(&self) -> usize {
-        size_of::<Self>() + self.name.capacity() + self.tracks.capacity() * size_of::<Arc<Track>>()
-            + self.tracks.iter().map(|track| {
-                size_of::<Track>() + track.times.capacity() * size_of::<f32>()
-                    + track.values.capacity() * size_of::<[f32; 4]>()
-            }).sum::<usize>()
+        size_of::<Self>()
+            + self.name.capacity()
+            + self.tracks.capacity() * size_of::<Arc<Track>>()
+            + self
+                .tracks
+                .iter()
+                .map(|track| {
+                    size_of::<Track>()
+                        + track.times.capacity() * size_of::<f32>()
+                        + track.values.capacity() * size_of::<[f32; 4]>()
+                })
+                .sum::<usize>()
     }
 }
 
 impl AssetDocument {
     fn animation_base(&self, node: NodeId) -> AssetResult<Transform> {
-        self.animation_bases.get(node.0).copied().flatten().ok_or_else(|| {
-            AssetError::new(ErrorCode::Unsupported, "У этого узла матричная трансформация")
-        })
+        self.animation_bases
+            .get(node.0)
+            .copied()
+            .flatten()
+            .ok_or_else(|| {
+                AssetError::new(
+                    ErrorCode::Unsupported,
+                    "У этого узла матричная трансформация",
+                )
+            })
     }
 
     pub fn can_animate_node(&self, node: NodeId) -> bool {
-        self.animation_bases.get(node.0).is_some_and(Option::is_some)
+        self.animation_bases
+            .get(node.0)
+            .is_some_and(Option::is_some)
     }
 
     pub fn animation_value(
@@ -428,7 +457,10 @@ impl AssetDocument {
         kind: TrackKind,
         time: f32,
     ) -> AssetResult<[f32; 4]> {
-        let clip = self.animation_clips.get(clip).ok_or_else(|| invalid("Unknown animation clip"))?;
+        let clip = self
+            .animation_clips
+            .get(clip)
+            .ok_or_else(|| invalid("Unknown animation clip"))?;
         match clip.track(node, kind) {
             Some(track) => track.sample(time),
             None => Ok(self.animation_base(node)?.get(kind)),
@@ -445,13 +477,20 @@ impl AssetDocument {
 
         self.verify_tag(expected, cancel)?;
         if !key.time.is_finite() || key.time < 0. {
-            return Err(invalid("Время ключа должно быть конечным и неотрицательным"));
+            return Err(invalid(
+                "Время ключа должно быть конечным и неотрицательным",
+            ));
         }
-        let clip = self.animation_clips.get(key.clip).ok_or_else(|| invalid("Unknown animation clip"))?;
+        let clip = self
+            .animation_clips
+            .get(key.clip)
+            .ok_or_else(|| invalid("Unknown animation clip"))?;
         let ChannelValue { node, kind, value } = key.channel;
         let base = self.animation_base(node)?;
         let mut tracks = Vec::new();
-        tracks.try_reserve_exact(clip.tracks.len() + 1).map_err(|_| budget())?;
+        tracks
+            .try_reserve_exact(clip.tracks.len() + 1)
+            .map_err(|_| budget())?;
         tracks.extend(clip.tracks.iter().cloned());
         let index = tracks.iter().position(|t| t.node == node && t.kind == kind);
         let changed = if let Some(index) = index {
@@ -483,7 +522,10 @@ impl AssetDocument {
             true
         };
         if tracks.is_empty() {
-            return Err(AssetError::new(ErrorCode::Unsupported, "В клипе должен остаться хотя бы один канал"));
+            return Err(AssetError::new(
+                ErrorCode::Unsupported,
+                "В клипе должен остаться хотя бы один канал",
+            ));
         }
         let replacement = if changed {
             let next = clip.with_tracks(tracks, cancel)?;
@@ -505,8 +547,14 @@ enum TrackEdit {
 
 impl Track {
     fn edit_key(&self, key: AnimationKey, cancel: &Cancellation) -> AssetResult<TrackEdit> {
-        let search = self.times.binary_search_by(|time| time.partial_cmp(&key.time).expect("finite times"));
-        let stride = if self.interpolation == Interpolation::CubicSpline { 3 } else { 1 };
+        let search = self
+            .times
+            .binary_search_by(|time| time.partial_cmp(&key.time).expect("finite times"));
+        let stride = if self.interpolation == Interpolation::CubicSpline {
+            3
+        } else {
+            1
+        };
         let mut value = key.channel.value;
         if key.remove {
             if search.is_err() {
@@ -539,8 +587,12 @@ impl Track {
         }
         let mut times = Vec::new();
         let mut values = Vec::new();
-        times.try_reserve_exact(self.times.len() + 1).map_err(|_| crate::indices::budget())?;
-        values.try_reserve_exact(self.values.len() + stride).map_err(|_| crate::indices::budget())?;
+        times
+            .try_reserve_exact(self.times.len() + 1)
+            .map_err(|_| crate::indices::budget())?;
+        values
+            .try_reserve_exact(self.values.len() + stride)
+            .map_err(|_| crate::indices::budget())?;
         for block in self.times.chunks(4096) {
             cancel.check()?;
             times.extend_from_slice(block);

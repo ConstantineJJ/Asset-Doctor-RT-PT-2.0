@@ -45,14 +45,18 @@ impl RigInspection {
         }
         for (a, b) in self.skins.iter().zip(&other.skins) {
             cancel.check()?;
-            if a.name != b.name || a.joints != b.joints || a.inverse_bind != b.inverse_bind || a.skeleton != b.skeleton {
+            if a.name != b.name
+                || a.joints != b.joints
+                || a.inverse_bind != b.inverse_bind
+                || a.skeleton != b.skeleton
+            {
                 return Ok(false);
             }
         }
         for (a, b) in self.influences.iter().zip(&other.influences) {
             cancel.check()?;
             match (a, b) {
-                (None, None) => {},
+                (None, None) => {}
                 (Some(a), Some(b)) if a.len() == b.len() => {
                     for (a, b) in a.chunks(4096).zip(b.chunks(4096)) {
                         cancel.check()?;

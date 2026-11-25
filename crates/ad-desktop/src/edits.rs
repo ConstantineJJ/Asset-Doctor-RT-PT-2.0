@@ -298,7 +298,8 @@ fn prepare_edit_with_clip(
             change = Change::Remove(plan);
         }
         EditKind::Animation(AnimationEdit::Clip, _) => {
-            let plan = session.prepare_clip_edit(base.tag(), clip_edit.ok_or_else(stale)?, cancel)?;
+            let plan =
+                session.prepare_clip_edit(base.tag(), clip_edit.ok_or_else(stale)?, cancel)?;
             if !plan.changes() {
                 return Err(AssetError::new(
                     ad_document::ErrorCode::Unsupported,
@@ -352,10 +353,7 @@ fn prepare_edit_with_clip(
     let position = animation_position(kind, clip_edit, document, &view);
     let (snapshot, animation_frame) = if let Some((clip, time)) = position {
         let pose = view.animated_snapshot(clip, time, None, ImportLimits::default(), cancel)?;
-        (
-            Arc::new(pose),
-            Some(AnimationFrame { clip, time, rest }),
-        )
+        (Arc::new(pose), Some(AnimationFrame { clip, time, rest }))
     } else {
         (rest, None)
     };
@@ -397,7 +395,11 @@ fn animation_position(
         clip_edit,
         Some(ClipEdit::Create { .. } | ClipEdit::Duplicate { .. })
     ) {
-        return view.animation_clips().len().checked_sub(1).map(|last| (last, 0.));
+        return view
+            .animation_clips()
+            .len()
+            .checked_sub(1)
+            .map(|last| (last, 0.));
     }
     let (index, time) = current?;
     let previous = document.animation_clips().get(index)?;
@@ -481,7 +483,11 @@ impl Edits {
     pub fn request(&mut self, edit: EditInput) -> u64 {
         self.request_with_clip(edit, None)
     }
-    pub fn request_with_clip(&mut self, edit: EditInput, clip: Option<ad_document::ClipEdit>) -> u64 {
+    pub fn request_with_clip(
+        &mut self,
+        edit: EditInput,
+        clip: Option<ad_document::ClipEdit>,
+    ) -> u64 {
         self.0.request(EditRequest { edit, clip })
     }
     pub fn cancel(&mut self) {

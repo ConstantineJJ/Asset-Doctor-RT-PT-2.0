@@ -90,10 +90,14 @@ pub(super) fn show(
                 };
                 let label = format!("{} · {}{}", slot, document.nodes()[node.0].name, status);
                 let selected = ui.ctx().data(|data| data.get_temp::<NodeId>(node_id));
-                let response = ui.add_enabled(
-                    controls.clip.is_some() && !controls.playing && document.can_animate_node(node),
-                    egui::Button::selectable(selected == Some(node), label).truncate(),
-                ).on_hover_text(format!("Узел glTF №{}", node.0));
+                let response = ui
+                    .add_enabled(
+                        controls.clip.is_some()
+                            && !controls.playing
+                            && document.can_animate_node(node),
+                        egui::Button::selectable(selected == Some(node), label).truncate(),
+                    )
+                    .on_hover_text(format!("Узел glTF №{}", node.0));
                 if response.clicked() {
                     ui.ctx().data_mut(|data| data.insert_temp(node_id, node));
                     actions.animation_preview = Some(None);
@@ -103,11 +107,7 @@ pub(super) fn show(
     actions.playback = (controls != before).then_some(controls);
 }
 
-fn clip_controls(
-    ui: &mut egui::Ui,
-    clips: &[Arc<AnimationClip>],
-    controls: &mut Controls,
-) {
+fn clip_controls(ui: &mut egui::Ui, clips: &[Arc<AnimationClip>], controls: &mut Controls) {
     let before = *controls;
     egui::ComboBox::from_id_salt("animation_clip")
         .selected_text(controls.clip.map_or_else(
@@ -146,7 +146,10 @@ fn clip_controls(
                 controls.playing = !controls.playing;
             }
             if ui
-                .add_enabled(controls.playing || controls.time != 0., egui::Button::new("Стоп"))
+                .add_enabled(
+                    controls.playing || controls.time != 0.,
+                    egui::Button::new("Стоп"),
+                )
                 .clicked()
             {
                 controls.playing = false;
@@ -179,15 +182,21 @@ fn clip_controls(
 
 fn new_clip_button(ui: &mut egui::Ui, document: &AssetDocument, actions: &mut Actions) {
     let node_id = egui::Id::new(("animation_node", document.id().0));
-    let node = ui.ctx().data(|data| data.get_temp::<NodeId>(node_id))
+    let node = ui
+        .ctx()
+        .data(|data| data.get_temp::<NodeId>(node_id))
         .filter(|&node| document.can_animate_node(node))
         .or_else(|| {
-            document.rig().into_iter().flat_map(|rig| &rig.skins)
+            document
+                .rig()
+                .into_iter()
+                .flat_map(|rig| &rig.skins)
                 .flat_map(|skin| skin.joints.iter().copied())
                 .find(|&node| document.can_animate_node(node))
         })
         .or_else(|| {
-            (0..document.nodes().len()).map(NodeId)
+            (0..document.nodes().len())
+                .map(NodeId)
                 .find(|&node| document.can_animate_node(node))
         });
     if ui
@@ -217,53 +226,85 @@ struct ClipDraft {
     duration: f32,
 }
 
-fn clip_properties(ui: &mut egui::Ui, document: &AssetDocument, clip: usize, actions: &mut Actions) {
+fn clip_properties(
+    ui: &mut egui::Ui,
+    document: &AssetDocument,
+    clip: usize,
+    actions: &mut Actions,
+) {
     let active = &document.animation_clips()[clip];
     let id = egui::Id::new(("clip_properties", document.id().0));
-    egui::CollapsingHeader::new("Свойства клипа").id_salt(id).show(ui, |ui| {
-        let mut draft = ui.ctx().data(|data| data.get_temp::<ClipDraft>(id))
-            .filter(|draft| draft.clip_id == active.id() && draft.revision == document.revision())
-            .unwrap_or_else(|| ClipDraft {
-                clip_id: active.id(),
-                revision: document.revision(),
-                name: active.name.clone(),
-                duration: active.duration,
+    egui::CollapsingHeader::new("Свойства клипа")
+        .id_salt(id)
+        .show(ui, |ui| {
+            let mut draft = ui
+                .ctx()
+                .data(|data| data.get_temp::<ClipDraft>(id))
+                .filter(|draft| {
+                    draft.clip_id == active.id() && draft.revision == document.revision()
+                })
+                .unwrap_or_else(|| ClipDraft {
+                    clip_id: active.id(),
+                    revision: document.revision(),
+                    name: active.name.clone(),
+                    duration: active.duration,
+                });
+            ui.add(
+                egui::TextEdit::singleline(&mut draft.name)
+                    .char_limit(120)
+                    .hint_text("Название клипа"),
+            );
+            let name = draft.name.trim();
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add_enabled(
+                        !name.is_empty() && name != active.name,
+                        egui::Button::new("Переименовать"),
+                    )
+                    .clicked()
+                {
+                    actions.clip_edit = Some(ClipEdit::Rename {
+                        clip,
+                        name: name.to_owned(),
+                    });
+                }
+                if ui.button("Дублировать").clicked() {
+                    let name = if name.is_empty() || name == active.name {
+                        let stem: String = active.name.trim().chars().take(112).collect();
+                        format!("{stem} (копия)").trim().to_owned()
+                    } else {
+                        name.to_owned()
+                    };
+                    actions.clip_edit = Some(ClipEdit::Duplicate { clip, name });
+                }
+                if ui.button("Удалить клип").clicked() {
+                    actions.clip_edit = Some(ClipEdit::Delete { clip });
+                }
             });
-        ui.add(egui::TextEdit::singleline(&mut draft.name).char_limit(120).hint_text("Название клипа"));
-        let name = draft.name.trim();
-        ui.horizontal_wrapped(|ui| {
-            if ui
-                .add_enabled(!name.is_empty() && name != active.name, egui::Button::new("Переименовать"))
-                .clicked()
-            {
-                actions.clip_edit = Some(ClipEdit::Rename { clip, name: name.to_owned() });
-            }
-            if ui.button("Дублировать").clicked() {
-                let name = if name.is_empty() || name == active.name {
-                    let stem: String = active.name.trim().chars().take(112).collect();
-                    format!("{stem} (копия)").trim().to_owned()
-                } else {
-                    name.to_owned()
-                };
-                actions.clip_edit = Some(ClipEdit::Duplicate { clip, name });
-            }
-            if ui.button("Удалить клип").clicked() {
-                actions.clip_edit = Some(ClipEdit::Delete { clip });
-            }
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Длительность");
+                ui.add(
+                    egui::DragValue::new(&mut draft.duration)
+                        .range(0. ..=f32::MAX)
+                        .speed(0.01)
+                        .max_decimals(6)
+                        .suffix(" с"),
+                );
+                let can_retime = active.duration > 0.
+                    && draft.duration > 0.
+                    && draft.duration != active.duration;
+                if ui
+                    .add_enabled(can_retime, egui::Button::new("Применить"))
+                    .clicked()
+                {
+                    actions.clip_edit = Some(ClipEdit::Retime {
+                        clip,
+                        duration: draft.duration,
+                    });
+                }
+            });
+            ui.ctx().data_mut(|data| data.insert_temp(id, draft));
         });
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Длительность");
-            ui.add(egui::DragValue::new(&mut draft.duration)
-                .range(0. ..=f32::MAX).speed(0.01).max_decimals(6).suffix(" с"));
-            let can_retime = active.duration > 0.
-                && draft.duration > 0.
-                && draft.duration != active.duration;
-            if ui.add_enabled(can_retime, egui::Button::new("Применить")).clicked() {
-                actions.clip_edit = Some(ClipEdit::Retime { clip, duration: draft.duration });
-            }
-        });
-        ui.ctx().data_mut(|data| data.insert_temp(id, draft));
-    });
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -292,9 +333,13 @@ fn key_editor(
     let node_id = egui::Id::new(("animation_node", document.id().0));
     let kind_id = node_id.with("kind");
     let draft_id = node_id.with("draft");
-    let mut node = ui.ctx().data(|data| data.get_temp::<NodeId>(node_id))
+    let mut node = ui
+        .ctx()
+        .data(|data| data.get_temp::<NodeId>(node_id))
         .unwrap_or_else(|| active.tracks()[0].node());
-    let mut kind = ui.ctx().data(|data| data.get_temp::<TrackKind>(kind_id))
+    let mut kind = ui
+        .ctx()
+        .data(|data| data.get_temp::<TrackKind>(kind_id))
         .unwrap_or_else(|| active.tracks()[0].kind());
     let previous_selection = (node, kind);
     let node_label = |index: usize| format!("{} · {}", index, document.nodes()[index].name);
@@ -304,13 +349,20 @@ fn key_editor(
         .show_ui(ui, |ui| {
             let row = ui.text_style_height(&egui::TextStyle::Body) + 6.;
             egui::ScrollArea::vertical().max_height(240.).show_rows(
-                ui, row, document.nodes().len(), |ui, rows| {
+                ui,
+                row,
+                document.nodes().len(),
+                |ui, rows| {
                     for index in rows {
                         let choice = NodeId(index);
-                        if ui.add_enabled(
-                            document.can_animate_node(choice),
-                            egui::Button::selectable(node == choice, node_label(index)).truncate(),
-                        ).clicked() {
+                        if ui
+                            .add_enabled(
+                                document.can_animate_node(choice),
+                                egui::Button::selectable(node == choice, node_label(index))
+                                    .truncate(),
+                            )
+                            .clicked()
+                        {
                             node = choice;
                             ui.close();
                         }
@@ -331,7 +383,9 @@ fn key_editor(
         actions.animation_preview = Some(None);
     }
 
-    let times = active.track(node, kind).map_or(&[][..], |track| track.times());
+    let times = active
+        .track(node, kind)
+        .map_or(&[][..], |track| track.times());
     key_timeline(ui, times, active.duration, controls);
     ui.horizontal(|ui| {
         let previous = times
@@ -354,9 +408,14 @@ fn key_editor(
         {
             controls.time = next.expect("enabled when next exists");
         }
-        ui.add(egui::DragValue::new(&mut controls.time).speed(0.01)
-            .range(0. ..=f32::MAX).max_decimals(6).suffix(" с"))
-            .on_hover_text("Время ключа. Можно ввести время за пределами клипа.");
+        ui.add(
+            egui::DragValue::new(&mut controls.time)
+                .speed(0.01)
+                .range(0. ..=f32::MAX)
+                .max_decimals(6)
+                .suffix(" с"),
+        )
+        .on_hover_text("Время ключа. Можно ввести время за пределами клипа.");
         ui.weak(format!("{} ключ.", times.len()));
     });
 
@@ -376,14 +435,24 @@ fn key_editor(
     } else {
         [value[0], value[1], value[2]]
     };
-    let mut draft = ui.ctx().data(|data| data.get_temp::<Draft>(draft_id))
+    let mut draft = ui
+        .ctx()
+        .data(|data| data.get_temp::<Draft>(draft_id))
         .filter(|draft| draft.position == position)
-        .unwrap_or(Draft { position, axes: initial });
+        .unwrap_or(Draft {
+            position,
+            axes: initial,
+        });
     let mut changed = false;
     ui.horizontal(|ui| {
         for (axis, label) in draft.axes.iter_mut().zip(["X ", "Y ", "Z "]) {
             changed |= ui
-                .add(egui::DragValue::new(axis).prefix(label).speed(0.02).max_decimals(4))
+                .add(
+                    egui::DragValue::new(axis)
+                        .prefix(label)
+                        .speed(0.02)
+                        .max_decimals(4),
+                )
                 .changed();
         }
     });
@@ -401,8 +470,16 @@ fn key_editor(
         actions.animation_preview = Some((draft.axes != initial).then_some(channel));
     }
     ui.horizontal(|ui| {
-        let exists = times.get(times.partition_point(|&time| time < position.time)) == Some(&position.time);
-        if ui.button(if exists { "Обновить ключ" } else { "Добавить ключ" }).clicked() {
+        let exists =
+            times.get(times.partition_point(|&time| time < position.time)) == Some(&position.time);
+        if ui
+            .button(if exists {
+                "Обновить ключ"
+            } else {
+                "Добавить ключ"
+            })
+            .clicked()
+        {
             actions.animation_key = Some(AnimationKey {
                 clip,
                 time: position.time,
@@ -411,7 +488,10 @@ fn key_editor(
             });
         }
         let can_remove = exists && (times.len() > 1 || active.tracks().len() > 1);
-        if ui.add_enabled(can_remove, egui::Button::new("Удалить")).clicked() {
+        if ui
+            .add_enabled(can_remove, egui::Button::new("Удалить"))
+            .clicked()
+        {
             actions.animation_key = Some(AnimationKey {
                 clip,
                 time: position.time,
@@ -419,7 +499,10 @@ fn key_editor(
                 remove: true,
             });
         }
-        if ui.add_enabled(draft.axes != initial, egui::Button::new("Сбросить")).clicked() {
+        if ui
+            .add_enabled(draft.axes != initial, egui::Button::new("Сбросить"))
+            .clicked()
+        {
             draft.axes = initial;
             actions.animation_preview = Some(None);
         }
@@ -429,7 +512,8 @@ fn key_editor(
 
 fn key_timeline(ui: &mut egui::Ui, times: &[f32], duration: f32, controls: &mut Controls) {
     let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width().max(1.), 20.), egui::Sense::click_and_drag(),
+        egui::vec2(ui.available_width().max(1.), 20.),
+        egui::Sense::click_and_drag(),
     );
     let bounds = rect.shrink2(egui::vec2(6., 1.));
     let range = duration.max(controls.time).max(0.001);
@@ -440,11 +524,20 @@ fn key_timeline(ui: &mut egui::Ui, times: &[f32], duration: f32, controls: &mut 
     {
         let time = ((pointer.x - bounds.left()) / bounds.width().max(1.)).clamp(0., 1.) * range;
         let next = times.partition_point(|&key| key < time);
-        controls.time = [next.checked_sub(1).and_then(|i| times.get(i)), times.get(next)]
-            .into_iter().flatten().copied()
-            .min_by(|a, b| (x(*a) - pointer.x).abs().total_cmp(&(x(*b) - pointer.x).abs()))
-            .filter(|&key| (x(key) - pointer.x).abs() <= 5.)
-            .unwrap_or(time);
+        controls.time = [
+            next.checked_sub(1).and_then(|i| times.get(i)),
+            times.get(next),
+        ]
+        .into_iter()
+        .flatten()
+        .copied()
+        .min_by(|a, b| {
+            (x(*a) - pointer.x)
+                .abs()
+                .total_cmp(&(x(*b) - pointer.x).abs())
+        })
+        .filter(|&key| (x(key) - pointer.x).abs() <= 5.)
+        .unwrap_or(time);
     }
     let paint = ui.painter();
     let y = bounds.center().y;
@@ -453,12 +546,19 @@ fn key_timeline(ui: &mut egui::Ui, times: &[f32], duration: f32, controls: &mut 
     let spacing = 3. / bounds.width().max(1.) * range;
     let mut remaining = times;
     while let Some((&key, rest)) = remaining.split_first() {
-        paint.circle_filled(egui::pos2(x(key), y), 2.5, visuals.widgets.active.fg_stroke.color);
+        paint.circle_filled(
+            egui::pos2(x(key), y),
+            2.5,
+            visuals.widgets.active.fg_stroke.color,
+        );
         remaining = &rest[rest.partition_point(|&time| time - key < spacing)..];
     }
     let playhead = x(controls.time);
     paint.line_segment(
-        [egui::pos2(playhead, bounds.top()), egui::pos2(playhead, bounds.bottom())],
+        [
+            egui::pos2(playhead, bounds.top()),
+            egui::pos2(playhead, bounds.bottom()),
+        ],
         egui::Stroke::new(2., visuals.selection.stroke.color),
     );
     response.on_hover_text("Ключи выбранного канала. Нажмите на метку, чтобы перейти к ключу.");

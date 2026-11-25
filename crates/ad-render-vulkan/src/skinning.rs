@@ -42,7 +42,11 @@ impl Renderer {
             }
             _ => {
                 let upload = |values| {
-                    Buffer::upload(self.gpu.clone(), values, vk::BufferUsageFlags::VERTEX_BUFFER)
+                    Buffer::upload(
+                        self.gpu.clone(),
+                        values,
+                        vk::BufferUsageFlags::VERTEX_BUFFER,
+                    )
                 };
                 PoseBuffers {
                     vertices: upload(positions)?,
@@ -64,7 +68,5 @@ impl Renderer {
 
 fn bytes<const N: usize>(values: &[[f32; N]]) -> &[u8] {
     // SAFETY: These arrays consist of initialized f32 values without padding.
-    unsafe {
-        std::slice::from_raw_parts(values.as_ptr().cast(), std::mem::size_of_val(values))
-    }
+    unsafe { std::slice::from_raw_parts(values.as_ptr().cast(), std::mem::size_of_val(values)) }
 }

@@ -103,9 +103,8 @@ impl PreparedRemoval {
         Ok(match &self.replacement {
             Some(Alternate::Indices(v)) => v,
             Some(Alternate::Primitive(p, ..)) => &p.indices,
-            Some(Alternate::Placement(_) | Alternate::Nodes(_) | Alternate::Animation(..)) | None => {
-                &document.parts.meshes[self.preview.mesh.0].indices
-            }
+            Some(Alternate::Placement(_) | Alternate::Nodes(_) | Alternate::Animation(..))
+            | None => &document.parts.meshes[self.preview.mesh.0].indices,
         })
     }
     /// Immutable primitive this command would publish, for independent checks
@@ -453,9 +452,11 @@ impl AssetDocument {
             Alternate::Indices(_) => mesh.indices.capacity().checked_mul(4).ok_or_else(budget)?,
             Alternate::Primitive(..) => self.primitive_capacity_bytes(change.mesh)?,
             Alternate::Placement(_) => std::mem::size_of::<crate::Placement>(),
-            Alternate::Animation(clips) => {
-                crate::skin_animation::animation_history_bytes(&self.animation_clips, clips, cancel)?
-            }
+            Alternate::Animation(clips) => crate::skin_animation::animation_history_bytes(
+                &self.animation_clips,
+                clips,
+                cancel,
+            )?,
             Alternate::Nodes(_) => {
                 std::mem::size_of::<crate::NodeEdits>()
                     + self.node_edits.locals.len() * 96

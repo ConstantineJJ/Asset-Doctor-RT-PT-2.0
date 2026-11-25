@@ -82,7 +82,10 @@ impl Playback {
     }
 
     pub fn apply(&mut self, controls: Controls) {
-        if self.controls.clip != controls.clip || self.controls.time != controls.time || controls.playing {
+        if self.controls.clip != controls.clip
+            || self.controls.time != controls.time
+            || controls.playing
+        {
             self.preview(None);
         }
         self.controls = controls;
@@ -107,7 +110,11 @@ impl Playback {
     }
 
     pub fn edit_published(&mut self, frame: Option<AnimationFrame>) {
-        self.shown = frame.as_ref().map(|frame| Sample { clip: frame.clip, time: frame.time, preview: None });
+        self.shown = frame.as_ref().map(|frame| Sample {
+            clip: frame.clip,
+            time: frame.time,
+            preview: None,
+        });
         self.controls.clip = self.shown.map(|sample| sample.clip);
         self.controls.time = self.shown.map_or(0., |sample| sample.time);
         self.rest = frame.map(|frame| frame.rest);

@@ -1,7 +1,7 @@
 #[path = "rig_export.rs"]
 mod rig_export;
-pub use rig_export::verify_animation_export;
 pub(crate) use rig_export::compare as compare_rig_readback;
+pub use rig_export::verify_animation_export;
 
 use crate::{metadata, roundtrip, source};
 use ad_document::{

@@ -9,7 +9,10 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 fn invalid() -> AssetError {
-    AssetError::new(ErrorCode::InvalidFormat, "Cannot bind the edited animation to the source GLB")
+    AssetError::new(
+        ErrorCode::InvalidFormat,
+        "Cannot bind the edited animation to the source GLB",
+    )
 }
 
 pub fn verify_animation_export(
@@ -28,7 +31,10 @@ pub(super) fn verify(
     cancel: &Cancellation,
 ) -> AssetResult<Arc<[u8]>> {
     let document = view.document();
-    let max = limits.output_bytes.min(import.source_bytes).min(u32::MAX as usize);
+    let max = limits
+        .output_bytes
+        .min(import.source_bytes)
+        .min(u32::MAX as usize);
     let source_bytes = document.source();
     if source_bytes.len() > max {
         return Err(budget());
@@ -73,7 +79,10 @@ fn add_accessor<'a>(
     let (count, width, kind) = data.shape();
     let len = count.checked_mul(width * 4).ok_or_else(budget)?;
     let offset = *bin_len;
-    *bin_len = offset.checked_add(len).filter(|n| *n <= max).ok_or_else(budget)?;
+    *bin_len = offset
+        .checked_add(len)
+        .filter(|n| *n <= max)
+        .ok_or_else(budget)?;
     let views = array(meta, "bufferViews")?;
     let view_index = views.len();
     views.push(json!({ "buffer": 0, "byteOffset": offset, "byteLength": len }));
@@ -144,7 +153,9 @@ fn encode(
         animation["name"] = json!(clip.name);
         let original_channels = std::mem::take(array(&mut animation, "channels")?);
         let mut channels = Vec::new();
-        channels.try_reserve_exact(clip.tracks().len()).map_err(|_| budget())?;
+        channels
+            .try_reserve_exact(clip.tracks().len())
+            .map_err(|_| budget())?;
         let samplers = array(&mut animation, "samplers")?;
         for track in clip.tracks() {
             cancel.check()?;
@@ -195,8 +206,15 @@ fn encode(
     if !animations.is_empty() {
         meta["animations"] = Value::Array(animations);
     }
-    array(&mut meta, "buffers")?.first_mut().ok_or_else(invalid)?["byteLength"] = json!(bin_len);
-    let mut output = Limited { bytes: Vec::new(), max: max_json, cancel, failure: None };
+    array(&mut meta, "buffers")?
+        .first_mut()
+        .ok_or_else(invalid)?["byteLength"] = json!(bin_len);
+    let mut output = Limited {
+        bytes: Vec::new(),
+        max: max_json,
+        cancel,
+        failure: None,
+    };
     serde_json::to_writer(&mut output, &meta).map_err(|_| {
         AssetError::new(
             output.failure.unwrap_or(ErrorCode::InvalidFormat),
@@ -208,8 +226,11 @@ fn encode(
         return Err(roundtrip::mismatch());
     }
     let json_len = padded(output.bytes.len());
-    let total = 28usize.checked_add(json_len).and_then(|n| n.checked_add(bin_len))
-        .filter(|&n| n <= max && json_len <= max_json).ok_or_else(budget)?;
+    let total = 28usize
+        .checked_add(json_len)
+        .and_then(|n| n.checked_add(bin_len))
+        .filter(|&n| n <= max && json_len <= max_json)
+        .ok_or_else(budget)?;
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(total).map_err(|_| budget())?;
     for word in [0x46546c67u32, 2, total as u32, json_len as u32, 0x4e4f534a] {
@@ -272,7 +293,10 @@ pub(crate) fn compare(
         }
         for (a, b) in a.tracks().iter().zip(b.tracks()) {
             cancel.check()?;
-            if a.kind() != b.kind() || a.node() != b.node() || a.interpolation() != b.interpolation() {
+            if a.kind() != b.kind()
+                || a.node() != b.node()
+                || a.interpolation() != b.interpolation()
+            {
                 return Err(roundtrip::mismatch());
             }
             roundtrip::equal(a.times(), b.times(), cancel)?;
@@ -290,7 +314,12 @@ fn compare_values(a: &Track, b: &Track, cancel: &Cancellation) -> AssetResult<()
         return Err(roundtrip::mismatch());
     }
     let cubic = a.interpolation() == Interpolation::CubicSpline;
-    for (chunk, (a, b)) in a.values().chunks(4096).zip(b.values().chunks(4096)).enumerate() {
+    for (chunk, (a, b)) in a
+        .values()
+        .chunks(4096)
+        .zip(b.values().chunks(4096))
+        .enumerate()
+    {
         cancel.check()?;
         for (offset, (a, b)) in a.iter().zip(b).enumerate() {
             let key = !cubic || (chunk * 4096 + offset) % 3 == 1;

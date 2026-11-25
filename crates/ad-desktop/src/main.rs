@@ -635,10 +635,16 @@ impl App {
             EditKind::Place(_) => "Перемещение модели…",
             EditKind::Node(ad_document::NodeOp::Local(..)) => "Перемещение объекта…",
             EditKind::Node(ad_document::NodeOp::Detach(_)) => "Удаление объекта…",
-            EditKind::Animation(edits::AnimationEdit::Key(_), _) => "Проверка ключа и экспорта GLB…",
+            EditKind::Animation(edits::AnimationEdit::Key(_), _) => {
+                "Проверка ключа и экспорта GLB…"
+            }
             EditKind::Animation(edits::AnimationEdit::Clip, _) => "Проверка клипа и экспорта GLB…",
-            EditKind::Undo | EditKind::Animation(edits::AnimationEdit::Undo, _) => "Подготовка отмены правки…",
-            EditKind::Redo | EditKind::Animation(edits::AnimationEdit::Redo, _) => "Подготовка повтора правки…",
+            EditKind::Undo | EditKind::Animation(edits::AnimationEdit::Undo, _) => {
+                "Подготовка отмены правки…"
+            }
+            EditKind::Redo | EditKind::Animation(edits::AnimationEdit::Redo, _) => {
+                "Подготовка повтора правки…"
+            }
         }
         .into();
         eprintln!("edit_started ticket={ticket} kind={kind:?}");
@@ -2407,9 +2413,9 @@ impl App {
                 guides: Some(std::sync::Arc::new(guides)),
             })
         });
-        let (mut frame, mut actions) = self
-            .ui
-            .frame(&window, self.current.as_ref(), self.importing);
+        let (mut frame, mut actions) =
+            self.ui
+                .frame(&window, self.current.as_ref(), self.importing);
         if actions.cancel {
             self.cancel_import();
         }
@@ -2640,7 +2646,10 @@ impl App {
             );
         }
         if let Some(key) = actions.animation_key {
-            self.request_edit(EditKind::Animation(edits::AnimationEdit::Key(key), Some((key.clip, key.time))));
+            self.request_edit(EditKind::Animation(
+                edits::AnimationEdit::Key(key),
+                Some((key.clip, key.time)),
+            ));
         }
         if let Some(path) = actions.skybox_open.clone() {
             self.skybox_job = Some(skybox::spawn(path, self.skybox_width()));
@@ -2732,7 +2741,11 @@ impl App {
             _ => asset.session.can_redo(),
         });
         if allowed {
-            let kind = if self.current.as_ref().is_some_and(|asset| asset.document().is_read_only()) {
+            let kind = if self
+                .current
+                .as_ref()
+                .is_some_and(|asset| asset.document().is_read_only())
+            {
                 let action = match kind {
                     EditKind::Undo => edits::AnimationEdit::Undo,
                     _ => edits::AnimationEdit::Redo,
@@ -2797,7 +2810,8 @@ impl App {
             return Ok(());
         }
         self.poll_import()?;
-        if !self.suspended && !self.editing
+        if !self.suspended
+            && !self.editing
             && let (Some(asset), Some(renderer)) = (&mut self.current, &mut self.renderer)
         {
             match self.playback.tick(asset, renderer) {

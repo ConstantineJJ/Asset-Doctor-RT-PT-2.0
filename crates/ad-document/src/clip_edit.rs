@@ -19,7 +19,12 @@ impl AssetDocument {
     pub(super) fn copy_clip_list(&self, extra: usize) -> AssetResult<Vec<Arc<AnimationClip>>> {
         let mut clips = Vec::new();
         clips
-            .try_reserve_exact(self.animation_clips.len().checked_add(extra).ok_or_else(budget)?)
+            .try_reserve_exact(
+                self.animation_clips
+                    .len()
+                    .checked_add(extra)
+                    .ok_or_else(budget)?,
+            )
             .map_err(|_| budget())?;
         clips.extend(self.animation_clips.iter().cloned());
         Ok(clips)
@@ -72,7 +77,9 @@ impl AssetDocument {
         let add = matches!(edit, ClipEdit::Create { .. } | ClipEdit::Duplicate { .. });
         let mut clips = self.copy_clip_list(usize::from(add))?;
         let current = |index: usize| {
-            self.animation_clips.get(index).ok_or_else(|| invalid("Неизвестный клип"))
+            self.animation_clips
+                .get(index)
+                .ok_or_else(|| invalid("Неизвестный клип"))
         };
         let next_id = || {
             self.revision()
@@ -122,7 +129,9 @@ impl AssetDocument {
             ClipEdit::Retime { clip, duration } => {
                 let source = current(*clip)?;
                 if !duration.is_finite() || *duration <= 0. || source.duration <= 0. {
-                    return Err(invalid("Для растяжения клипу нужна положительная длительность."));
+                    return Err(invalid(
+                        "Для растяжения клипу нужна положительная длительность.",
+                    ));
                 }
                 if source.duration == *duration {
                     return self.animation_plan(expected, None, cancel);
@@ -145,7 +154,8 @@ impl AssetDocument {
 
 fn clip_name(name: &str) -> AssetResult<&str> {
     let name = name.trim();
-    if name.is_empty() || name.chars().take(121).count() > 120 || name.chars().any(char::is_control) {
+    if name.is_empty() || name.chars().take(121).count() > 120 || name.chars().any(char::is_control)
+    {
         return Err(invalid(
             "Название клипа должно содержать от 1 до 120 символов без управляющих знаков.",
         ));
@@ -175,7 +185,9 @@ impl Track {
         cancel: &Cancellation,
     ) -> AssetResult<Self> {
         let mut times = Vec::new();
-        times.try_reserve_exact(self.times.len()).map_err(|_| budget())?;
+        times
+            .try_reserve_exact(self.times.len())
+            .map_err(|_| budget())?;
         for chunk in self.times.chunks(4096) {
             cancel.check()?;
             for &time in chunk {
@@ -185,13 +197,17 @@ impl Track {
                     (f64::from(time) * forward) as f32
                 };
                 if times.last().is_some_and(|&previous| previous >= retimed) {
-                    return Err(invalid("Новая длительность сближает ключи до одного времени."));
+                    return Err(invalid(
+                        "Новая длительность сближает ключи до одного времени.",
+                    ));
                 }
                 times.push(retimed);
             }
         }
         let mut values = Vec::new();
-        values.try_reserve_exact(self.values.len()).map_err(|_| budget())?;
+        values
+            .try_reserve_exact(self.values.len())
+            .map_err(|_| budget())?;
         if self.interpolation == Interpolation::CubicSpline {
             for (index, value) in self.values.iter().enumerate() {
                 if index % 4096 == 0 {
@@ -202,10 +218,14 @@ impl Track {
                     continue;
                 }
                 let scaled = value.map(|tangent| (f64::from(tangent) / forward) as f32);
-                if scaled.iter().zip(value).any(|(&new, &old)| {
-                    !new.is_finite() || (old != 0. && new == 0.)
-                }) {
-                    return Err(invalid("Новая длительность выходит за диапазон касательных."));
+                if scaled
+                    .iter()
+                    .zip(value)
+                    .any(|(&new, &old)| !new.is_finite() || (old != 0. && new == 0.))
+                {
+                    return Err(invalid(
+                        "Новая длительность выходит за диапазон касательных.",
+                    ));
                 }
                 values.push(scaled);
             }
@@ -216,7 +236,13 @@ impl Track {
             }
         }
         let mut retimed = Self::new(
-            self.node, self.base, self.kind, self.interpolation, times, values, cancel,
+            self.node,
+            self.base,
+            self.kind,
+            self.interpolation,
+            times,
+            values,
+            cancel,
         )?;
         retimed.edited = true;
         retimed.source_channel = self.source_channel;
@@ -244,21 +270,31 @@ pub(crate) fn animation_history_bytes(
                 alternate.next();
             }
             (Some(a), Some(b)) if a.id == b.id => {
-                current_bytes = current_bytes.checked_add(a.retained_bytes()).ok_or_else(budget)?;
-                alternate_bytes = alternate_bytes.checked_add(b.retained_bytes()).ok_or_else(budget)?;
+                current_bytes = current_bytes
+                    .checked_add(a.retained_bytes())
+                    .ok_or_else(budget)?;
+                alternate_bytes = alternate_bytes
+                    .checked_add(b.retained_bytes())
+                    .ok_or_else(budget)?;
                 current.next();
                 alternate.next();
             }
             (Some(a), Some(b)) if a.id > b.id => {
-                alternate_bytes = alternate_bytes.checked_add(b.retained_bytes()).ok_or_else(budget)?;
+                alternate_bytes = alternate_bytes
+                    .checked_add(b.retained_bytes())
+                    .ok_or_else(budget)?;
                 alternate.next();
             }
             (Some(a), _) => {
-                current_bytes = current_bytes.checked_add(a.retained_bytes()).ok_or_else(budget)?;
+                current_bytes = current_bytes
+                    .checked_add(a.retained_bytes())
+                    .ok_or_else(budget)?;
                 current.next();
             }
             (None, Some(b)) => {
-                alternate_bytes = alternate_bytes.checked_add(b.retained_bytes()).ok_or_else(budget)?;
+                alternate_bytes = alternate_bytes
+                    .checked_add(b.retained_bytes())
+                    .ok_or_else(budget)?;
                 alternate.next();
             }
             (None, None) => return Ok(current_bytes.max(alternate_bytes)),

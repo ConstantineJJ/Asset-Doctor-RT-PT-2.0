@@ -6,7 +6,9 @@ mod roundtrip;
 mod uv;
 pub use color::decode_image_file;
 mod hdr;
-pub use export::{ExportLimits, VerifiedGlb, preflight_changed_export, prepare_glb, verify_animation_export};
+pub use export::{
+    ExportLimits, VerifiedGlb, preflight_changed_export, prepare_glb, verify_animation_export,
+};
 pub use hdr::{HdrImage, decode_hdr_file, is_hdr};
 
 /// Independent comparison of a freshly reimported document with the document
@@ -400,10 +402,20 @@ pub fn import_glb(
     let bases = if clips.is_empty() && skins.is_empty() {
         Vec::new()
     } else {
-        doc.nodes().map(|node| match node.transform() {
-            gltf::scene::Transform::Decomposed { translation, rotation, scale } => Some(ad_document::Transform { translation, rotation, scale }),
-            gltf::scene::Transform::Matrix { .. } => None,
-        }).collect()
+        doc.nodes()
+            .map(|node| match node.transform() {
+                gltf::scene::Transform::Decomposed {
+                    translation,
+                    rotation,
+                    scale,
+                } => Some(ad_document::Transform {
+                    translation,
+                    rotation,
+                    scale,
+                }),
+                gltf::scene::Transform::Matrix { .. } => None,
+            })
+            .collect()
     };
     let document = AssetDocument::new(
         DocumentParts {
