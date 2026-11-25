@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "ad-analysis"
-version = "2.7.0"
+version = "2.8.0"
 dependencies = [
  "ad-document",
  "robust",
@@ -21,7 +21,7 @@ dependencies = [
 
 [[package]]
 name = "ad-commands"
-version = "2.7.0"
+version = "2.8.0"
 dependencies = [
  "ad-analysis",
  "ad-document",
@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "ad-desktop"
-version = "2.7.0"
+version = "2.8.0"
 dependencies = [
  "ad-analysis",
  "ad-commands",
@@ -53,14 +53,14 @@ dependencies = [
 
 [[package]]
 name = "ad-document"
-version = "2.7.0"
+version = "2.8.0"
 dependencies = [
  "glam",
 ]
 
 [[package]]
 name = "ad-formats"
-version = "2.7.0"
+version = "2.8.0"
 dependencies = [
  "ad-document",
  "glam",
@@ -72,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "ad-heal"
-version = "2.7.0"
+version = "2.8.0"
 dependencies = [
  "ad-analysis",
  "ad-commands",
@@ -83,7 +83,7 @@ dependencies = [
 
 [[package]]
 name = "ad-render-vulkan"
-version = "2.7.0"
+version = "2.8.0"
 dependencies = [
  "ad-document",
  "ash",
@@ -96,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "ad-storage"
-version = "2.7.0"
+version = "2.8.0"
 dependencies = [
  "ad-document",
  "ad-formats",
@@ -105,7 +105,7 @@ dependencies = [
 
 [[package]]
 name = "ad-update"
-version = "2.7.0"
+version = "2.8.0"
 dependencies = [
  "crc32fast",
  "miniz_oxide 0.9.1",
