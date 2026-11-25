@@ -62,6 +62,7 @@ impl ViewerUi {
             "axes": self.show_axes,
             "bounds": self.show_bounds,
             "skeleton": self.skeleton_on,
+            "window": self.window_mode.key(),
             "lamp": {
                 "enabled": l.enabled,
                 "direction": l.direction,
@@ -174,6 +175,13 @@ impl ViewerUi {
         flag(value, "axes", &mut self.show_axes, &mut bad);
         flag(value, "bounds", &mut self.show_bounds, &mut bad);
         flag(value, "skeleton", &mut self.skeleton_on, &mut bad);
+        match value.get("window") {
+            None => {}
+            Some(Value::String(key)) if super::WindowMode::from_key(key).is_some() => {
+                self.window_mode = super::WindowMode::from_key(key).unwrap_or_default();
+            }
+            Some(_) => bad.push("window".into()),
+        }
         let mut lighting = self.lighting;
         number(
             value,

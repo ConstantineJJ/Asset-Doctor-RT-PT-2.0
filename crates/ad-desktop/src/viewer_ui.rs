@@ -19,6 +19,32 @@ pub(crate) use panels::MARK_COLORS;
 #[path = "view_settings.rs"]
 pub mod view_settings;
 
+/// How the program window is shown («Настройки → Окно», F11).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WindowMode {
+    /// A normal window with its frame.
+    #[default]
+    Normal,
+    /// The window fills the screen and keeps its frame and title.
+    Maximized,
+    /// Borderless full screen (F11; Esc returns to the window).
+    Fullscreen,
+}
+impl WindowMode {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Maximized => "maximized",
+            Self::Fullscreen => "fullscreen",
+        }
+    }
+    pub fn from_key(key: &str) -> Option<Self> {
+        [Self::Normal, Self::Maximized, Self::Fullscreen]
+            .into_iter()
+            .find(|m| m.key() == key)
+    }
+}
+
 /// Drop-down menus of the top bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TopMenu {
@@ -88,6 +114,8 @@ pub struct Actions {
     /// ADR-0049: check for updates; download and install the shown one;
     /// stop a running check or download.
     pub update_check: bool,
+    /// «Настройки → Выход»: close the program (unsaved edits are asked about).
+    pub exit: bool,
     pub update_install: bool,
     pub update_cancel: bool,
     /// ADR-0040 lamp gizmo dragged by (dx, dy) logical points this frame.
@@ -328,6 +356,10 @@ pub struct ViewerUi {
     pub shadow_strength: f32,
     pub show_bounds: bool,
     pub helper_overlay: Option<crate::helpers::Overlay>,
+    /// Window mode chosen in «Настройки → Окно» (applied by the app).
+    pub window_mode: WindowMode,
+    /// Selection box in viewport coordinates (corners, remove mode).
+    pub marquee: Option<([f32; 2], [f32; 2], bool)>,
     /// P7 skeleton overlay (bones and joints of the skins) and its switch.
     pub skeleton_on: bool,
     pub skeleton: Option<skeleton_ui::SkeletonOverlay>,
@@ -360,6 +392,8 @@ pub struct ViewerUi {
     pub history: HistoryUi,
     pub error: Option<String>,
     pub edit: EditUi,
+    #[cfg(test)]
+    exit_rect: egui::Rect,
     #[cfg(test)]
     open_rect: egui::Rect,
     #[cfg(test)]
@@ -482,6 +516,8 @@ impl Default for ViewerUi {
             show_bounds: false,
             skeleton_on: true,
             skeleton: None,
+            marquee: None,
+            window_mode: WindowMode::Normal,
             helper_overlay: None,
             placement: ad_document::Placement::IDENTITY,
             placement_draft: None,
@@ -506,6 +542,8 @@ impl Default for ViewerUi {
             history: HistoryUi::default(),
             error: None,
             edit: EditUi::default(),
+            #[cfg(test)]
+            exit_rect: egui::Rect::NOTHING,
             #[cfg(test)]
             open_rect: egui::Rect::NOTHING,
             #[cfg(test)]
@@ -1269,6 +1307,17 @@ impl ViewerUi {
             ]
         })
     }
+    /// Like `viewport_uv`, also outside the viewport (selection box ends).
+    pub fn viewport_uv_unclamped(&self, x: f64, y: f64) -> Option<[f32; 2]> {
+        let scale = self.context.pixels_per_point() as f64;
+        let (w, h) = (self.scene.width(), self.scene.height());
+        (w > 0. && h > 0.).then(|| {
+            [
+                ((x / scale) as f32 - self.scene.min.x) / w,
+                ((y / scale) as f32 - self.scene.min.y) / h,
+            ]
+        })
+    }
     pub fn camera_at(&self, x: f64, y: f64) -> bool {
         let scale = self.context.pixels_per_point() as f64;
         self.scene
@@ -1333,11 +1382,24 @@ impl ViewerUi {
     }
     fn layout(
         &mut self,
-        raw: egui::RawInput,
+        mut raw: egui::RawInput,
         asset: Option<&PreparedAsset>,
         loading: bool,
     ) -> (egui::FullOutput, egui::Rect, Actions) {
         let context = self.context.clone();
+        // Tab is the outline switch: egui must not use it to move keyboard
+        // focus over the top menus, except inside a text field.
+        if !context.egui_wants_keyboard_input() {
+            raw.events.retain(|event| {
+                !matches!(
+                    event,
+                    egui::Event::Key {
+                        key: egui::Key::Tab,
+                        ..
+                    }
+                )
+            });
+        }
         let mut actions = Actions::default();
         let output=context.run_ui(raw,|root| {
             let width=root.max_rect().width();
@@ -1379,6 +1441,14 @@ impl ViewerUi {
                 self.scene=root.available_rect_before_wrap();
                 if asset.is_some() && let Some(overlay)=self.helper_overlay.as_ref() {
                     Self::helpers_ui(root,self.scene,overlay);
+                }
+                if let Some((a,b,remove))=self.marquee {
+                    let at=|p:[f32;2]| egui::pos2(self.scene.min.x+p[0]*self.scene.width(),self.scene.min.y+p[1]*self.scene.height());
+                    let rect=egui::Rect::from_two_pos(at(a),at(b));
+                    let color=if remove {Color32::from_rgb(255,120,90)} else {Color32::from_rgb(120,190,255)};
+                    let painter=root.painter().with_clip_rect(self.scene);
+                    painter.rect_filled(rect,0.,color.gamma_multiply(0.12));
+                    painter.rect_stroke(rect,0.,egui::Stroke::new(1.,color),egui::StrokeKind::Inside);
                 }
                 if asset.is_some() && self.skeleton_on && let Some(overlay)=self.skeleton.take() {
                     self.skeleton_ui(&context,root,&overlay,&mut actions);
@@ -1955,6 +2025,40 @@ FORMAT=32-bit_rle_rgbe
         ui.menu = Some(TopMenu::Settings);
         warm(&mut ui, None, size);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+    #[test]
+    fn tab_does_not_walk_the_menus_and_settings_offer_window_modes_and_exit() {
+        let mut ui = ViewerUi::default();
+        let size = (1600., 900.);
+        warm(&mut ui, None, size);
+        for _ in 0..3 {
+            let mut input = raw(size.0, size.1);
+            input.events = vec![egui::Event::Key {
+                key: egui::Key::Tab,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::default(),
+            }];
+            let (out, _, _) = ui.layout(input, None, false);
+            out.drop_without_applying_deltas();
+        }
+        assert!(
+            ui.context.memory(|m| m.focused()).is_none(),
+            "Tab must not focus the top menus"
+        );
+        ui.menu = Some(TopMenu::Settings);
+        warm(&mut ui, None, size);
+        assert!(ui.exit_rect.is_positive(), "Settings has «Выход»");
+        let exit = ui.exit_rect;
+        let actions = click(&mut ui, None, exit, size);
+        assert!(actions.exit);
+        assert_eq!(ui.window_mode, WindowMode::Normal);
+        assert_eq!(
+            WindowMode::from_key("fullscreen"),
+            Some(WindowMode::Fullscreen)
+        );
+        assert_eq!(WindowMode::from_key("big"), None);
     }
     #[test]
     fn view_buttons_choose_camera_views_and_the_bug_opens_the_log() {

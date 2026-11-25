@@ -436,8 +436,31 @@ impl ViewerUi {
             self.menu = None;
         }
         ui.separator();
+        Self::heading(ui, "Окно");
+        ui.horizontal(|ui| {
+            use super::WindowMode as W;
+            ui.selectable_value(&mut self.window_mode, W::Normal, "Окно")
+                .on_hover_text("Обычное окно с рамкой");
+            ui.selectable_value(&mut self.window_mode, W::Maximized, "Во весь экран")
+                .on_hover_text("Окно на весь экран, с рамкой и заголовком");
+            ui.selectable_value(&mut self.window_mode, W::Fullscreen, "Полный экран")
+                .on_hover_text("Без рамки · F11 — переключить, Esc — вернуть окно");
+        });
+        ui.separator();
         Self::heading(ui, "Обновления");
         self.update_settings(ui, actions);
+        ui.separator();
+        let exit = ui
+            .button("Выход")
+            .on_hover_text("Закрыть программу; о несохранённых правках будет вопрос");
+        #[cfg(test)]
+        {
+            self.exit_rect = exit.rect;
+        }
+        if exit.clicked() {
+            actions.exit = true;
+            self.menu = None;
+        }
     }
 
     fn view_menu(&mut self, ui: &mut egui::Ui) {
@@ -1032,6 +1055,12 @@ impl ViewerUi {
             ));
             ui.label(format!("Масштаб: x{:.4}", f.scale));
         }
+        let count = self.tree.all_selected().len();
+        if count > 1 {
+            ui.separator();
+            ui.strong(format!("Выбрано объектов: {count}"));
+            ui.weak("Shift + клик — добавить, Ctrl + клик — убрать, рамка — выбрать область. Ниже — последний выбранный.");
+        }
         if let Some(id) = self.tree.selected
             && let Some(node) = asset.document().nodes().get(id.0)
         {
@@ -1440,10 +1469,18 @@ impl ViewerUi {
                             let text = if hidden { RichText::new(&name).weak() } else { RichText::new(&name) };
                             let response = ui.add_sized(
                                 [ui.available_width(), 22.],
-                                egui::Button::selectable(self.tree.selected == Some(id), text).truncate(),
+                                egui::Button::selectable(self.tree.is_selected(id), text).truncate(),
                             );
                             if response.on_hover_text(&name).clicked() {
-                                self.tree.selected = Some(id);
+                                // Shift adds, Ctrl removes, a plain click selects only this node.
+                                let mods = ui.input(|i| i.modifiers);
+                                if mods.ctrl {
+                                    self.tree.select_remove(id);
+                                } else if mods.shift {
+                                    self.tree.select_add(id);
+                                } else {
+                                    self.tree.select_only(Some(id));
+                                }
                             }
                         });
                     }

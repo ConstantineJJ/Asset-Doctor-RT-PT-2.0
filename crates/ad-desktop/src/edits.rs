@@ -14,7 +14,7 @@ use ad_document::{
 use ad_heal::{DuplicatePreview, PlanLimits, RepairKind, VerificationLimits};
 use std::sync::Arc;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum EditKind {
     /// G002 for one explicit source primitive and all its references.
     RemoveDuplicates(MeshId),
@@ -132,7 +132,7 @@ pub struct EditCandidate {
 }
 impl EditCandidate {
     pub fn kind(&self) -> EditKind {
-        self.kind
+        self.kind.clone()
     }
     pub fn mesh(&self) -> MeshId {
         self.mesh
@@ -216,7 +216,7 @@ fn prepare_edit_with_clip(
         return Err(stale());
     }
     let (change, preview, removal);
-    match kind {
+    match kind.clone() {
         EditKind::RemoveDuplicates(mesh)
         | EditKind::RemoveDegenerate(mesh)
         | EditKind::RemoveUnused(mesh)
@@ -350,7 +350,7 @@ fn prepare_edit_with_clip(
         )?;
     }
     let rest = Arc::new(view.snapshot(ImportLimits::default(), cancel)?);
-    let position = animation_position(kind, clip_edit, document, &view);
+    let position = animation_position(kind.clone(), clip_edit, document, &view);
     let (snapshot, animation_frame) = if let Some((clip, time)) = position {
         let pose = view.animated_snapshot(clip, time, None, ImportLimits::default(), cancel)?;
         (Arc::new(pose), Some(AnimationFrame { clip, time, rest }))
@@ -508,7 +508,7 @@ pub fn new_edits() -> Edits {
             prepare_edit_with_clip(
                 &input.session,
                 &input.base,
-                input.kind,
+                input.kind.clone(),
                 request.input.clip.as_ref(),
                 &request.cancel,
             )

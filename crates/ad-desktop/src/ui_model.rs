@@ -9,7 +9,11 @@ pub struct SceneRow {
 pub struct SceneTree {
     pub document: Option<DocumentId>,
     pub rows: Vec<SceneRow>,
+    /// The primary selection (Info, object gizmo, last clicked).
     pub selected: Option<NodeId>,
+    /// Every selected node, the primary one included (multi-selection:
+    /// box, Shift adds, Ctrl removes). Use the methods below to change it.
+    pub selection: Vec<NodeId>,
     /// Work-Tree view state (node indices): hidden nodes and colour marks;
     /// `rev` changes with them. Cleared for another document.
     pub hidden: std::collections::BTreeSet<usize>,
@@ -40,12 +44,61 @@ pub fn node_marks(document: &AssetDocument, tree: &SceneTree) -> Vec<(bool, Opti
     marks
 }
 impl SceneTree {
+    /// One node selected (or none).
+    pub fn select_only(&mut self, node: Option<NodeId>) {
+        self.selected = node;
+        self.selection = node.into_iter().collect();
+    }
+    /// Adds a node and makes it the primary one.
+    pub fn select_add(&mut self, node: NodeId) {
+        self.sync();
+        if !self.selection.contains(&node) {
+            self.selection.push(node);
+        }
+        self.selected = Some(node);
+    }
+    /// Removes a node; the primary moves to the last remaining one.
+    pub fn select_remove(&mut self, node: NodeId) {
+        self.sync();
+        self.selection.retain(|n| *n != node);
+        if self.selected == Some(node) {
+            self.selected = self.selection.last().copied();
+        }
+    }
+    /// Replaces the selection; the last node becomes the primary one.
+    pub fn select_many(&mut self, nodes: Vec<NodeId>) {
+        self.selection = nodes;
+        self.selection.dedup();
+        self.selected = self.selection.last().copied();
+    }
+    pub fn is_selected(&self, node: NodeId) -> bool {
+        self.selected == Some(node) || self.selection.contains(&node)
+    }
+    /// Every selected node (primary included), in selection order.
+    pub fn all_selected(&self) -> Vec<NodeId> {
+        let mut all = self.selection.clone();
+        if let Some(primary) = self.selected
+            && !all.contains(&primary)
+        {
+            all.push(primary);
+        }
+        all
+    }
+    /// Keeps `selection` consistent after `selected` was set directly.
+    fn sync(&mut self) {
+        if let Some(primary) = self.selected
+            && !self.selection.contains(&primary)
+        {
+            self.selection = vec![primary];
+        }
+    }
     pub fn replace(&mut self, document: &AssetDocument) {
         if self.document == Some(document.id()) {
             return;
         }
         self.document = Some(document.id());
         self.selected = None;
+        self.selection.clear();
         self.rows.clear();
         self.hidden.clear();
         self.tints.clear();
@@ -108,6 +161,28 @@ mod tests {
         assert_eq!(tree.selected, Some(NodeId(1)));
         tree.replace(&document(2));
         assert_eq!(tree.selected, None);
+    }
+    #[test]
+    fn multi_selection_adds_removes_and_keeps_a_primary() {
+        let mut tree = SceneTree::default();
+        tree.select_only(Some(NodeId(1)));
+        tree.select_add(NodeId(2));
+        tree.select_add(NodeId(3));
+        tree.select_add(NodeId(2));
+        assert_eq!(tree.all_selected(), [NodeId(1), NodeId(2), NodeId(3)]);
+        assert_eq!(tree.selected, Some(NodeId(2)));
+        tree.select_remove(NodeId(2));
+        assert_eq!(tree.all_selected(), [NodeId(1), NodeId(3)]);
+        assert_eq!(tree.selected, Some(NodeId(3)));
+        assert!(tree.is_selected(NodeId(1)) && !tree.is_selected(NodeId(2)));
+        // Setting the primary directly starts a new selection on the next add.
+        tree.selected = Some(NodeId(5));
+        tree.select_add(NodeId(6));
+        assert_eq!(tree.all_selected(), [NodeId(5), NodeId(6)]);
+        tree.select_many(vec![NodeId(7), NodeId(8)]);
+        assert_eq!(tree.selected, Some(NodeId(8)));
+        tree.select_only(None);
+        assert!(tree.all_selected().is_empty());
     }
     #[test]
     fn hidden_and_marks_follow_the_parent_and_reset_for_another_document() {
