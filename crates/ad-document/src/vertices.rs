@@ -278,6 +278,7 @@ impl AssetDocument {
             color_texture: current.color_texture.clone(),
             metallic_roughness_texture: current.metallic_roughness_texture.clone(),
             alpha_cutoff: current.alpha_cutoff,
+            blend: current.blend,
         };
         let retained =
             primitive_bytes(&primitive, Some(&map))?.max(self.primitive_capacity_bytes(mesh)?);
@@ -444,6 +445,7 @@ impl AssetDocument {
             color_texture: current.color_texture.clone(),
             metallic_roughness_texture: current.metallic_roughness_texture.clone(),
             alpha_cutoff: current.alpha_cutoff,
+            blend: current.blend,
         };
         let retained =
             primitive_bytes(&primitive, map.as_ref())?.max(self.primitive_capacity_bytes(mesh)?);

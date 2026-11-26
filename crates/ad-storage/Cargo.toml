@@ -5,8 +5,8 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-ad-document = { path = "../ad-document", version = "=2.8.0" }
-ad-formats = { path = "../ad-formats", version = "=2.8.0" }
+ad-document = { path = "../ad-document", version = "=2.9.0" }
+ad-formats = { path = "../ad-formats", version = "=2.9.0" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.52.0", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }

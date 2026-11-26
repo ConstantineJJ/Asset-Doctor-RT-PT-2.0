@@ -16,6 +16,7 @@ mod helpers;
 mod history;
 mod imports;
 mod input;
+mod joint_gizmo;
 mod lamp;
 mod log;
 mod model_gizmo;
@@ -259,6 +260,7 @@ impl App {
             let panorama_frames = renderer.panorama_frames();
             let wire_frames = renderer.wire_frames();
             let outline_frames = renderer.outline_frames();
+            let blend_frames = renderer.blend_frames();
             let shadow_frames = renderer.shadow_frames();
             let wire_supported = renderer.wireframe_supported();
             let mr_frames = renderer.mr_frames;
@@ -352,6 +354,7 @@ impl App {
                         self.ui.lighting.mode
                     );
                     eprintln!("grid_smoke grid_frames={}", grid_frames);
+                    eprintln!("blend_smoke blend_frames={blend_frames}");
                     eprintln!(
                         "outline_smoke on={} color={:?} outline_frames={outline_frames}",
                         self.ui.outline_on, self.ui.outline_color
@@ -2408,6 +2411,62 @@ impl App {
             joints,
         })
     }
+    /// P7 joint gizmo on the key editor's joint: Rigging tab, skeleton
+    /// shown, a clip chosen and paused, a joint with TRS channels.
+    fn joint_gizmo(&self, width: u32, height: u32) -> Option<joint_gizmo::JointGizmo> {
+        let controls = self.playback.controls;
+        if self.ui.tab != viewer_ui::Tab::Rigging || !self.ui.skeleton_on || controls.playing {
+            return None;
+        }
+        let clip = controls.clip?;
+        let asset = self.current.as_ref()?;
+        let document = asset.document();
+        let id = document.id().0;
+        let node = self.ui.context.data(|d| {
+            d.get_temp::<ad_document::NodeId>(viewer_ui::skeleton_ui::animation_node_id(id))
+        })?;
+        if !document.can_animate_node(node) {
+            return None;
+        }
+        let time = controls.time;
+        let worlds = document
+            .view()
+            .node_worlds(
+                Some((clip, time, None)),
+                &ad_document::Cancellation::default(),
+            )
+            .ok()?;
+        let world = glam::Mat4::from_cols_array_2d(&(*worlds.get(node.0)?)?);
+        let parent = document
+            .nodes()
+            .iter()
+            .position(|n| n.children.contains(&node))
+            .map_or_else(
+                || Some(document.placement().matrix()),
+                |p| worlds[p].map(|m| glam::Mat4::from_cols_array_2d(&m)),
+            )?;
+        let rotation = document
+            .animation_value(clip, node, ad_document::TrackKind::Rotation, time)
+            .ok()?;
+        let translation = document
+            .animation_value(clip, node, ad_document::TrackKind::Translation, time)
+            .ok()?;
+        let camera = &self.camera;
+        joint_gizmo::build(
+            id,
+            node,
+            clip,
+            time,
+            world,
+            parent,
+            rotation,
+            [translation[0], translation[1], translation[2]],
+            self.ui.joint_local_axes,
+            glam::Vec3::from_array(camera.view_direction()),
+            glam::Vec2::new(width.max(1) as f32, height.max(1) as f32),
+            |p| camera.project(p.to_array(), width, height),
+        )
+    }
     /// Point lamp frame: model centre and radius (half the box diagonal).
     fn lamp_frame(&self) -> Option<([f32; 3], f32)> {
         let asset = self.current.as_ref()?;
@@ -2736,6 +2795,7 @@ impl App {
         } else {
             None
         };
+        self.ui.joint_gizmo = self.joint_gizmo(view_w, view_h);
         // ADR-0041 model gizmo at the (previewed) bottom centre.
         // The gizmo follows the selection (owner 2026-11-25): objects
         // selected -> object gizmo on them; nothing selected -> the model.

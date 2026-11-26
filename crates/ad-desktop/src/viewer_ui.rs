@@ -371,6 +371,11 @@ pub struct ViewerUi {
     pub pointer_on_gizmo: bool,
     /// Selection box in viewport coordinates (corners, remove mode).
     pub marquee: Option<([f32; 2], [f32; 2], bool)>,
+    /// P7 joint gizmo (built by the app), its axes (local or world) and the
+    /// drag in progress: handle, start pointer, last previewed value.
+    pub joint_gizmo: Option<crate::joint_gizmo::JointGizmo>,
+    pub joint_local_axes: bool,
+    joint_drag: Option<(skeleton_ui::JointHandle, [f32; 2], [f32; 4])>,
     /// P7 skeleton overlay (bones and joints of the skins) and its switch.
     pub skeleton_on: bool,
     pub skeleton: Option<skeleton_ui::SkeletonOverlay>,
@@ -528,6 +533,9 @@ impl Default for ViewerUi {
             show_bounds: false,
             skeleton_on: true,
             skeleton: None,
+            joint_gizmo: None,
+            joint_local_axes: true,
+            joint_drag: None,
             marquee: None,
             pointer_on_gizmo: false,
             gizmo_dragging: false,
@@ -1480,6 +1488,12 @@ impl ViewerUi {
                 if asset.is_some() && self.skeleton_on && let Some(overlay)=self.skeleton.take() {
                     self.skeleton_ui(&context,root,&overlay,&mut actions);
                     self.skeleton=Some(overlay);
+                }
+                if asset.is_some() && let Some(gizmo)=self.joint_gizmo.take() {
+                    self.joint_gizmo_ui(&context,root,&gizmo,&mut actions);
+                    self.joint_gizmo=Some(gizmo);
+                } else {
+                    self.joint_drag=None;
                 }
                 if asset.is_some() && !read_only && self.model_gizmo_on && let Some(gizmo)=self.model_gizmo {
                     self.model_gizmo_ui(&context,root,gizmo,&mut actions);
@@ -2805,6 +2819,75 @@ FORMAT=32-bit_rle_rgbe
         let (out, _, _) = ui.layout(input, Some(&asset), false);
         assert!(!ui.context.egui_wants_pointer_input());
         out.drop_without_applying_deltas();
+    }
+    #[test]
+    fn joint_gizmo_rings_and_arrows_preview_and_write_one_key() {
+        use ad_document::TrackKind;
+        let mut ui = ViewerUi::default();
+        let asset = crate::imports::prepare(&crate::worker::Request {
+            ticket: 1,
+            input: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/Skin_Checker.glb"),
+            cancel: ad_document::Cancellation::default(),
+        })
+        .unwrap();
+        let size = (1400., 1000.);
+        warm(&mut ui, Some(&asset), size);
+        let scene = ui.scene;
+        let to_uv = |p: glam::Vec3| Some([0.5 + p.x * 0.05, 0.5 - p.y * 0.05]);
+        let gizmo = crate::joint_gizmo::build(
+            asset.document().id().0,
+            ad_document::NodeId(1),
+            0,
+            0.25,
+            glam::Mat4::IDENTITY,
+            glam::Mat4::IDENTITY,
+            glam::Quat::IDENTITY.to_array(),
+            [0., 0., 0.],
+            false,
+            glam::Vec3::NEG_Z,
+            glam::Vec2::new(scene.width(), scene.height()),
+            to_uv,
+        )
+        .unwrap();
+        let at = |p: [f32; 2]| scene.min + egui::vec2(p[0] * scene.width(), p[1] * scene.height());
+        ui.joint_gizmo = Some(gizmo.clone());
+        warm(&mut ui, Some(&asset), size);
+        // Arrow X: drag to the right moves the joint along +X.
+        let tip = at(gizmo.arrows[0].unwrap());
+        let steps = drag(&mut ui, Some(&asset), tip, egui::vec2(60., 0.), size);
+        let preview = steps
+            .iter()
+            .rev()
+            .find_map(|a| a.animation_preview.flatten());
+        assert!(preview.is_some_and(|c| c.kind == TrackKind::Translation && c.value[0] > 0.));
+        let key = steps
+            .iter()
+            .find_map(|a| a.animation_key)
+            .expect("a key on release");
+        assert_eq!((key.clip, key.time, key.remove), (0, 0.25, false));
+        assert_eq!(key.channel.kind, TrackKind::Translation);
+        assert!(key.channel.value[0] > 0. && key.channel.value[1].abs() < 1e-4);
+        // Z ring (facing the camera): hover first, then drag along it.
+        let ring = &gizmo.rings[2];
+        let from = at(ring[0].unwrap());
+        let to = at(ring[6].unwrap());
+        for _ in 0..2 {
+            let mut input = raw(size.0, size.1);
+            input.events = vec![egui::Event::PointerMoved(from)];
+            let (out, _, _) = ui.layout(input, Some(&asset), false);
+            out.drop_without_applying_deltas();
+        }
+        assert!(ui.pointer_on_gizmo, "the ring owns the left button");
+        let steps = drag(&mut ui, Some(&asset), from, to - from, size);
+        let key = steps
+            .iter()
+            .find_map(|a| a.animation_key)
+            .expect("a key on release");
+        assert_eq!(key.channel.kind, TrackKind::Rotation);
+        let q = glam::Quat::from_array(key.channel.value);
+        let (axis, angle) = q.to_axis_angle();
+        assert!(angle > 0.3 && axis.z.abs() > 0.99, "{axis} {angle}");
     }
     #[test]
     fn lamp_gizmo_captures_the_pointer_and_reports_drags() {

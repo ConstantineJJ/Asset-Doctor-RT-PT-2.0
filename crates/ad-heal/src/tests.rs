@@ -49,6 +49,7 @@ fn domain(parts: Vec<Vec<[u32; 3]>>) -> AssetDocument {
             color_texture: None,
             metallic_roughness_texture: None,
             alpha_cutoff: None,
+            blend: false,
         })
         .collect::<Vec<_>>();
     let ids: Arc<[MeshId]> = Arc::from([MeshId(0)]);

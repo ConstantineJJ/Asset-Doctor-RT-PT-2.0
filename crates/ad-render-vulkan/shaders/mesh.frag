@@ -246,9 +246,11 @@ void main() {
     if (pc.material.z>=0.0 && base.a<pc.material.z) {discard;}
     if ((flags&128u)!=0u) {color=vec4(1.0,0.72,0.2,1.0); return;}
     vec3 display=linear;
-    if (raw) {color=vec4(work_tree_tint(clamp(display,0.0,1.0),flags),1.0); return;}
+    // Bit 256: glTF BLEND, the material alpha blends over what is behind.
+    float alpha=(flags&256u)!=0u?clamp(base.a,0.0,1.0):1.0;
+    if (raw) {color=vec4(work_tree_tint(clamp(display,0.0,1.0),flags),alpha); return;}
     if ((flags&4u)!=0u) {
         display=mix(12.92*linear,1.055*pow(linear,vec3(1.0/2.4))-0.055,greaterThan(linear,vec3(0.0031308)));
     }
-    color=vec4(work_tree_tint(display,flags),1.0);
+    color=vec4(work_tree_tint(display,flags),alpha);
 }

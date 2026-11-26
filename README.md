@@ -5,7 +5,7 @@
 Native Windows application for diagnosing, repairing and preparing 3D assets,
 written from scratch in Rust with a Vulkan renderer. Engineering prototype.
 
-Current build: **AD RT-PT v2.8.0**. Versions are MAJOR.MINOR.PATCH by
+Current build: **AD RT-PT v2.9.0**. Versions are MAJOR.MINOR.PATCH by
 significance: major reworks, notable features or large sets of fixes, and
 hotfixes.
 
@@ -90,6 +90,8 @@ hotfixes.
     the joint tree.
   - Clips: play, pause, loop, speed, scrub. Edit a joint's keys; create,
     copy, rename, delete and retime clips; all with Undo/Redo.
+  - Joint gizmo (clip paused): rings turn the selected joint, arrows move
+    it, local or world axes; releasing writes a key at the current time.
   - Saving writes the animation back and verifies it by reimporting.
 - **Model gizmo.** Arrows move the model, rings turn it, the centre square
   scales it. Exact values are in «Модель».
@@ -124,7 +126,11 @@ hotfixes.
 - **View settings.** Kept between runs in
   `%LOCALAPPDATA%\AssetDoctorRTPT\view-settings.json`.
 
-Morph targets, alpha BLEND, compressed geometry and external resources are
+Transparent (alpha BLEND) materials are drawn blended, back to front. A
+required `KHR_lights_punctual` is left out (the program's lamp lights the
+scene), and common export slips (`texCoord: -1`, a texture without its UV set)
+open with a note instead of a refusal. Morph targets, compressed geometry and
+external resources are
 refused at import. Geometry and object edits are not yet available for skinned
 or animated models. Joint gizmos, GPU skinning, multi-model comparison, RT and
 PT are planned.

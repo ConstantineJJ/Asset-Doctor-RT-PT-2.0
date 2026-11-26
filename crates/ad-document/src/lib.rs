@@ -146,6 +146,8 @@ pub struct MeshPrimitive {
     pub color_texture: Option<Arc<Texture>>,
     pub metallic_roughness_texture: Option<Arc<Texture>>,
     pub alpha_cutoff: Option<f32>,
+    /// glTF alpha mode BLEND: drawn after opaque geometry, blended.
+    pub blend: bool,
 }
 pub struct Node {
     pub name: String,
@@ -202,6 +204,8 @@ pub struct DrawRange {
     pub emissive_factor: [f32; 3],
     pub emissive_texture: Option<Arc<Texture>>,
     pub alpha_cutoff: Option<f32>,
+    /// glTF alpha mode BLEND.
+    pub blend: bool,
 }
 pub struct GeometrySnapshot {
     pub document_id: DocumentId,
@@ -729,6 +733,7 @@ impl DocumentView<'_> {
                 emissive_factor: mesh.emissive_factor,
                 emissive_texture: mesh.emissive_texture.clone(),
                 alpha_cutoff: mesh.alpha_cutoff,
+                blend: mesh.blend,
             });
             for (i, &index) in self.indices(mesh_id).iter().enumerate() {
                 if i % 4096 == 0 {
@@ -793,6 +798,7 @@ mod tests {
                 color_texture: None,
                 metallic_roughness_texture: None,
                 alpha_cutoff: None,
+                blend: false,
             }],
             nodes: vec![
                 Node {

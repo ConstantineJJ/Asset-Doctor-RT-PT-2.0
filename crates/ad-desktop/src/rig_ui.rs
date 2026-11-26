@@ -8,6 +8,7 @@ pub(super) fn show(
     ui: &mut egui::Ui,
     asset: Option<&PreparedAsset>,
     mut controls: Controls,
+    local_axes: &mut bool,
     actions: &mut Actions,
 ) {
     let Some(asset) = asset else {
@@ -26,6 +27,13 @@ pub(super) fn show(
             ui.add_enabled_ui(!controls.playing, |ui| {
                 clip_properties(ui, document, clip, actions);
                 key_editor(ui, document, clip, &mut controls, actions);
+                ui.horizontal(|ui| {
+                    ui.label("Gizmo сустава:");
+                    ui.selectable_value(local_axes, true, "Локальные оси");
+                    ui.selectable_value(local_axes, false, "Мировые оси");
+                })
+                .response
+                .on_hover_text("Кольца поворачивают выбранный сустав, стрелки двигают его; отпускание — ключ в текущем времени клипа (Undo отменит). Нужны выбранный клип и пауза.");
             });
         }
         ui.separator();

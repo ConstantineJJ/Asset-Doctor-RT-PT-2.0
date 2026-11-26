@@ -101,6 +101,7 @@ fn postcheck_refuses_wrong_order_values_indices_maps_and_incomplete_sets() {
             color_texture: None,
             metallic_roughness_texture: None,
             alpha_cutoff: None,
+            blend: false,
         };
         let mut map = vec![0, 1, 2, 3];
         edit(&mut c, &mut map);
@@ -144,6 +145,7 @@ fn postcheck_refuses_wrong_order_values_indices_maps_and_incomplete_sets() {
         color_texture: None,
         metallic_roughness_texture: None,
         alpha_cutoff: None,
+        blend: false,
     };
     assert!(
         verify::check_unused(

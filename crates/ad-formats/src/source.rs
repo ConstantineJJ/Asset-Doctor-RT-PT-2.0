@@ -29,38 +29,74 @@ fn read_root(json: &[u8], cancel: &Cancellation) -> AssetResult<gltf::json::Root
     };
     match gltf::json::deserialize::from_slice(json) {
         Ok(root) => Ok(root),
-        Err(error)
-            if error
-                .to_string()
-                .starts_with("missing field `nodes` at line ") =>
-        {
-            // glTF allows an empty scene to omit nodes. gltf-json 1.4.1
-            // requires the field. Adapt the decoded metadata only.
+        Err(error) => {
+            // Two exporter slips are read leniently, in the decoded metadata
+            // only (the file is never changed): a scene without `nodes`
+            // (allowed by glTF, required by gltf-json 1.4.1) and a negative
+            // `texCoord` (-1 from some exporters), read as set 0.
+            let text = error.to_string();
+            if !text.starts_with("missing field `nodes` at line ")
+                && !text.contains("invalid value: integer `-")
+            {
+                return Err(invalid(error));
+            }
             let (mut metadata, _) = crate::metadata::parse(
                 json,
                 crate::ExportLimits::default().metadata_values,
                 cancel,
             )?;
-            let Some(scenes) = metadata
+            if let Some(scenes) = metadata
                 .get_mut("scenes")
                 .and_then(serde_json::Value::as_array_mut)
-            else {
-                return Err(invalid(error));
-            };
-            for scene in scenes
-                .iter_mut()
-                .filter_map(serde_json::Value::as_object_mut)
             {
-                cancel.check()?;
-                scene
-                    .entry("nodes")
-                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                for scene in scenes
+                    .iter_mut()
+                    .filter_map(serde_json::Value::as_object_mut)
+                {
+                    cancel.check()?;
+                    scene
+                        .entry("nodes")
+                        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                }
             }
-            gltf::json::deserialize::from_value(metadata).map_err(invalid)
+            negative_tex_coords(&mut metadata, cancel)?;
+            gltf::json::deserialize::from_value(metadata).map_err(|_| invalid(error))
         }
-        Err(error) => Err(invalid(error)),
     }
 }
+
+/// Sets every negative `texCoord` to 0; returns how many were changed.
+pub(crate) fn negative_tex_coords(
+    value: &mut serde_json::Value,
+    cancel: &Cancellation,
+) -> AssetResult<usize> {
+    let mut changed = 0;
+    let mut pending = vec![value];
+    while let Some(value) = pending.pop() {
+        cancel.check()?;
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, item) in map.iter_mut() {
+                    if key == "texCoord" && item.as_i64().is_some_and(|v| v < 0) {
+                        *item = serde_json::Value::from(0);
+                        changed += 1;
+                    } else if item.is_object() || item.is_array() {
+                        pending.push(item);
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => {
+                pending.extend(items.iter_mut().filter(|v| v.is_object() || v.is_array()));
+            }
+            _ => {}
+        }
+    }
+    Ok(changed)
+}
+
+/// Required extensions that only add things this viewer does not show and
+/// can be left out without changing the geometry or materials it shows.
+const IGNORABLE_REQUIRED: [&str; 1] = ["KHR_lights_punctual"];
 
 pub(crate) fn parse<'a>(
     source: &'a [u8],
@@ -97,12 +133,20 @@ pub(crate) fn parse<'a>(
     }
     let glb = gltf::binary::Glb::from_slice(source)
         .map_err(|e| invalid(&format!("Invalid GLB container: {e}")))?;
-    let root = read_root(&glb.json, cancel)?;
-    if !root.extensions_required.is_empty() {
+    let mut root = read_root(&glb.json, cancel)?;
+    if root
+        .extensions_required
+        .iter()
+        .any(|name| !IGNORABLE_REQUIRED.contains(&name.as_str()))
+    {
         return Err(unsupported(
             "This build does not support required glTF extensions",
         ));
     }
+    // gltf validates required extensions against what it implements itself;
+    // the ignorable ones are left out of the decoded metadata only.
+    root.extensions_required
+        .retain(|name| !IGNORABLE_REQUIRED.contains(&name.as_str()));
     if root.nodes.len() > limits.nodes {
         return Err(budget());
     }

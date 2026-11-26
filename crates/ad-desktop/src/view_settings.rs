@@ -62,6 +62,7 @@ impl ViewerUi {
             "axes": self.show_axes,
             "bounds": self.show_bounds,
             "skeleton": self.skeleton_on,
+            "joint_axes_local": self.joint_local_axes,
             "outline_width": self.outline_width,
             "window": self.window_mode.key(),
             "frameless": self.frameless,
@@ -177,6 +178,12 @@ impl ViewerUi {
         flag(value, "axes", &mut self.show_axes, &mut bad);
         flag(value, "bounds", &mut self.show_bounds, &mut bad);
         flag(value, "skeleton", &mut self.skeleton_on, &mut bad);
+        flag(
+            value,
+            "joint_axes_local",
+            &mut self.joint_local_axes,
+            &mut bad,
+        );
         if value.get("outline_width").is_some() {
             number(
                 value,
