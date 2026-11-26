@@ -957,6 +957,7 @@ impl ViewerUi {
                             asset,
                             self.playback,
                             &mut self.joint_local_axes,
+                            &mut self.skeleton_on,
                             actions,
                         );
                     });
@@ -1046,42 +1047,90 @@ impl ViewerUi {
             ui.weak("Статические GLB: PNG/JPEG, цвета вершин, нормали, OPAQUE/MASK. PBR — предварительный режим. Скины и клипы GLB доступны во вкладке Rigging. BLEND и морф-цели пока не поддерживаются.");
             return;
         };
+        use crate::accent::{pastel, stat};
         ui.strong(asset.document().name());
-        ui.label(format!(
-            "Исходный файл: {:.2} МиБ",
-            asset.document().source().len() as f64 / 1048576.
-        ));
-        ui.label(format!(
-            "Узлов в документе: {}",
-            asset.document().nodes().len()
-        ));
+        stat(
+            ui,
+            "Исходный файл:",
+            format!("{:.2}", asset.document().source().len() as f64 / 1048576.),
+            "МиБ",
+            pastel::LEMON,
+        );
+        stat(
+            ui,
+            "Узлов в документе:",
+            asset.document().nodes().len().to_string(),
+            "",
+            pastel::LAVENDER,
+        );
         let textures = asset.document().texture_stats();
-        ui.label(format!("Изображений материалов: {}", textures.images));
-        ui.label(format!(
-            "RGBA с mip-уровнями: {:.2} МиБ",
-            textures.mip_bytes as f64 / 1048576.
-        ));
+        stat(
+            ui,
+            "Изображений материалов:",
+            textures.images.to_string(),
+            "",
+            pastel::PEACH,
+        );
+        stat(
+            ui,
+            "RGBA с mip-уровнями:",
+            format!("{:.2}", textures.mip_bytes as f64 / 1048576.),
+            "МиБ",
+            pastel::LEMON,
+        );
         ui.add_space(12.);
         ui.strong("Отображаемая геометрия");
-        ui.label(format!("Вершины: {}", asset.snapshot().positions.len()));
-        ui.label(format!(
-            "Треугольники: {}",
-            asset.snapshot().indices.len() / 3
-        ));
-        ui.label(format!(
-            "Примитивы с повторами: {}",
-            asset.snapshot().draws.len()
-        ));
-        ui.label(format!("Нормаль грани: {} вершин", asset.snapshot().fallback_normal_vertices)).on_hover_text("Авторская нормаль отсутствует, нулевая или преобразование вырождено. Источник не исправляется.");
+        stat(
+            ui,
+            "Вершины:",
+            group_digits(asset.snapshot().positions.len()),
+            "",
+            pastel::SKY,
+        );
+        stat(
+            ui,
+            "Треугольники:",
+            group_digits(asset.snapshot().indices.len() / 3),
+            "",
+            pastel::MINT,
+        );
+        stat(
+            ui,
+            "Вызовы отрисовки (примитивы с повторами):",
+            group_digits(asset.snapshot().draws.len()),
+            "",
+            pastel::PEACH,
+        );
+        stat(
+            ui,
+            "Нормаль грани:",
+            group_digits(asset.snapshot().fallback_normal_vertices),
+            "вершин",
+            pastel::ROSE,
+        )
+        .on_hover_text("Авторская нормаль отсутствует, нулевая или преобразование вырождено. Источник не исправляется.");
         if asset.snapshot().fallback_tangent_vertices > 0 {
-            ui.label(format!("UV-основа нормалей: {} вершин", asset.snapshot().fallback_tangent_vertices)).on_hover_text("Нет пригодных авторских касательных. Используется основа по производным геометрии/UV; на сложных швах возможно отличие от MikkTSpace.");
+            stat(
+                ui,
+                "UV-основа нормалей:",
+                group_digits(asset.snapshot().fallback_tangent_vertices),
+                "вершин",
+                pastel::ROSE,
+            )
+            .on_hover_text("Нет пригодных авторских касательных. Используется основа по производным геометрии/UV; на сложных швах возможно отличие от MikkTSpace.");
         }
         ui.weak("С учётом экземпляров в сцене");
         let b = asset.snapshot().bounds;
         ui.add_space(12.);
         ui.strong("Габариты · метры");
         for (i, axis) in ["X", "Y", "Z"].into_iter().enumerate() {
-            ui.label(format!("{axis}   {:.3}", b.max[i] - b.min[i]));
+            stat(
+                ui,
+                axis,
+                format!("{:.3}", b.max[i] - b.min[i]),
+                "",
+                [pastel::ROSE, pastel::MINT, pastel::SKY][i],
+            );
         }
         if !self.placement.is_identity() {
             let f = crate::model_gizmo::Fields::of(self.placement, asset.snapshot().source_bounds);
@@ -1111,8 +1160,20 @@ impl ViewerUi {
             if let Some(row) = self.tree.rows.iter().find(|row| row.id == id) {
                 ui.label(&row.label);
             }
-            ui.label(format!("Дочерние узлы: {}", node.children.len()));
-            ui.label(format!("Ссылки на примитивы: {}", node.meshes.len()));
+            stat(
+                ui,
+                "Дочерние узлы:",
+                node.children.len().to_string(),
+                "",
+                pastel::LAVENDER,
+            );
+            stat(
+                ui,
+                "Ссылки на примитивы:",
+                node.meshes.len().to_string(),
+                "",
+                pastel::PEACH,
+            );
             ui.collapsing("Исходная локальная матрица", |ui| {
                 for r in 0..4 {
                     ui.monospace(format!(
@@ -1546,7 +1607,7 @@ impl ViewerUi {
             return;
         }
         let idle = !loading && self.edit.busy.is_none();
-        egui::Area::new(egui::Id::new("undo_redo"))
+        let corner = egui::Area::new(egui::Id::new("undo_redo"))
             .order(egui::Order::Foreground)
             .pivot(egui::Align2::RIGHT_BOTTOM)
             .fixed_pos(scene.right_bottom() - egui::vec2(10., 10.))
@@ -1582,6 +1643,7 @@ impl ViewerUi {
                     actions.redo |= redo.clicked();
                 });
             });
+        self.corner_rect = corner.response.rect;
         if !self.show_summary && width >= 680. {
             egui::Area::new(egui::Id::new("show_side"))
                 .order(egui::Order::Foreground)
@@ -1649,5 +1711,29 @@ fn paint_eye(painter: &egui::Painter, c: egui::Pos2, open: bool, color: Color32)
         painter.circle_filled(c, 2.2, color);
     } else {
         painter.line_segment([c + egui::vec2(-6., 5.), c + egui::vec2(6., -5.)], stroke);
+    }
+}
+
+/// 1234567 → «1 234 567» (thin spaces between thousands).
+fn group_digits(value: usize) -> String {
+    let digits = value.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push('\u{2009}');
+        }
+        out.push(c);
+    }
+    out
+}
+
+#[cfg(test)]
+mod digit_tests {
+    #[test]
+    fn thousands_are_grouped() {
+        assert_eq!(super::group_digits(0), "0");
+        assert_eq!(super::group_digits(999), "999");
+        assert_eq!(super::group_digits(4903), "4\u{2009}903");
+        assert_eq!(super::group_digits(1234567), "1\u{2009}234\u{2009}567");
     }
 }

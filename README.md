@@ -88,8 +88,14 @@ hotfixes.
   - The skeleton is drawn over the model in the current pose («Сетка и
     помощники → Скелет»); click a joint to select it. The Rigging tab shows
     the joint tree.
-  - Clips: play, pause, loop, speed, scrub. Edit a joint's keys; create,
-    copy, rename, delete and retime clips; all with Undo/Redo.
+  - Playback bar at the bottom of the viewport: clip, previous / play-pause
+    / next animation, stop, loop, speed and a timeline with the keys
+    (click or drag to scrub). **Space** plays and pauses.
+  - The Rigging tab: creating clips (yellow), the chosen clip (blue) and
+    its keys (pink) in the top third, the joint tree below. Edit a joint's
+    keys; create, copy, rename, delete and retime clips; all with Undo/Redo.
+  - Right click on a joint (tree or viewport), the timeline or the Rigging
+    tab: select, key the current pose, delete a key, clip actions.
   - Joint gizmo (clip paused): rings turn the selected joint, arrows move
     it, local or world axes; releasing writes a key at the current time.
   - Saving writes the animation back and verifies it by reimporting.
@@ -132,8 +138,8 @@ scene), and common export slips (`texCoord: -1`, a texture without its UV set)
 open with a note instead of a refusal. Morph targets, compressed geometry and
 external resources are
 refused at import. Geometry and object edits are not yet available for skinned
-or animated models. Joint gizmos, GPU skinning, multi-model comparison, RT and
-PT are planned.
+or animated models. GPU skinning, multi-model comparison, RT and PT are
+planned.
 
 ## Build
 

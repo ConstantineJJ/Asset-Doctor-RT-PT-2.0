@@ -33,6 +33,75 @@ impl Default for Controls {
     }
 }
 
+impl Controls {
+    /// Play / pause (the bottom bar and Space). Without a chosen clip the
+    /// first one starts; a finished clip starts again from the beginning.
+    /// None when there is nothing to play.
+    pub fn toggled(self, durations: &[f32]) -> Option<Self> {
+        let clip = self.clip.filter(|&i| i < durations.len()).unwrap_or(0);
+        let duration = *durations.get(clip)?;
+        if duration <= 0. {
+            return None;
+        }
+        let mut next = self;
+        if next.clip != Some(clip) {
+            next.clip = Some(clip);
+            next.time = 0.;
+            next.playing = false;
+        }
+        if !next.playing && next.time >= duration {
+            next.time = 0.;
+        }
+        next.playing = !next.playing;
+        Some(next)
+    }
+    /// The previous (`step` -1) or next (+1) clip, wrapping around, from its
+    /// beginning; playback goes on if it was on.
+    pub fn switched(self, clips: usize, step: isize) -> Option<Self> {
+        if clips == 0 {
+            return None;
+        }
+        let n = clips as isize;
+        let clip = match self.clip {
+            Some(i) => (i as isize + step).rem_euclid(n),
+            None if step < 0 => n - 1,
+            None => 0,
+        } as usize;
+        Some(Self {
+            clip: Some(clip),
+            time: 0.,
+            ..self
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Controls;
+
+    #[test]
+    fn toggle_and_switch_clips() {
+        let c = Controls::default();
+        assert!(c.toggled(&[]).is_none());
+        assert!(c.toggled(&[0.]).is_none(), "an empty clip does not play");
+        let on = c.toggled(&[2., 3.]).unwrap();
+        assert_eq!((on.clip, on.playing, on.time), (Some(0), true, 0.));
+        let off = on.toggled(&[2., 3.]).unwrap();
+        assert!(!off.playing);
+        let ended = Controls { time: 2., ..off };
+        assert_eq!(
+            ended.toggled(&[2., 3.]).unwrap().time,
+            0.,
+            "restart at the end"
+        );
+        let next = Controls { time: 1., ..on }.switched(2, 1).unwrap();
+        assert_eq!((next.clip, next.time, next.playing), (Some(1), 0., true));
+        assert_eq!(next.switched(2, 1).unwrap().clip, Some(0), "wraps forward");
+        assert_eq!(c.switched(3, -1).unwrap().clip, Some(2), "wraps back");
+        assert!(c.switched(0, 1).is_none());
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 struct Sample {
     clip: usize,
