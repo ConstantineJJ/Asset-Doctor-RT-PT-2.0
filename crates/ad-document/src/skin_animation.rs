@@ -391,6 +391,63 @@ impl DocumentView<'_> {
         }
         Ok(worlds)
     }
+
+    /// World matrix of `node` at `samples` evenly spaced times of `clip`
+    /// (first 0, last the duration), for root-motion measurement (ANIM-05).
+    /// Only the node's ancestor chain is multiplied; the result matches
+    /// `node_worlds` for that node. Refused when the node is not reachable
+    /// from a scene root or is detached.
+    pub fn node_path(
+        &self,
+        node: NodeId,
+        clip: usize,
+        samples: usize,
+        cancel: &Cancellation,
+    ) -> AssetResult<Vec<(f32, [[f32; 4]; 4])>> {
+        let duration = self
+            .animation_clip(clip)
+            .ok_or_else(|| invalid("Unknown animation clip"))?
+            .duration;
+        let document = self.document();
+        let edits = self.node_edits();
+        let nodes = document.nodes();
+        if node.0 >= nodes.len() {
+            return Err(invalid("Unknown node"));
+        }
+        let mut parents = vec![None; nodes.len()];
+        for (index, item) in nodes.iter().enumerate() {
+            for child in &item.children {
+                if let Some(slot) = parents.get_mut(child.0) {
+                    *slot = Some(NodeId(index));
+                }
+            }
+        }
+        let mut chain = vec![node];
+        while let Some(parent) = parents[chain[chain.len() - 1].0] {
+            if chain.len() > nodes.len() {
+                return Err(invalid("The node hierarchy has a cycle"));
+            }
+            chain.push(parent);
+        }
+        let top = chain[chain.len() - 1];
+        if !document.roots().contains(&top) || chain.iter().any(|id| edits.is_detached(*id)) {
+            return Err(invalid("The node is not in the scene"));
+        }
+        let samples = samples.clamp(2, 4096);
+        (0..samples)
+            .map(|i| {
+                let time = duration * i as f32 / (samples - 1) as f32;
+                let locals = self.pose_locals(clip, time, None, cancel)?;
+                let mut world = self.placement().matrix();
+                for id in chain.iter().rev() {
+                    let local = locals[id.0]
+                        .unwrap_or_else(|| Mat4::from_cols_array_2d(&edits.local(document, *id)));
+                    world *= local;
+                }
+                Ok((time, world.to_cols_array_2d()))
+            })
+            .collect()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

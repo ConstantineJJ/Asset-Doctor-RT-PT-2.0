@@ -2,6 +2,7 @@ use crate::{
     accent::{self, Accent, pastel},
     imports::PreparedAsset,
     rig_playback::Controls,
+    root_motion::PathState,
     viewer_ui::Actions,
 };
 use ad_document::{
@@ -14,6 +15,7 @@ pub(super) fn show(
     mut controls: Controls,
     local_axes: &mut bool,
     skeleton_on: &mut bool,
+    root_path: &mut PathState,
     actions: &mut Actions,
 ) {
     let Some(asset) = asset else {
@@ -34,6 +36,10 @@ pub(super) fn show(
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     animation_section(ui, document, &mut controls, local_axes, actions);
+                    if let Some(clip) = controls.clip {
+                        ui.add_space(8.);
+                        root_motion_card(ui, document, clip, controls.time, root_path);
+                    }
                 });
             ui.separator();
             rig_section(ui, document, controls, actions);
@@ -117,6 +123,134 @@ fn animation_section(
             key_editor(ui, document, clip, controls, local_axes, actions);
         });
     });
+}
+
+/// ANIM-05: where a joint goes during the clip (the skeleton's root or the
+/// selected joint): displacement, distance on the floor, path, speed, turn
+/// and height; the path is drawn in the viewport.
+fn root_motion_card(
+    ui: &mut egui::Ui,
+    document: &AssetDocument,
+    clip: usize,
+    time: f32,
+    state: &mut PathState,
+) {
+    use crate::root_motion::{measure, root_joint};
+    roomy(ui);
+    accent::card(
+        ui,
+        Accent::Existing,
+        "Root motion — перемещение за клип",
+        |ui| {
+            let selected = ui.ctx().data(|d| {
+                d.get_temp::<NodeId>(crate::viewer_ui::skeleton_ui::joint_id(document.id().0))
+            });
+            let node = if state.selected_joint {
+                selected
+            } else {
+                root_joint(document, clip)
+            };
+            let stale = state.motion.as_ref().is_none_or(|m| {
+                (m.document, m.revision, m.clip, Some(m.node))
+                    != (document.id().0, document.revision(), clip, node)
+            });
+            if stale {
+                state.motion = node.and_then(|node| measure(document, node, clip));
+            }
+            let white = |ui: &mut egui::Ui, value: String| {
+                accent::bold(ui, value, accent::VALUE);
+            };
+            form(egui::Id::new(("root_form", document.id().0))).show(ui, |ui| {
+            accent::field_label(ui, "Сустав");
+            let group = ui
+                .horizontal(|ui| {
+                    ui.selectable_value(&mut state.selected_joint, false, "Корень скелета");
+                    ui.selectable_value(&mut state.selected_joint, true, "Выбранный");
+                })
+                .response;
+            if accent::wheel_steps(ui, &group) != 0 {
+                state.selected_joint = !state.selected_joint;
+            }
+            ui.end_row();
+            let Some(motion) = state.motion.clone() else {
+                ui.label("");
+                ui.weak(if state.selected_joint {
+                    "Выберите сустав в дереве или во вьюпорте."
+                } else {
+                    "Траекторию не удалось построить."
+                });
+                ui.end_row();
+                return;
+            };
+            let s = motion.summary;
+            ui.label("");
+            ui.weak(
+                document
+                    .nodes()
+                    .get(motion.node.0)
+                    .map_or("", |n| n.name.as_str()),
+            );
+            ui.end_row();
+            accent::field_label(ui, "Смещение");
+            ui.horizontal(|ui| {
+                for (value, (letter, color)) in s.delta.iter().zip(AXES) {
+                    ui.label(egui::RichText::new(letter).strong().color(color));
+                    white(ui, format!("{value:.3}"));
+                    ui.add_space(4.);
+                }
+                ui.label("м");
+            });
+            ui.end_row();
+            accent::field_label(ui, "По полу");
+            ui.horizontal(|ui| {
+                white(ui, format!("{:.3}", s.horizontal));
+                ui.label("м ·");
+                white(ui, format!("{:.2}", s.speed));
+                ui.label("м/с");
+            })
+            .response
+            .on_hover_text("Расстояние от начала до конца по горизонтали и средняя скорость за клип");
+            ui.end_row();
+            accent::field_label(ui, "Путь");
+            ui.horizontal(|ui| {
+                white(ui, format!("{:.3}", s.length));
+                ui.label("м");
+            })
+            .response
+            .on_hover_text("Длина траектории с подъёмами и покачиваниями (30 точек в секунду)");
+            ui.end_row();
+            accent::field_label(ui, "Поворот");
+            ui.horizontal(|ui| {
+                white(ui, format!("{:.1}", s.yaw));
+                ui.label("° вокруг Y");
+            });
+            ui.end_row();
+            accent::field_label(ui, "Высота");
+            ui.horizontal(|ui| {
+                white(ui, format!("{:.3}", s.min_y));
+                ui.label("…");
+                white(ui, format!("{:.3}", s.max_y));
+                ui.label("м");
+            });
+            ui.end_row();
+            accent::field_label(ui, "Сейчас");
+            ui.horizontal(|ui| {
+                if let Some(p) = motion.at(time) {
+                    for (value, (letter, color)) in p.iter().zip(AXES) {
+                        ui.label(egui::RichText::new(letter).strong().color(color));
+                        white(ui, format!("{value:.3}"));
+                        ui.add_space(4.);
+                    }
+                }
+            });
+            ui.end_row();
+            accent::field_label(ui, "Во вьюпорте");
+            ui.checkbox(&mut state.show, "Показать путь")
+                .on_hover_text("Синяя линия — путь сустава за клип, зелёная точка — начало, красная — конец, белое кольцо — сейчас");
+            ui.end_row();
+        });
+        },
+    );
 }
 
 /// More air between rows and taller controls in the Rigging forms.

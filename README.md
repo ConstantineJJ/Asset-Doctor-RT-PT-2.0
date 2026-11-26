@@ -92,8 +92,13 @@ hotfixes.
     the joint tree.
   - Playback bar at the bottom of the viewport: clip, previous / play-pause
     / next animation, stop, loop, speed and a timeline with the keys
-    (click or drag to scrub). **Space** plays and pauses; speed 0.1–3× in
-    steps of 0.1.
+    (click or drag to scrub). **Space** plays and pauses, **,** / **.** step
+    one frame (1/30 s); speed 0.1–3× in steps of 0.1. The clip list has a
+    search field. A model with clips starts its first clip when it opens
+    («Настройки → Анимация»).
+  - Root motion: how far the skeleton's root (or the selected joint) moves
+    during the clip — displacement, distance on the floor, path, speed,
+    turn and height — with its path drawn in the viewport.
   - The Rigging tab: creating clips (yellow), the chosen clip (blue) and
     its keys (pink) in the top third, the joint tree below. Edit a joint's
     keys; create, copy, rename, delete and retime clips; all with Undo/Redo.

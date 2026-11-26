@@ -65,6 +65,8 @@ impl ViewerUi {
             "joint_axes_local": self.joint_local_axes,
             "outline_width": self.outline_width,
             "ui_scale": self.ui_scale,
+            "autoplay": self.autoplay,
+            "root_path": self.root_path.show,
             "window": self.window_mode.key(),
             "frameless": self.frameless,
             "lamp": {
@@ -195,6 +197,8 @@ impl ViewerUi {
             );
         }
         number(value, "ui_scale", 0.75..=2.0, &mut self.ui_scale, &mut bad);
+        flag(value, "autoplay", &mut self.autoplay, &mut bad);
+        flag(value, "root_path", &mut self.root_path.show, &mut bad);
         flag(value, "frameless", &mut self.frameless, &mut bad);
         match value.get("window") {
             None => {}

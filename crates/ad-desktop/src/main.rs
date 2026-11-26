@@ -1,4 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// The view-settings JSON is one large json! literal.
+#![recursion_limit = "256"]
 
 /// Every diagnostic line also goes to the program log (crate::log).
 macro_rules! eprintln {
@@ -25,6 +27,7 @@ mod native;
 mod picking;
 mod queue;
 mod rig_playback;
+mod root_motion;
 mod saving;
 mod skybox;
 mod skybox_library;
@@ -518,6 +521,21 @@ impl App {
                 self.confirmed = Some(Confirmed::imported(&asset));
                 self.playback.reset();
                 self.reset_gizmo_state();
+                self.ui.root_path.motion = None;
+                // ANIM-01: a model with clips starts its first one.
+                if self.ui.autoplay {
+                    let durations: Vec<f32> = asset
+                        .document()
+                        .animation_clips()
+                        .iter()
+                        .map(|clip| clip.duration)
+                        .collect();
+                    if let Some(controls) = self.playback.controls.toggled(&durations) {
+                        self.playback.apply(controls);
+                        self.ui.playback = controls;
+                        eprintln!("autoplay clip=0 clips={}", durations.len());
+                    }
+                }
                 self.current = Some(asset);
                 self.working_path = self.pending_path.take();
                 eprintln!("import_published ticket={}", completion.ticket);
@@ -1835,6 +1853,8 @@ impl App {
             }
             A::Grab => self.toggle_grab(),
             A::TogglePlayback => self.toggle_playback(),
+            A::FrameBack => self.step_frame(-1.),
+            A::FrameForward => self.step_frame(1.),
             A::ToggleRightPanel => self.ui.show_summary = !self.ui.show_summary,
             A::ToggleFrameless => self.ui.frameless = !self.ui.frameless,
             A::ToggleFullscreen => {
@@ -2433,6 +2453,59 @@ impl App {
             joints,
         })
     }
+    /// ANIM-05: the measured root path projected into the viewport, and the
+    /// point at the current time; only for the shown clip, in Rigging.
+    #[allow(clippy::type_complexity)]
+    fn root_path_overlay(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> Option<(Vec<Option<[f32; 2]>>, Option<[f32; 2]>)> {
+        let state = &self.ui.root_path;
+        if self.ui.tab != viewer_ui::Tab::Rigging || !state.show {
+            return None;
+        }
+        let motion = state.motion.as_ref()?;
+        let document = self.current.as_ref()?.document();
+        let controls = self.playback.controls;
+        if motion.document != document.id().0
+            || motion.revision != document.revision()
+            || controls.clip != Some(motion.clip)
+        {
+            return None;
+        }
+        let points = motion
+            .points
+            .iter()
+            .map(|p| self.camera.project(*p, width, height))
+            .collect();
+        let now = motion
+            .at(controls.time)
+            .and_then(|p| self.camera.project(p, width, height));
+        Some((points, now))
+    }
+    /// One frame back or forward (1/30 s) in the chosen clip, paused.
+    fn step_frame(&mut self, frames: f32) {
+        if self.editing || self.ui.edit.busy.is_some() {
+            return;
+        }
+        let Some(asset) = self.current.as_ref() else {
+            return;
+        };
+        let mut controls = self.playback.controls;
+        let Some(duration) = controls
+            .clip
+            .and_then(|clip| asset.document().animation_clips().get(clip))
+            .map(|clip| clip.duration)
+        else {
+            return;
+        };
+        controls.playing = false;
+        controls.time = ((controls.time * 30.).round() + frames) / 30.;
+        controls.time = controls.time.clamp(0., duration);
+        self.playback.apply(controls);
+        self.ui.playback = controls;
+    }
     /// P7 joint gizmo on the key editor's joint: Rigging tab, skeleton
     /// shown, a clip chosen and paused, a joint with TRS channels.
     fn joint_gizmo(&self, width: u32, height: u32) -> Option<joint_gizmo::JointGizmo> {
@@ -2818,6 +2891,7 @@ impl App {
             None
         };
         self.ui.joint_gizmo = self.joint_gizmo(view_w, view_h);
+        self.ui.root_path_uv = self.root_path_overlay(view_w, view_h);
         // ADR-0041 model gizmo at the (previewed) bottom centre.
         // The gizmo follows the selection (owner 2026-11-25): objects
         // selected -> object gizmo on them; nothing selected -> the model.

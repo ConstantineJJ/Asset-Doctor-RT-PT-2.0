@@ -29,6 +29,8 @@ pub enum Action {
     ToggleFrameless,
     ToggleSkeleton,
     TogglePlayback,
+    FrameBack,
+    FrameForward,
     Grab,
     Help,
     Cancel,
@@ -36,7 +38,7 @@ pub enum Action {
     Pan,
 }
 impl Action {
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 27] = [
         Self::Open,
         Self::Save,
         Self::SaveCopy,
@@ -57,6 +59,8 @@ impl Action {
         Self::ToggleFrameless,
         Self::ToggleSkeleton,
         Self::TogglePlayback,
+        Self::FrameBack,
+        Self::FrameForward,
         Self::Grab,
         Self::Help,
         Self::Cancel,
@@ -85,6 +89,8 @@ impl Action {
             Self::ToggleFrameless => "Окно без рамки и заголовка: вкл/выкл",
             Self::ToggleSkeleton => "Риг (скелет): показать/скрыть",
             Self::TogglePlayback => "Анимация: воспроизвести / пауза",
+            Self::FrameBack => "Анимация: кадр назад",
+            Self::FrameForward => "Анимация: кадр вперёд",
             Self::Grab => "Захват: взять / положить выбранное",
             Self::Help => "Справка",
             Self::Cancel => "Отмена загрузки/правки",
@@ -115,6 +121,8 @@ impl Action {
             Self::ToggleFrameless => "toggle_frameless",
             Self::ToggleSkeleton => "toggle_skeleton",
             Self::TogglePlayback => "toggle_playback",
+            Self::FrameBack => "frame_back",
+            Self::FrameForward => "frame_forward",
             Self::Grab => "grab",
             Self::Help => "help",
             Self::Cancel => "cancel",
@@ -407,6 +415,9 @@ pub fn default_slots(action: Action) -> Slots {
         Action::ToggleFullscreen => [Some(Chord::plain(K::F11)), None],
         Action::ToggleSkeleton => [Some(Chord::plain(K::KeyZ)), None],
         Action::TogglePlayback => [Some(Chord::plain(K::Space)), None],
+        // Comma / period («<» / «>»): the arrows turn the finding cards.
+        Action::FrameBack => [Some(Chord::plain(K::Comma)), None],
+        Action::FrameForward => [Some(Chord::plain(K::Period)), None],
         Action::ToggleFrameless => [Some(Chord::plain(K::F1)), None],
         Action::ToggleFloor => [Some(Chord::plain(K::KeyG)), None],
         Action::Help => [Some(Chord::plain(K::KeyH)), None],
@@ -906,6 +917,14 @@ mod tests {
         assert_eq!(
             b.command(Chord::plain(KeyCode::Space)),
             Some(Action::TogglePlayback)
+        );
+        assert_eq!(
+            b.command(Chord::plain(KeyCode::Comma)),
+            Some(Action::FrameBack)
+        );
+        assert_eq!(
+            b.command(Chord::plain(KeyCode::Period)),
+            Some(Action::FrameForward)
         );
         // A version 3 file keeps whatever the owner put on the middle button.
         let mut v3 = b.to_json();

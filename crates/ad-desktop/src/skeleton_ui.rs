@@ -166,6 +166,52 @@ impl ViewerUi {
     }
 }
 
+impl ViewerUi {
+    /// ANIM-05: the root path of the clip (blue), its start (green) and end
+    /// (red), and where the root is now (white ring).
+    pub(super) fn root_path_ui(
+        &self,
+        root: &egui::Ui,
+        path: &(Vec<Option<[f32; 2]>>, Option<[f32; 2]>),
+    ) {
+        let scene = self.scene;
+        let at = |p: [f32; 2]| {
+            egui::pos2(
+                scene.min.x + p[0] * scene.width(),
+                scene.min.y + p[1] * scene.height(),
+            )
+        };
+        let painter = root.painter().with_clip_rect(scene);
+        let blue = crate::accent::Accent::Existing.color();
+        let (points, now) = path;
+        for pair in points.windows(2) {
+            if let [Some(a), Some(b)] = pair {
+                painter.line_segment([at(*a), at(*b)], Stroke::new(3.5, OUTLINE));
+                painter.line_segment([at(*a), at(*b)], Stroke::new(2., blue));
+            }
+        }
+        if let Some(start) = points.first().copied().flatten() {
+            painter.circle(
+                at(start),
+                5.,
+                Color32::from_rgb(110, 214, 120),
+                Stroke::new(1.5, OUTLINE),
+            );
+        }
+        if let Some(end) = points.last().copied().flatten() {
+            painter.circle(
+                at(end),
+                5.,
+                Color32::from_rgb(236, 84, 84),
+                Stroke::new(1.5, OUTLINE),
+            );
+        }
+        if let Some(p) = now {
+            painter.circle(at(*p), 6.5, blue, Stroke::new(2., Color32::WHITE));
+        }
+    }
+}
+
 /// A part of the joint gizmo.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum JointHandle {
