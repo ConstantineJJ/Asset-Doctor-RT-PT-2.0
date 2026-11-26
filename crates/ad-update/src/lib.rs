@@ -43,10 +43,13 @@ pub fn updates_root(chosen: Option<&std::path::Path>) -> Result<std::path::PathB
     Ok(root)
 }
 
-/// A name unlikely to repeat: process id and the clock.
+/// A name unlikely to repeat: process id, the clock and a per-process
+/// counter (two threads can read the same clock value).
 pub(crate) fn unique_suffix() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
-    format!("{}-{nanos:x}", std::process::id())
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{}-{nanos:x}-{n}", std::process::id())
 }

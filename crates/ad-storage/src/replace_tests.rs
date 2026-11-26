@@ -2,13 +2,21 @@ use super::*;
 use std::fs;
 
 fn in_owned_directory(run: impl FnOnce(&Path)) {
+    // Tests run in parallel and can read the same clock value: a counter
+    // keeps the names apart, and create_dir refuses a folder that exists.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
+    fs::create_dir_all(&root).unwrap();
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir = root.join(format!("ad-replace-test-{}-{unique}", std::process::id()));
-    fs::create_dir_all(&dir).unwrap();
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = root.join(format!(
+        "ad-replace-test-{}-{unique}-{n}",
+        std::process::id()
+    ));
+    fs::create_dir(&dir).unwrap();
     run(&dir);
     for entry in fs::read_dir(&dir).unwrap() {
         fs::remove_file(entry.unwrap().path()).unwrap();
