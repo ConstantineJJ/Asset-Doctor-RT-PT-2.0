@@ -46,6 +46,8 @@ hotfixes.
     - «Rigging»: skins, joints and animation clips (see below).
   - A light grey strip under the top bar holds the «Work-Tree» button, which
     opens the left block. **Q** / **E** hide or show the left / right block.
+  - Interface scale 75–200 % («Настройки → Окно»). The mouse wheel over a
+    field, slider or list steps its value.
   - Window: a normal window or full screen (**F11**; **Esc** returns to the
     window). **F1** removes the window's frame and title bar (and brings
     them back).
@@ -90,7 +92,8 @@ hotfixes.
     the joint tree.
   - Playback bar at the bottom of the viewport: clip, previous / play-pause
     / next animation, stop, loop, speed and a timeline with the keys
-    (click or drag to scrub). **Space** plays and pauses.
+    (click or drag to scrub). **Space** plays and pauses; speed 0.1–3× in
+    steps of 0.1.
   - The Rigging tab: creating clips (yellow), the chosen clip (blue) and
     its keys (pink) in the top third, the joint tree below. Edit a joint's
     keys; create, copy, rename, delete and retime clips; all with Undo/Redo.

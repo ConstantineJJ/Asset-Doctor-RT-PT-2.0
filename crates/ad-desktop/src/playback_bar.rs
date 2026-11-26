@@ -17,6 +17,7 @@ const TRANSPORT: f32 = 3. * 36. + 46. + 3. * 6.;
 /// Loop, speed and the time label.
 const EXTRAS: f32 = 300.;
 const GAP: f32 = 10.;
+const SPEEDS: std::ops::RangeInclusive<f32> = 0.1..=3.;
 
 #[derive(Clone, Copy)]
 enum Icon {
@@ -155,7 +156,7 @@ fn clip_combo(
 ) {
     accent::scope(ui, Accent::Existing, |ui| {
         let before = controls.clip;
-        egui::ComboBox::from_id_salt("bar_clip")
+        let response = egui::ComboBox::from_id_salt("bar_clip")
             .width(width)
             .truncate()
             .selected_text(controls.clip.map_or_else(
@@ -173,7 +174,13 @@ fn clip_combo(
                 }
             })
             .response
-            .on_hover_text("Клип анимации");
+            .on_hover_text("Клип анимации · колёсико — соседний");
+        // Index 0 is the authored pose, then the clips.
+        let at = controls.clip.map_or(0, |clip| clip + 1);
+        let next = accent::wheel_choice(ui, &response, at, clips.len() + 1);
+        if next != at {
+            controls.clip = next.checked_sub(1);
+        }
         if controls.clip != before {
             controls.time = 0.;
             controls.playing = false;
@@ -255,16 +262,7 @@ fn extras(ui: &mut egui::Ui, controls: &mut Controls, durations: &[f32]) {
         }
         accent::scope(ui, Accent::Existing, |ui| {
             if room >= 130. {
-                egui::ComboBox::from_id_salt("bar_speed")
-                    .width(54.)
-                    .selected_text(format!("{}×", controls.speed))
-                    .show_ui(ui, |ui| {
-                        for speed in [0.25, 0.5, 1., 1.5, 2.] {
-                            ui.selectable_value(&mut controls.speed, speed, format!("{speed}×"));
-                        }
-                    })
-                    .response
-                    .on_hover_text("Скорость предпросмотра");
+                speed_field(ui, controls);
             }
             ui.toggle_value(
                 &mut controls.looping,
@@ -276,6 +274,24 @@ fn extras(ui: &mut egui::Ui, controls: &mut Controls, durations: &[f32]) {
             )
             .on_hover_text("Повторять клип по кругу");
         });
+    });
+}
+
+/// Preview speed 0.1–3×, in steps of 0.1 (drag or mouse wheel).
+fn speed_field(ui: &mut egui::Ui, controls: &mut Controls) {
+    accent::values(ui, |ui| {
+        let response = ui
+            .add(
+                egui::DragValue::new(&mut controls.speed)
+                    .range(SPEEDS)
+                    .speed(0.02)
+                    .fixed_decimals(1)
+                    .suffix("×"),
+            )
+            .on_hover_text("Скорость предпросмотра · колёсико — шаг 0.1");
+        accent::wheel_value(ui, &response, &mut controls.speed, 0.1, SPEEDS);
+        // Typed or dragged values land on the 0.1 grid too.
+        controls.speed = ((controls.speed * 10.).round() / 10.).clamp(0.1, 3.);
     });
 }
 
@@ -631,15 +647,9 @@ fn timeline_menu(
     });
     accent::scope(ui, Accent::Existing, |ui| {
         ui.checkbox(&mut controls.looping, "Повтор");
-        ui.menu_button(format!("Скорость · {}×", controls.speed), |ui| {
-            for speed in [0.25, 0.5, 1., 1.5, 2.] {
-                if ui
-                    .selectable_value(&mut controls.speed, speed, format!("{speed}×"))
-                    .clicked()
-                {
-                    ui.close();
-                }
-            }
+        ui.horizontal(|ui| {
+            ui.label("Скорость");
+            speed_field(ui, controls);
         });
     });
 }

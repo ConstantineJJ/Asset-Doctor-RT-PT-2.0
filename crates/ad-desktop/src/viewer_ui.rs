@@ -381,6 +381,9 @@ pub struct ViewerUi {
     /// P7 skeleton overlay (bones and joints of the skins) and its switch.
     pub skeleton_on: bool,
     pub skeleton: Option<skeleton_ui::SkeletonOverlay>,
+    /// Interface scale (egui zoom), 0.75–2; Ctrl + / Ctrl - change it too.
+    pub ui_scale: f32,
+    applied_scale: f32,
     /// The playback bar and the corner buttons (view, Undo/Redo) as drawn
     /// last frame: the bar keeps clear of the corner.
     bar_rect: egui::Rect,
@@ -483,6 +486,13 @@ impl Default for ViewerUi {
         let context = egui::Context::default();
         context.set_theme(egui::Theme::Dark);
         let mut visuals = egui::Visuals::dark();
+        // Owner 2026-11-26: lighter text everywhere.
+        visuals.widgets.noninteractive.fg_stroke.color = Color32::from_rgb(222, 226, 234);
+        visuals.widgets.inactive.fg_stroke.color = Color32::from_rgb(232, 235, 242);
+        visuals.widgets.hovered.fg_stroke.color = Color32::WHITE;
+        visuals.widgets.active.fg_stroke.color = Color32::WHITE;
+        visuals.widgets.open.fg_stroke.color = Color32::WHITE;
+        visuals.weak_text_color = Some(Color32::from_rgb(158, 166, 182));
         visuals.panel_fill = Color32::from_rgb(26, 29, 35);
         visuals.window_fill = Color32::from_rgb(30, 33, 40);
         visuals.selection.bg_fill = Color32::from_rgb(100, 42, 49);
@@ -586,6 +596,8 @@ impl Default for ViewerUi {
             #[cfg(test)]
             play_rect: egui::Rect::NOTHING,
             bar_rect: egui::Rect::NOTHING,
+            ui_scale: 1.,
+            applied_scale: 1.,
             corner_rect: egui::Rect::NOTHING,
             #[cfg(test)]
             redo_rect: egui::Rect::NOTHING,
@@ -700,29 +712,35 @@ impl ViewerUi {
             .fold(0f32, f32::max)
             .max(1e-6);
         let (mut changed, mut commit) = (false, false);
-        let mut track = |r: egui::Response| {
-            changed |= r.changed();
-            commit |= r.drag_stopped() || r.lost_focus();
+        // A wheel step over a field changes it by `step` and is one edit.
+        let mut track = |ui: &egui::Ui,
+                         r: egui::Response,
+                         value: &mut f32,
+                         step: f32,
+                         range: std::ops::RangeInclusive<f32>| {
+            let wheel = crate::accent::wheel_value(ui, &r, value, step, range);
+            changed |= r.changed() || wheel;
+            commit |= r.drag_stopped() || r.lost_focus() || wheel;
         };
         ui.horizontal(|ui| {
             ui.label("Сдвиг");
             for (axis, name) in ["X", "Y", "Z"].iter().enumerate() {
-                track(
-                    ui.add(
-                        egui::DragValue::new(&mut fields.offset[axis])
-                            .prefix(format!("{name} "))
-                            .speed(extent * 0.005)
-                            .range(-Placement::MAX_TRANSLATION..=Placement::MAX_TRANSLATION)
-                            .max_decimals(4),
-                    )
-                    .on_hover_text("Куда сдвинута нижняя точка центра модели от исходного положения, в единицах файла. Тяните или введите число и нажмите Enter; отпускание — одна правка."),
-                );
+                let range = -Placement::MAX_TRANSLATION..=Placement::MAX_TRANSLATION;
+                let r = ui.add(
+                    egui::DragValue::new(&mut fields.offset[axis])
+                        .prefix(format!("{name} "))
+                        .speed(extent * 0.005)
+                        .range(range.clone())
+                        .max_decimals(4),
+                )
+                .on_hover_text("Куда сдвинута нижняя точка центра модели от исходного положения, в единицах файла. Тяните или введите число и нажмите Enter; отпускание — одна правка. Колёсико — шаг 1 % размера модели.");
+                track(ui, r, &mut fields.offset[axis], extent * 0.01, range);
             }
         });
         ui.horizontal(|ui| {
             ui.label("Поворот");
-            track(
-                ui.add(
+            let r = ui
+                .add(
                     egui::DragValue::new(&mut fields.yaw)
                         .prefix("Y ")
                         .suffix(" град.")
@@ -731,11 +749,11 @@ impl ViewerUi {
                         .max_decimals(2),
                 )
                 .on_hover_text(
-                    "Поворот вокруг вертикальной оси (по горизонтали) от нижней точки центра.",
-                ),
-            );
-            track(
-                ui.add(
+                    "Поворот вокруг вертикальной оси (по горизонтали) от нижней точки центра. Колёсико — шаг 1°.",
+                );
+            track(ui, r, &mut fields.yaw, 1., -180.0..=180.0);
+            let r = ui
+                .add(
                     egui::DragValue::new(&mut fields.pitch)
                         .prefix("X ")
                         .suffix(" град.")
@@ -744,14 +762,14 @@ impl ViewerUi {
                         .max_decimals(2),
                 )
                 .on_hover_text(
-                    "Наклон вокруг горизонтальной оси X (по вертикали) от нижней точки центра.",
-                ),
-            );
+                    "Наклон вокруг горизонтальной оси X (по вертикали) от нижней точки центра. Колёсико — шаг 1°.",
+                );
+            track(ui, r, &mut fields.pitch, 1., -89.9..=89.9);
         });
         let scale_speed = (fields.scale * 0.005).max(1e-6);
         ui.horizontal(|ui| {
-            track(
-                ui.add(
+            let r = ui
+                .add(
                     egui::DragValue::new(&mut fields.scale)
                         .prefix("Масштаб x")
                         .speed(scale_speed)
@@ -759,8 +777,14 @@ impl ViewerUi {
                         .max_decimals(4),
                 )
                 .on_hover_text(
-                    "Равномерный масштаб относительно исходного размера, от нижней точки центра.",
-                ),
+                    "Равномерный масштаб относительно исходного размера, от нижней точки центра. Колёсико — шаг 0.01.",
+                );
+            track(
+                ui,
+                r,
+                &mut fields.scale,
+                0.01,
+                Placement::MIN_SCALE..=Placement::MAX_SCALE,
             );
             if ui
                 .button("На пол")
@@ -1448,6 +1472,16 @@ impl ViewerUi {
             });
         }
         let mut actions = Actions::default();
+        // Interface scale: the setting wins over egui's own keyboard zoom
+        // only when the setting itself changed.
+        if (context.zoom_factor() - self.applied_scale).abs() > 1e-4 {
+            self.ui_scale = context.zoom_factor().clamp(0.75, 2.);
+        }
+        self.ui_scale = self.ui_scale.clamp(0.75, 2.);
+        if (self.ui_scale - context.zoom_factor()).abs() > 1e-4 {
+            context.set_zoom_factor(self.ui_scale);
+        }
+        self.applied_scale = self.ui_scale;
         self.gizmo_dragging = context.dragged_id().is_some();
         let output=context.run_ui(raw,|root| {
             let width=root.max_rect().width();

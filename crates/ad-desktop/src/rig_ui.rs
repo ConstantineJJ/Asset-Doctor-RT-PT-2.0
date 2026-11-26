@@ -54,7 +54,8 @@ pub(super) fn show(
     }
 }
 
-/// Creating (yellow), the chosen clip (blue) and its keys (pink).
+/// Creating (yellow), the chosen clip (blue) and its keys (pink), each a
+/// card with a form: labels on the left, controls on the right.
 fn animation_section(
     ui: &mut egui::Ui,
     document: &AssetDocument,
@@ -64,8 +65,8 @@ fn animation_section(
 ) {
     let clips = document.animation_clips();
     let clip = controls.clip.filter(|&clip| clip < clips.len());
-    accent::scope(ui, Accent::New, |ui| {
-        accent::heading(ui, Accent::New, "Новая анимация");
+    roomy(ui);
+    accent::card(ui, Accent::New, "Новая анимация", |ui| {
         ui.horizontal_wrapped(|ui| {
             if document.is_read_only() {
                 let create = new_clip_edit(ui.ctx(), document);
@@ -78,7 +79,10 @@ fn animation_section(
                 }
             }
             if ui
-                .add_enabled(clip.is_some(), egui::Button::new("Дублировать клип"))
+                .add_enabled(
+                    clip.is_some() && !controls.playing,
+                    egui::Button::new("Дублировать клип"),
+                )
                 .on_hover_text("Новый клип — копия выбранного")
                 .clicked()
                 && let Some(clip) = clip
@@ -87,8 +91,8 @@ fn animation_section(
             }
         });
     });
+    ui.add_space(8.);
     let Some(clip) = clip else {
-        ui.add_space(4.);
         ui.weak(if clips.is_empty() {
             "В модели нет клипов. Создайте клип, чтобы ставить ключи."
         } else {
@@ -96,27 +100,41 @@ fn animation_section(
         });
         return;
     };
-    ui.add_space(4.);
+    if controls.playing {
+        ui.label(
+            egui::RichText::new("Идёт воспроизведение. Пауза (Пробел) — чтобы править.")
+                .color(Accent::Main.text()),
+        );
+        ui.add_space(6.);
+    }
     ui.add_enabled_ui(!controls.playing, |ui| {
-        accent::scope(ui, Accent::Existing, |ui| {
+        let title = format!("Клип «{}»", clips[clip].name);
+        accent::card(ui, Accent::Existing, &title, |ui| {
             clip_properties(ui, document, clip, actions);
         });
-        ui.add_space(2.);
-        accent::scope(ui, Accent::Edit, |ui| {
-            accent::heading(ui, Accent::Edit, "Ключи и поза");
-            key_editor(ui, document, clip, controls, actions);
-            ui.horizontal(|ui| {
-                ui.label("Gizmo сустава:");
-                ui.selectable_value(local_axes, true, "Локальные оси");
-                ui.selectable_value(local_axes, false, "Мировые оси");
-            })
-            .response
-            .on_hover_text("Кольца поворачивают выбранный сустав, стрелки двигают его; отпускание — ключ в текущем времени клипа (Undo отменит). Нужны выбранный клип и пауза.");
+        ui.add_space(8.);
+        accent::card(ui, Accent::Edit, "Ключи и поза", |ui| {
+            key_editor(ui, document, clip, controls, local_axes, actions);
         });
     });
-    if controls.playing {
-        ui.weak("Идёт воспроизведение. Пауза (Пробел) — чтобы править ключи.");
-    }
+}
+
+/// More air between rows and taller controls in the Rigging forms.
+fn roomy(ui: &mut egui::Ui) {
+    let spacing = ui.spacing_mut();
+    spacing.item_spacing = egui::vec2(8., 8.);
+    spacing.interact_size.y = 24.;
+    spacing.button_padding = egui::vec2(8., 4.);
+}
+
+/// Width of the label column, the same in every Rigging form.
+const LABELS: f32 = 92.;
+
+fn form(id: egui::Id) -> egui::Grid {
+    egui::Grid::new(id)
+        .num_columns(2)
+        .min_col_width(LABELS)
+        .spacing([10., 10.])
 }
 
 /// The skin report and the joint tree.
@@ -137,7 +155,7 @@ fn rig_section(
         .data(|data| data.get_temp::<usize>(selector_id))
         .unwrap_or(0)
         .min(rig.skins.len() - 1);
-    egui::ComboBox::from_id_salt(selector_id)
+    let combo = egui::ComboBox::from_id_salt(selector_id)
         .selected_text(format!("{} · {}", selected + 1, rig.skins[selected].name))
         .show_ui(ui, |ui| {
             for (index, skin) in rig.skins.iter().enumerate() {
@@ -147,7 +165,9 @@ fn rig_section(
                     format!("{} · {}", index + 1, skin.name),
                 );
             }
-        });
+        })
+        .response;
+    selected = accent::wheel_choice(ui, &combo, selected, rig.skins.len());
     ui.ctx()
         .data_mut(|data| data.insert_temp(selector_id, selected));
 
@@ -634,6 +654,7 @@ struct ClipDraft {
     duration: f32,
 }
 
+/// Name, duration and delete for the chosen clip.
 fn clip_properties(
     ui: &mut egui::Ui,
     document: &AssetDocument,
@@ -642,30 +663,28 @@ fn clip_properties(
 ) {
     let active = &document.animation_clips()[clip];
     let id = egui::Id::new(("clip_properties", document.id().0));
-    egui::CollapsingHeader::new(
-        egui::RichText::new(format!("Клип «{}»: имя, длительность", active.name))
-            .strong()
-            .color(Accent::Existing.text()),
-    )
-    .id_salt(id)
-    .show(ui, |ui| {
-        let mut draft = ui
-            .ctx()
-            .data(|data| data.get_temp::<ClipDraft>(id))
-            .filter(|draft| draft.clip_id == active.id() && draft.revision == document.revision())
-            .unwrap_or_else(|| ClipDraft {
-                clip_id: active.id(),
-                revision: document.revision(),
-                name: active.name.clone(),
-                duration: active.duration,
+    let mut draft = ui
+        .ctx()
+        .data(|data| data.get_temp::<ClipDraft>(id))
+        .filter(|draft| draft.clip_id == active.id() && draft.revision == document.revision())
+        .unwrap_or_else(|| ClipDraft {
+            clip_id: active.id(),
+            revision: document.revision(),
+            name: active.name.clone(),
+            duration: active.duration,
+        });
+    form(egui::Id::new(("clip_form", document.id().0))).show(ui, |ui| {
+        accent::field_label(ui, "Имя");
+        ui.horizontal(|ui| {
+            accent::values(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut draft.name)
+                        .char_limit(120)
+                        .desired_width((ui.available_width() - 120.).max(80.))
+                        .hint_text("Название клипа"),
+                );
             });
-        ui.add(
-            egui::TextEdit::singleline(&mut draft.name)
-                .char_limit(120)
-                .hint_text("Название клипа"),
-        );
-        let name = draft.name.trim();
-        ui.horizontal_wrapped(|ui| {
+            let name = draft.name.trim();
             if ui
                 .add_enabled(
                     !name.is_empty() && name != active.name,
@@ -678,19 +697,21 @@ fn clip_properties(
                     name: name.to_owned(),
                 });
             }
-            if ui.button("Удалить клип").clicked() {
-                actions.clip_edit = Some(ClipEdit::Delete { clip });
-            }
         });
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Длительность");
-            ui.add(
-                egui::DragValue::new(&mut draft.duration)
-                    .range(0. ..=f32::MAX)
-                    .speed(0.01)
-                    .max_decimals(6)
-                    .suffix(" с"),
-            );
+        ui.end_row();
+
+        accent::field_label(ui, "Длительность");
+        ui.horizontal(|ui| {
+            accent::values(ui, |ui| {
+                let response = ui.add(
+                    egui::DragValue::new(&mut draft.duration)
+                        .range(0. ..=f32::MAX)
+                        .speed(0.01)
+                        .max_decimals(6)
+                        .suffix(" с"),
+                );
+                accent::wheel_value(ui, &response, &mut draft.duration, 0.1, 0.1..=f32::MAX);
+            });
             let can_retime =
                 active.duration > 0. && draft.duration > 0. && draft.duration != active.duration;
             if ui
@@ -703,8 +724,15 @@ fn clip_properties(
                 });
             }
         });
-        ui.ctx().data_mut(|data| data.insert_temp(id, draft));
+        ui.end_row();
+
+        ui.label("");
+        if ui.button("Удалить клип").clicked() {
+            actions.clip_edit = Some(ClipEdit::Delete { clip });
+        }
+        ui.end_row();
     });
+    ui.ctx().data_mut(|data| data.insert_temp(id, draft));
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -722,11 +750,25 @@ struct Draft {
     axes: [f32; 3],
 }
 
+const AXES: [(&str, egui::Color32); 3] = [
+    ("X", egui::Color32::from_rgb(240, 96, 96)),
+    ("Y", egui::Color32::from_rgb(112, 214, 112)),
+    ("Z", egui::Color32::from_rgb(104, 156, 250)),
+];
+const KINDS: [(TrackKind, &str); 3] = [
+    (TrackKind::Translation, "Сдвиг"),
+    (TrackKind::Rotation, "Поворот"),
+    (TrackKind::Scale, "Масштаб"),
+];
+
+/// The key editor as a form: joint, channel, time, value, key, gizmo axes.
+/// The mouse wheel also steps every field and choice.
 fn key_editor(
     ui: &mut egui::Ui,
     document: &AssetDocument,
     clip: usize,
     controls: &mut Controls,
+    local_axes: &mut bool,
     actions: &mut Actions,
 ) {
     let active = &document.animation_clips()[clip];
@@ -743,37 +785,59 @@ fn key_editor(
         .unwrap_or_else(|| active.tracks()[0].kind());
     let previous_selection = (node, kind);
     let node_label = |index: usize| format!("{} · {}", index, document.nodes()[index].name);
-    egui::ComboBox::from_id_salt(node_id)
-        .selected_text(node_label(node.0))
-        .truncate()
-        .show_ui(ui, |ui| {
-            let row = ui.text_style_height(&egui::TextStyle::Body) + 6.;
-            egui::ScrollArea::vertical().max_height(240.).show_rows(
-                ui,
-                row,
-                document.nodes().len(),
-                |ui, rows| {
-                    for index in rows {
-                        let choice = NodeId(index);
-                        if ui
-                            .add_enabled(
-                                document.can_animate_node(choice),
-                                egui::Button::selectable(node == choice, node_label(index))
-                                    .truncate(),
-                            )
-                            .clicked()
-                        {
-                            node = choice;
-                            ui.close();
+    let keyable: Vec<NodeId> = (0..document.nodes().len())
+        .map(NodeId)
+        .filter(|&node| document.can_animate_node(node))
+        .collect();
+
+    form(egui::Id::new(("key_form", document.id().0))).show(ui, |ui| {
+        accent::field_label(ui, "Сустав");
+        let combo = egui::ComboBox::from_id_salt(node_id)
+            .width((ui.available_width() - 4.).max(120.))
+            .selected_text(node_label(node.0))
+            .truncate()
+            .show_ui(ui, |ui| {
+                let row = ui.text_style_height(&egui::TextStyle::Body) + 6.;
+                egui::ScrollArea::vertical().max_height(240.).show_rows(
+                    ui,
+                    row,
+                    document.nodes().len(),
+                    |ui, rows| {
+                        for index in rows {
+                            let choice = NodeId(index);
+                            if ui
+                                .add_enabled(
+                                    document.can_animate_node(choice),
+                                    egui::Button::selectable(node == choice, node_label(index))
+                                        .truncate(),
+                                )
+                                .clicked()
+                            {
+                                node = choice;
+                                ui.close();
+                            }
                         }
-                    }
-                },
-            );
-        });
-    ui.horizontal(|ui| {
-        ui.selectable_value(&mut kind, TrackKind::Translation, "Сдвиг");
-        ui.selectable_value(&mut kind, TrackKind::Rotation, "Поворот °");
-        ui.selectable_value(&mut kind, TrackKind::Scale, "Масштаб");
+                    },
+                );
+            })
+            .response
+            .on_hover_text("Колёсико — соседний сустав");
+        if let Some(at) = keyable.iter().position(|&n| n == node) {
+            node = keyable[accent::wheel_choice(ui, &combo, at, keyable.len())];
+        }
+        ui.end_row();
+
+        accent::field_label(ui, "Канал");
+        let group = ui
+            .horizontal(|ui| {
+                for (choice, label) in KINDS {
+                    ui.selectable_value(&mut kind, choice, label);
+                }
+            })
+            .response;
+        let at = KINDS.iter().position(|(k, _)| *k == kind).unwrap_or(0);
+        kind = KINDS[accent::wheel_choice(ui, &group, at, KINDS.len())].0;
+        ui.end_row();
     });
     ui.ctx().data_mut(|data| {
         data.insert_temp(node_id, node);
@@ -786,36 +850,46 @@ fn key_editor(
     let times = active
         .track(node, kind)
         .map_or(&[][..], |track| track.times());
-    ui.horizontal(|ui| {
-        let previous = times
-            .partition_point(|&time| time < controls.time)
-            .checked_sub(1);
-        let next = times
-            .get(times.partition_point(|&time| time <= controls.time))
-            .copied();
-        if ui
-            .add_enabled(previous.is_some(), egui::Button::new("◀"))
-            .on_hover_text("Предыдущий ключ")
-            .clicked()
-        {
-            controls.time = times[previous.expect("enabled when previous exists")];
-        }
-        if ui
-            .add_enabled(next.is_some(), egui::Button::new("▶"))
-            .on_hover_text("Следующий ключ")
-            .clicked()
-        {
-            controls.time = next.expect("enabled when next exists");
-        }
-        ui.add(
-            egui::DragValue::new(&mut controls.time)
-                .speed(0.01)
-                .range(0. ..=f32::MAX)
-                .max_decimals(6)
-                .suffix(" с"),
-        )
-        .on_hover_text("Время ключа. Можно ввести время за пределами клипа.");
-        ui.weak(format!("{} ключ.", times.len()));
+    form(egui::Id::new(("key_form_time", document.id().0))).show(ui, |ui| {
+        accent::field_label(ui, "Время");
+        ui.horizontal(|ui| {
+            let previous = times
+                .partition_point(|&time| time < controls.time)
+                .checked_sub(1);
+            let next = times
+                .get(times.partition_point(|&time| time <= controls.time))
+                .copied();
+            if ui
+                .add_enabled(previous.is_some(), egui::Button::new("◀"))
+                .on_hover_text("Предыдущий ключ")
+                .clicked()
+                && let Some(i) = previous
+            {
+                controls.time = times[i];
+            }
+            if ui
+                .add_enabled(next.is_some(), egui::Button::new("▶"))
+                .on_hover_text("Следующий ключ")
+                .clicked()
+                && let Some(next) = next
+            {
+                controls.time = next;
+            }
+            accent::values(ui, |ui| {
+                let response = ui
+                    .add(
+                        egui::DragValue::new(&mut controls.time)
+                            .speed(0.01)
+                            .range(0. ..=f32::MAX)
+                            .max_decimals(4)
+                            .suffix(" с"),
+                    )
+                    .on_hover_text("Время ключа; колёсико — на кадр (1/30 с). Можно ввести время за пределами клипа.");
+                accent::wheel_value(ui, &response, &mut controls.time, 1. / 30., 0. ..=f32::MAX);
+            });
+            ui.weak(format!("ключей: {}", times.len()));
+        });
+        ui.end_row();
     });
 
     let position = KeyPosition {
@@ -825,9 +899,42 @@ fn key_editor(
         kind,
         time: controls.time,
     };
-    let Ok(value) = document.animation_value(clip, node, kind, position.time) else {
-        return;
-    };
+    let value = document
+        .animation_value(clip, node, kind, position.time)
+        .ok();
+    form(egui::Id::new(("key_form_value", document.id().0))).show(ui, |ui| {
+        if let Some(value) = value {
+            key_value_rows(ui, active, position, value, draft_id, times, actions);
+        }
+        accent::field_label(ui, "Оси gizmo");
+        let group = ui
+            .horizontal(|ui| {
+                ui.selectable_value(local_axes, true, "Локальные");
+                ui.selectable_value(local_axes, false, "Мировые");
+            })
+            .response
+            .on_hover_text("Кольца поворачивают выбранный сустав, стрелки двигают его; отпускание — ключ в текущем времени клипа (Undo отменит). Нужны выбранный клип и пауза.");
+        if accent::wheel_steps(ui, &group) != 0 {
+            *local_axes = !*local_axes;
+        }
+        ui.end_row();
+    });
+}
+
+/// «Значение» (X, Y, Z: coloured letters, white numbers) and «Ключ»
+/// (add or update, delete, reset).
+fn key_value_rows(
+    ui: &mut egui::Ui,
+    active: &AnimationClip,
+    position: KeyPosition,
+    value: [f32; 4],
+    draft_id: egui::Id,
+    times: &[f32],
+    actions: &mut Actions,
+) {
+    let KeyPosition {
+        clip, node, kind, ..
+    } = position;
     let initial = if kind == TrackKind::Rotation {
         let (x, y, z) = glam::Quat::from_array(value).to_euler(glam::EulerRot::XYZ);
         [x, y, z].map(f32::to_degrees)
@@ -842,19 +949,36 @@ fn key_editor(
             position,
             axes: initial,
         });
+    let (step, unit) = if kind == TrackKind::Rotation {
+        (1., "°")
+    } else {
+        (0.01, "")
+    };
     let mut changed = false;
+    accent::field_label(ui, "Значение");
     ui.horizontal(|ui| {
-        for (axis, label) in draft.axes.iter_mut().zip(["X ", "Y ", "Z "]) {
-            changed |= ui
-                .add(
-                    egui::DragValue::new(axis)
-                        .prefix(label)
-                        .speed(0.02)
-                        .max_decimals(4),
-                )
-                .changed();
+        for (axis, (letter, color)) in draft.axes.iter_mut().zip(AXES) {
+            ui.label(egui::RichText::new(letter).strong().color(color));
+            accent::values(ui, |ui| {
+                let response = ui
+                    .add(
+                        egui::DragValue::new(axis)
+                            .speed(0.02)
+                            .max_decimals(4)
+                            .suffix(unit),
+                    )
+                    .on_hover_text(if unit.is_empty() {
+                        "Колёсико — шаг 0.01"
+                    } else {
+                        "Колёсико — шаг 1°"
+                    });
+                changed |= response.changed();
+                changed |= accent::wheel_value(ui, &response, axis, step, f32::MIN..=f32::MAX);
+            });
+            ui.add_space(4.);
         }
     });
+    ui.end_row();
     let value = if draft.axes == initial {
         value
     } else if kind == TrackKind::Rotation {
@@ -868,6 +992,7 @@ fn key_editor(
     if changed {
         actions.animation_preview = Some((draft.axes != initial).then_some(channel));
     }
+    accent::field_label(ui, "Ключ");
     ui.horizontal(|ui| {
         let exists =
             times.get(times.partition_point(|&time| time < position.time)) == Some(&position.time);
@@ -875,7 +1000,7 @@ fn key_editor(
             .button(if exists {
                 "Обновить ключ"
             } else {
-                "Добавить ключ"
+                "＋ Добавить ключ"
             })
             .clicked()
         {
@@ -906,5 +1031,6 @@ fn key_editor(
             actions.animation_preview = Some(None);
         }
     });
+    ui.end_row();
     ui.ctx().data_mut(|data| data.insert_temp(draft_id, draft));
 }

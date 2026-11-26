@@ -168,6 +168,18 @@ impl Playback {
         self.next_frame = Instant::now();
     }
 
+    /// A preview that changes while dragging (joint gizmo, key fields): the
+    /// pose being computed is finished and shown, then the newest value is
+    /// computed. Cancelling on every pointer move (as `preview` does) left
+    /// the pose frozen until the pointer stopped when one pose took longer
+    /// than a frame.
+    pub fn preview_live(&mut self, value: Option<ChannelValue>) {
+        if self.preview != value {
+            self.preview = value;
+            self.next_frame = Instant::now();
+        }
+    }
+
     pub fn pause_for_edit(&mut self) {
         self.controls.playing = false;
         self.anchor = None;
@@ -260,7 +272,8 @@ impl Playback {
                 sample,
             });
             self.pending = Some(sample);
-            self.next_frame = now + Duration::from_millis(33);
+            // At most one pose in flight; up to 60 per second.
+            self.next_frame = now + Duration::from_millis(16);
         }
         Ok(published)
     }

@@ -444,6 +444,7 @@ impl ViewerUi {
         });
         ui.checkbox(&mut self.frameless, "Окно без рамки и заголовка (F1)")
             .on_hover_text("Убирает рамку и верхнюю полосу с кнопками свернуть/развернуть/закрыть; F1 — вернуть.");
+        self.ui_scale_controls(ui);
         ui.separator();
         Self::heading(ui, "Обновления");
         self.update_settings(ui, actions);
@@ -461,17 +462,49 @@ impl ViewerUi {
         }
     }
 
+    /// Interface scale 75–200 % (text, buttons, panels; not the 3D view):
+    /// a slider in 5 % steps (the mouse wheel too) and «100 %».
+    pub(super) fn ui_scale_controls(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            let mut percent = (self.ui_scale * 100.).round();
+            let response = ui
+                .add(
+                    egui::Slider::new(&mut percent, 75.0..=200.0)
+                        .step_by(5.)
+                        .suffix(" %")
+                        .text("Масштаб интерфейса"),
+                )
+                .on_hover_text("Размер текста, кнопок и панелей · колёсико — шаг 5 %");
+            crate::accent::wheel_value(ui, &response, &mut percent, 5., 75.0..=200.0);
+            if ui
+                .add_enabled(percent != 100., egui::Button::new("100 %"))
+                .clicked()
+            {
+                percent = 100.;
+            }
+            self.ui_scale = percent / 100.;
+        });
+    }
+
     /// Outline switch, width and colour («Настройки» and the right-click
     /// menu): dynamic contrast or one of OUTLINE_COLORS.
     pub(super) fn outline_controls(&mut self, ui: &mut egui::Ui) {
         ui.checkbox(&mut self.outline_on, "Показывать контур (Tab)");
-        ui.add(
-            egui::Slider::new(&mut self.outline_width, ad_render_vulkan::outline::WIDTHS)
-                .step_by(1.)
-                .suffix(" px")
-                .text("Толщина"),
-        )
-        .on_hover_text("Толщина линии контура в пикселях экрана: 1–32.");
+        let width = ui
+            .add(
+                egui::Slider::new(&mut self.outline_width, ad_render_vulkan::outline::WIDTHS)
+                    .step_by(1.)
+                    .suffix(" px")
+                    .text("Толщина"),
+            )
+            .on_hover_text("Толщина линии контура в пикселях экрана: 1–32 · колёсико — шаг 1.");
+        crate::accent::wheel_value(
+            ui,
+            &width,
+            &mut self.outline_width,
+            1.,
+            ad_render_vulkan::outline::WIDTHS,
+        );
         ui.radio_value(&mut self.outline_color, None, "Динамический контраст")
             .on_hover_text("Линия инвертирует то, что под ней: видна на любом фоне.");
         ui.label("Цвет:");
@@ -517,7 +550,7 @@ impl ViewerUi {
                     "PBR · направленный свет",
                 );
             });
-        egui::ComboBox::from_label("Канал")
+        let channel = egui::ComboBox::from_label("Канал")
             .selected_text(self.channel.label())
             .show_ui(ui, |ui| {
                 for channel in ad_render_vulkan::lighting::Channel::ALL {
@@ -525,7 +558,10 @@ impl ViewerUi {
                 }
             })
             .response
-            .on_hover_text("Что показывать на модели: обычное освещение или один канал данных (нормали, UV, карты материала). Только вид.");
+            .on_hover_text("Что показывать на модели: обычное освещение или один канал данных (нормали, UV, карты материала). Только вид · колёсико — соседний.");
+        let all = ad_render_vulkan::lighting::Channel::ALL;
+        let at = all.iter().position(|c| *c == self.channel).unwrap_or(0);
+        self.channel = all[crate::accent::wheel_choice(ui, &channel, at, all.len())];
         ui.checkbox(&mut self.textures, "Базовые текстуры")
             .on_hover_text(
                 "Включить выборку встроенных PNG/JPEG. Исходные материалы не изменяются.",
@@ -576,10 +612,11 @@ impl ViewerUi {
         ui.checkbox(&mut self.shadows, "Тени").on_hover_text(
             "Тень от лампы на модели и на полу. Только вид; при выключенной лампе теней нет.",
         );
-        ui.add_enabled(
+        let strength = ui.add_enabled(
             self.shadows,
             egui::Slider::new(&mut self.shadow_strength, 0.0..=1.0).text("Сила тени"),
         );
+        crate::accent::wheel_value(ui, &strength, &mut self.shadow_strength, 0.05, 0.0..=1.0);
         ui.separator();
         Self::heading(ui, "Свет окружения");
         if !pbr {
@@ -587,7 +624,9 @@ impl ViewerUi {
         }
         ui.add_enabled_ui(pbr, |ui| {
             ui.checkbox(&mut self.environment_light, "Свет окружения").on_hover_text("С показанной панорамой (скайбокс PNG/JPEG или HDR) модель освещается ею целиком: рассеянный свет и отражения с учётом шероховатости (IBL). Без панорамы — приближение цветами выбранного окружения (небо сверху, земля снизу).");
-            ui.add_enabled(self.environment_light, egui::Slider::new(&mut self.environment_strength, 0.0..=ad_render_vulkan::sky::EnvironmentLight::MAX_STRENGTH).text("Сила"));
+            let range = 0.0..=ad_render_vulkan::sky::EnvironmentLight::MAX_STRENGTH;
+            let strength = ui.add_enabled(self.environment_light, egui::Slider::new(&mut self.environment_strength, range.clone()).text("Сила"));
+            crate::accent::wheel_value(ui, &strength, &mut self.environment_strength, 0.1, range);
         });
         ui.separator();
         let reset = ui.button("Сбросить освещение").on_hover_text(
@@ -608,10 +647,11 @@ impl ViewerUi {
     fn lamp_menu(&mut self, ui: &mut egui::Ui, actions: &mut Actions) {
         ui.checkbox(&mut self.lighting.enabled, "Лампа включена")
             .on_hover_text("Выключенная лампа не светит; остаются заполнение и свет окружения.");
-        if ui
+        let kelvin = ui
             .add(egui::Slider::new(&mut self.lamp_kelvin, 1500.0..=10000.0).text("Температура, K"))
-            .on_hover_text("Цветовая температура лампы: меньше — теплее, больше — холоднее.")
-            .changed()
+            .on_hover_text("Цветовая температура лампы: меньше — теплее, больше — холоднее · колёсико — шаг 100 K.");
+        if kelvin.changed()
+            | crate::accent::wheel_value(ui, &kelvin, &mut self.lamp_kelvin, 100., 1500.0..=10000.0)
         {
             self.lighting.color = crate::lamp::kelvin_to_rgb(self.lamp_kelvin);
         }
@@ -620,24 +660,26 @@ impl ViewerUi {
             ui.color_edit_button_rgb(&mut self.lighting.color);
             ui.checkbox(&mut self.lamp_icon, "Значок лампы").on_hover_text("Значок лампы во вьюпорте: тяните его или его стрелки, чтобы повернуть свет; правая кнопка — меню.");
         });
-        ui.add(
+        let distance = ui.add(
             egui::Slider::new(&mut self.lighting.distance, ad_render_vulkan::lighting::LAMP_DISTANCES)
                 .text("Расстояние"),
         )
         .on_hover_text("Расстояние от центра модели в её размерах (радиусах). Ближе — ярче и с более резким перепадом света; тень расходится от лампы. 2,5 — как прежняя лампа.");
+        crate::accent::wheel_value(
+            ui,
+            &distance,
+            &mut self.lighting.distance,
+            0.1,
+            ad_render_vulkan::lighting::LAMP_DISTANCES,
+        );
         let (mut azimuth, mut elevation) = crate::lamp::angles(self.lighting.direction);
-        let turned = ui
-            .add(egui::Slider::new(&mut azimuth, -180.0..=180.0).text("Азимут"))
-            .changed();
-        let raised = ui
-            .add(
-                egui::Slider::new(
-                    &mut elevation,
-                    -crate::lamp::MAX_ELEVATION..=crate::lamp::MAX_ELEVATION,
-                )
-                .text("Высота"),
-            )
-            .changed();
+        let turn = ui.add(egui::Slider::new(&mut azimuth, -180.0..=180.0).text("Азимут"));
+        let turned = turn.changed()
+            | crate::accent::wheel_value(ui, &turn, &mut azimuth, 5., -180.0..=180.0);
+        let heights = -crate::lamp::MAX_ELEVATION..=crate::lamp::MAX_ELEVATION;
+        let raise = ui.add(egui::Slider::new(&mut elevation, heights.clone()).text("Высота"));
+        let raised =
+            raise.changed() | crate::accent::wheel_value(ui, &raise, &mut elevation, 5., heights);
         if turned || raised {
             self.lighting.direction = crate::lamp::from_angles(azimuth, elevation);
         }
@@ -666,9 +708,13 @@ impl ViewerUi {
                     }
                 }
             }).response.on_hover_text("Задаёт лампу, основной свет, заполнение и экспозицию одним выбором. Окружение и режим не меняются.");
-            ui.add(egui::Slider::new(&mut self.lighting.exposure_ev, -6.0..=6.0).text("Экспозиция · EV"));
-            ui.add(egui::Slider::new(&mut self.lighting.key, 0.0..=8.0).text("Основной свет"));
-            ui.add(egui::Slider::new(&mut self.lighting.fill, 0.0..=1.0).text("Заполнение"));
+            let l = &mut self.lighting;
+            let r = ui.add(egui::Slider::new(&mut l.exposure_ev, -6.0..=6.0).text("Экспозиция · EV"));
+            crate::accent::wheel_value(ui, &r, &mut l.exposure_ev, 0.25, -6.0..=6.0);
+            let r = ui.add(egui::Slider::new(&mut l.key, 0.0..=8.0).text("Основной свет"));
+            crate::accent::wheel_value(ui, &r, &mut l.key, 0.1, 0.0..=8.0);
+            let r = ui.add(egui::Slider::new(&mut l.fill, 0.0..=1.0).text("Заполнение"));
+            crate::accent::wheel_value(ui, &r, &mut l.fill, 0.05, 0.0..=1.0);
         });
     }
 
@@ -756,11 +802,12 @@ impl ViewerUi {
                         }
                     });
                     if self.skybox_on {
-                        ui.add(
+                        let yaw = ui.add(
                             egui::Slider::new(&mut self.skybox_yaw, 0.0..=360.0)
                                 .text("Поворот")
                                 .suffix(" град."),
                         );
+                        crate::accent::wheel_value(ui, &yaw, &mut self.skybox_yaw, 5., 0.0..=360.0);
                     }
                 } else {
                     ui.weak("SkyBox не выбран: показано небо «Окружения».");

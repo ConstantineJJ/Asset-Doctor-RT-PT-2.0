@@ -3125,7 +3125,7 @@ impl App {
             self.playback.apply(controls);
         }
         if let Some(preview) = actions.animation_preview {
-            self.playback.preview(preview);
+            self.playback.preview_live(preview);
         }
         if let Some(clip_edit) = actions.clip_edit.take() {
             let controls = self.playback.controls;
