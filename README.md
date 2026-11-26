@@ -145,8 +145,10 @@ cargo run --locked -p ad-desktop -- --open model.glb
 The executables are `target/release/AssetDoctorRTPT.exe` and
 `target/release/AssetDoctorRTPT-Updater.exe`. `--require-validation` fails if
 Vulkan validation layers are unavailable. CI packages the program folder as
-`AssetDoctorRTPT-win-x64.zip` and its `.sha256`. A release is published only
-by a manual run with `publish` set. Memory budgets are generous: GLB up to
+`AssetDoctorRTPT-win-x64.zip` and its `.sha256`. A release is published by
+pushing a tag `vX.Y.Z` that equals the Cargo version and points at a commit of
+`main`; the annotated tag's message becomes the release notes. A manual run
+with `publish` set is the fallback. Memory budgets are generous: GLB up to
 1 GiB, textures up to 2 GiB and 16384 px.
 
 ## Source layout

@@ -1,9 +1,11 @@
 name: Windows foundation
 on:
+  # A push of a tag vX.Y.Z publishes that release (ADR-0049 §6): the tag must
+  # equal the Cargo version and point at a commit of main; the annotated tag
+  # message becomes the release notes.
   push:
   pull_request:
-  # ADR-0049: a release is published only by a manual run with publish = true,
-  # after the owner approves it.
+  # Fallback: a manual run with publish = true releases the pushed main.
   workflow_dispatch:
     inputs:
       publish:
@@ -65,7 +67,9 @@ jobs:
 
   release:
     needs: windows-msvc
-    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main'
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: windows-latest
     permissions:
       contents: write
@@ -81,9 +85,36 @@ jobs:
           VERSION: ${{ needs.windows-msvc.outputs.version }}
           NOTES: ${{ inputs.notes }}
         run: |
+          # gh prints UTF-8; read it as such (Russian release notes).
+          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+          $repo = $env:GITHUB_REPOSITORY
           $tag = "v$env:VERSION"
-          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          $notes = $env:NOTES
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            # The tag names the version: it must equal the Cargo version, and
+            # its commit must already be on main (main is identical to it or
+            # ahead of it).
+            if ($env:GITHUB_REF_NAME -cne $tag) {
+              throw "Tag $env:GITHUB_REF_NAME does not match the Cargo version $tag."
+            }
+            $status = gh api "repos/$repo/compare/main...$env:GITHUB_SHA" --jq .status
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot compare the tag with main.' }
+            if ($status -notin 'identical', 'behind') {
+              throw "Tag $tag points at a commit that is not on main ($status)."
+            }
+            # Notes: the annotated tag's message (a lightweight tag has none).
+            $ref = gh api "repos/$repo/git/ref/tags/$tag" | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0) { throw "Cannot read tag $tag." }
+            if ($ref.object.type -eq 'tag') {
+              $notes = gh api "repos/$repo/git/tags/$($ref.object.sha)" --jq .message
+              if ($LASTEXITCODE -ne 0) { throw "Cannot read the message of tag $tag." }
+              # A signed tag carries its signature after the message.
+              $notes = (($notes -join "`n") -split "-----BEGIN [A-Z ]*SIGNATURE-----")[0].Trim()
+            }
+          }
+          gh release view $tag --repo $repo *> $null
           if ($LASTEXITCODE -eq 0) { throw "Release $tag already exists." }
-          $notes = if ($env:NOTES) { $env:NOTES } else { "AD RT-PT $tag" }
+          if (-not $notes) { $notes = "AD RT-PT $tag" }
           gh release create $tag release/AssetDoctorRTPT-win-x64.zip release/AssetDoctorRTPT-win-x64.sha256 `
-            --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "AD RT-PT $tag" --notes $notes
+            --repo $repo --target $env:GITHUB_SHA --title "AD RT-PT $tag" --notes $notes
+          if ($LASTEXITCODE -ne 0) { throw "Publishing $tag failed." }
