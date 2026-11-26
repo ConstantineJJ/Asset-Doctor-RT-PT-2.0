@@ -9,6 +9,8 @@ use winit::{event::WindowEvent, window::Window};
 
 #[path = "panels.rs"]
 mod panels;
+#[path = "playback_bar.rs"]
+mod playback_bar;
 #[path = "rig_ui.rs"]
 mod rig_ui;
 #[path = "skeleton_ui.rs"]
@@ -379,6 +381,13 @@ pub struct ViewerUi {
     /// P7 skeleton overlay (bones and joints of the skins) and its switch.
     pub skeleton_on: bool,
     pub skeleton: Option<skeleton_ui::SkeletonOverlay>,
+    /// Interface scale (egui zoom), 0.75–2; Ctrl + / Ctrl - change it too.
+    pub ui_scale: f32,
+    applied_scale: f32,
+    /// The playback bar and the corner buttons (view, Undo/Redo) as drawn
+    /// last frame: the bar keeps clear of the corner.
+    bar_rect: egui::Rect,
+    corner_rect: egui::Rect,
     pub placement: ad_document::Placement,
     /// Numeric fields being edited (None: they follow the model).
     placement_draft: Option<ad_document::Placement>,
@@ -418,6 +427,8 @@ pub struct ViewerUi {
     discard_rect: egui::Rect,
     #[cfg(test)]
     undo_rect: egui::Rect,
+    #[cfg(test)]
+    play_rect: egui::Rect,
     #[cfg(test)]
     redo_rect: egui::Rect,
     #[cfg(test)]
@@ -475,6 +486,13 @@ impl Default for ViewerUi {
         let context = egui::Context::default();
         context.set_theme(egui::Theme::Dark);
         let mut visuals = egui::Visuals::dark();
+        // Owner 2026-11-26: lighter text everywhere.
+        visuals.widgets.noninteractive.fg_stroke.color = Color32::from_rgb(222, 226, 234);
+        visuals.widgets.inactive.fg_stroke.color = Color32::from_rgb(232, 235, 242);
+        visuals.widgets.hovered.fg_stroke.color = Color32::WHITE;
+        visuals.widgets.active.fg_stroke.color = Color32::WHITE;
+        visuals.widgets.open.fg_stroke.color = Color32::WHITE;
+        visuals.weak_text_color = Some(Color32::from_rgb(158, 166, 182));
         visuals.panel_fill = Color32::from_rgb(26, 29, 35);
         visuals.window_fill = Color32::from_rgb(30, 33, 40);
         visuals.selection.bg_fill = Color32::from_rgb(100, 42, 49);
@@ -575,6 +593,12 @@ impl Default for ViewerUi {
             discard_rect: egui::Rect::NOTHING,
             #[cfg(test)]
             undo_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            play_rect: egui::Rect::NOTHING,
+            bar_rect: egui::Rect::NOTHING,
+            ui_scale: 1.,
+            applied_scale: 1.,
+            corner_rect: egui::Rect::NOTHING,
             #[cfg(test)]
             redo_rect: egui::Rect::NOTHING,
             #[cfg(test)]
@@ -688,29 +712,35 @@ impl ViewerUi {
             .fold(0f32, f32::max)
             .max(1e-6);
         let (mut changed, mut commit) = (false, false);
-        let mut track = |r: egui::Response| {
-            changed |= r.changed();
-            commit |= r.drag_stopped() || r.lost_focus();
+        // A wheel step over a field changes it by `step` and is one edit.
+        let mut track = |ui: &egui::Ui,
+                         r: egui::Response,
+                         value: &mut f32,
+                         step: f32,
+                         range: std::ops::RangeInclusive<f32>| {
+            let wheel = crate::accent::wheel_value(ui, &r, value, step, range);
+            changed |= r.changed() || wheel;
+            commit |= r.drag_stopped() || r.lost_focus() || wheel;
         };
         ui.horizontal(|ui| {
             ui.label("Сдвиг");
             for (axis, name) in ["X", "Y", "Z"].iter().enumerate() {
-                track(
-                    ui.add(
-                        egui::DragValue::new(&mut fields.offset[axis])
-                            .prefix(format!("{name} "))
-                            .speed(extent * 0.005)
-                            .range(-Placement::MAX_TRANSLATION..=Placement::MAX_TRANSLATION)
-                            .max_decimals(4),
-                    )
-                    .on_hover_text("Куда сдвинута нижняя точка центра модели от исходного положения, в единицах файла. Тяните или введите число и нажмите Enter; отпускание — одна правка."),
-                );
+                let range = -Placement::MAX_TRANSLATION..=Placement::MAX_TRANSLATION;
+                let r = ui.add(
+                    egui::DragValue::new(&mut fields.offset[axis])
+                        .prefix(format!("{name} "))
+                        .speed(extent * 0.005)
+                        .range(range.clone())
+                        .max_decimals(4),
+                )
+                .on_hover_text("Куда сдвинута нижняя точка центра модели от исходного положения, в единицах файла. Тяните или введите число и нажмите Enter; отпускание — одна правка. Колёсико — шаг 1 % размера модели.");
+                track(ui, r, &mut fields.offset[axis], extent * 0.01, range);
             }
         });
         ui.horizontal(|ui| {
             ui.label("Поворот");
-            track(
-                ui.add(
+            let r = ui
+                .add(
                     egui::DragValue::new(&mut fields.yaw)
                         .prefix("Y ")
                         .suffix(" град.")
@@ -719,11 +749,11 @@ impl ViewerUi {
                         .max_decimals(2),
                 )
                 .on_hover_text(
-                    "Поворот вокруг вертикальной оси (по горизонтали) от нижней точки центра.",
-                ),
-            );
-            track(
-                ui.add(
+                    "Поворот вокруг вертикальной оси (по горизонтали) от нижней точки центра. Колёсико — шаг 1°.",
+                );
+            track(ui, r, &mut fields.yaw, 1., -180.0..=180.0);
+            let r = ui
+                .add(
                     egui::DragValue::new(&mut fields.pitch)
                         .prefix("X ")
                         .suffix(" град.")
@@ -732,14 +762,14 @@ impl ViewerUi {
                         .max_decimals(2),
                 )
                 .on_hover_text(
-                    "Наклон вокруг горизонтальной оси X (по вертикали) от нижней точки центра.",
-                ),
-            );
+                    "Наклон вокруг горизонтальной оси X (по вертикали) от нижней точки центра. Колёсико — шаг 1°.",
+                );
+            track(ui, r, &mut fields.pitch, 1., -89.9..=89.9);
         });
         let scale_speed = (fields.scale * 0.005).max(1e-6);
         ui.horizontal(|ui| {
-            track(
-                ui.add(
+            let r = ui
+                .add(
                     egui::DragValue::new(&mut fields.scale)
                         .prefix("Масштаб x")
                         .speed(scale_speed)
@@ -747,8 +777,14 @@ impl ViewerUi {
                         .max_decimals(4),
                 )
                 .on_hover_text(
-                    "Равномерный масштаб относительно исходного размера, от нижней точки центра.",
-                ),
+                    "Равномерный масштаб относительно исходного размера, от нижней точки центра. Колёсико — шаг 0.01.",
+                );
+            track(
+                ui,
+                r,
+                &mut fields.scale,
+                0.01,
+                Placement::MIN_SCALE..=Placement::MAX_SCALE,
             );
             if ui
                 .button("На пол")
@@ -1421,20 +1457,31 @@ impl ViewerUi {
     ) -> (egui::FullOutput, egui::Rect, Actions) {
         let context = self.context.clone();
         self.pointer_on_gizmo = false;
-        // Tab is the outline switch: egui must not use it to move keyboard
-        // focus over the top menus, except inside a text field.
+        // Tab is the outline switch and Space plays / pauses the animation:
+        // egui must not use them to move focus or press a focused button,
+        // except inside a text field.
         if !context.egui_wants_keyboard_input() {
             raw.events.retain(|event| {
                 !matches!(
                     event,
                     egui::Event::Key {
-                        key: egui::Key::Tab,
+                        key: egui::Key::Tab | egui::Key::Space,
                         ..
                     }
                 )
             });
         }
         let mut actions = Actions::default();
+        // Interface scale: the setting wins over egui's own keyboard zoom
+        // only when the setting itself changed.
+        if (context.zoom_factor() - self.applied_scale).abs() > 1e-4 {
+            self.ui_scale = context.zoom_factor().clamp(0.75, 2.);
+        }
+        self.ui_scale = self.ui_scale.clamp(0.75, 2.);
+        if (self.ui_scale - context.zoom_factor()).abs() > 1e-4 {
+            context.set_zoom_factor(self.ui_scale);
+        }
+        self.applied_scale = self.ui_scale;
         self.gizmo_dragging = context.dragged_id().is_some();
         let output=context.run_ui(raw,|root| {
             let width=root.max_rect().width();
@@ -1486,7 +1533,7 @@ impl ViewerUi {
                     painter.rect_stroke(rect,0.,egui::Stroke::new(1.,color),egui::StrokeKind::Inside);
                 }
                 if asset.is_some() && self.skeleton_on && let Some(overlay)=self.skeleton.take() {
-                    self.skeleton_ui(&context,root,&overlay,&mut actions);
+                    self.skeleton_ui(&context,root,&overlay,asset.map(PreparedAsset::document),&mut actions);
                     self.skeleton=Some(overlay);
                 }
                 if asset.is_some() && let Some(gizmo)=self.joint_gizmo.take() {
@@ -1507,6 +1554,7 @@ impl ViewerUi {
                 self.pointer_on_gizmo |= self.lamp_hot.is_some();
                 self.work_tree_strip(&context,width);
                 self.corner_overlay(&context,width,loading,&mut actions);
+                self.playback_bar(&context,asset,&mut actions);
                 if asset.is_none() {
                     let center=self.scene.center();
                     root.painter().text(center-egui::vec2(0.,16.),egui::Align2::CENTER_CENTER,"Откройте модель",egui::FontId::proportional(24.),Color32::from_rgb(220,224,232));
@@ -2819,6 +2867,128 @@ FORMAT=32-bit_rle_rgbe
         let (out, _, _) = ui.layout(input, Some(&asset), false);
         assert!(!ui.context.egui_wants_pointer_input());
         out.drop_without_applying_deltas();
+    }
+    #[test]
+    fn the_playback_bar_sits_at_the_bottom_and_plays_the_clip() {
+        let mut ui = ViewerUi::default();
+        let asset = crate::imports::prepare(&crate::worker::Request {
+            ticket: 1,
+            input: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/Animation_Checker.glb"),
+            cancel: ad_document::Cancellation::default(),
+        })
+        .unwrap();
+        assert!(!asset.document().animation_clips().is_empty());
+        for (w, h) in [(1600., 1000.), (1100., 800.), (900., 700.)] {
+            ui.corner_rect = egui::Rect::NOTHING;
+            for _ in 0..3 {
+                let (out, _, _) = ui.layout(raw(w, h), Some(&asset), false);
+                out.drop_without_applying_deltas();
+            }
+            let (bar, corner, scene) = (ui.bar_rect, ui.corner_rect, ui.scene);
+            assert!(bar.is_positive() && corner.is_positive(), "{w}: {bar:?}");
+            assert!(scene.contains_rect(bar), "{w}: inside the viewport");
+            assert!(!bar.intersects(corner), "{w}: {bar:?} clear of {corner:?}");
+            assert!(bar.bottom() > scene.bottom() - 140., "{w}: at the bottom");
+            assert!(bar.contains_rect(ui.play_rect), "{w}: play inside the bar");
+        }
+        // Play: the first clip starts.
+        let at = ui.play_rect.center();
+        let mut started = None;
+        for pressed in [true, false] {
+            let mut input = raw(900., 700.);
+            input.events = vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ];
+            let (out, _, actions) = ui.layout(input, Some(&asset), false);
+            started = started.or(actions.playback);
+            out.drop_without_applying_deltas();
+        }
+        let started = started.expect("the play button changes playback");
+        assert_eq!((started.clip, started.playing), (Some(0), true));
+        // Without clips there is no bar.
+        let still = crate::imports::prepare(&crate::worker::Request {
+            ticket: 2,
+            input: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/Skin_Checker.glb"),
+            cancel: ad_document::Cancellation::default(),
+        })
+        .unwrap();
+        if still.document().animation_clips().is_empty() {
+            let (out, _, _) = ui.layout(raw(900., 700.), Some(&still), false);
+            out.drop_without_applying_deltas();
+            assert_eq!(ui.bar_rect, egui::Rect::NOTHING);
+        }
+    }
+    #[test]
+    fn a_right_click_on_the_timeline_offers_keys_of_the_edited_joint() {
+        let mut ui = ViewerUi::default();
+        let asset = crate::imports::prepare(&crate::worker::Request {
+            ticket: 1,
+            input: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/Animation_Checker.glb"),
+            cancel: ad_document::Cancellation::default(),
+        })
+        .unwrap();
+        let document = asset.document();
+        let track = &document.animation_clips()[0].tracks()[0];
+        let (node, kind) = (track.node(), track.kind());
+        let first = track.times()[0];
+        // The key helpers: a key exists at the track's first time.
+        let key = rig_ui::key_at(document, 0, node, kind, first, false).unwrap();
+        assert_eq!((key.clip, key.time, key.channel.node), (0, first, node));
+        assert!(
+            !rig_ui::key_at(document, 0, node, kind, first, true)
+                .unwrap()
+                .channel
+                .value
+                .iter()
+                .any(|v| v.is_nan())
+        );
+        ui.playback = crate::rig_playback::Controls {
+            clip: Some(0),
+            ..Default::default()
+        };
+        ui.context.data_mut(|d| {
+            d.insert_temp(skeleton_ui::animation_node_id(document.id().0), node);
+            d.insert_temp(rig_ui::key_kind_id(document), kind);
+        });
+        for _ in 0..3 {
+            let (out, _, _) = ui.layout(raw(1600., 1000.), Some(&asset), false);
+            out.drop_without_applying_deltas();
+        }
+        let bar = ui.bar_rect;
+        let at = egui::pos2(bar.center().x, bar.bottom() - 8. - 17.);
+        let mut moved = None;
+        for pressed in [true, false] {
+            let mut input = raw(1600., 1000.);
+            input.events = vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Secondary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ];
+            let (out, _, actions) = ui.layout(input, Some(&asset), false);
+            moved = moved.or(actions.playback);
+            out.drop_without_applying_deltas();
+        }
+        let moved = moved.expect("a right click moves the playhead there");
+        assert!(moved.time > 0. && !moved.playing);
+        ui.playback = moved;
+        let (out, _, _) = ui.layout(raw(1600., 1000.), Some(&asset), false);
+        let text = format!("{:?}", out.shapes);
+        out.drop_without_applying_deltas();
+        assert!(text.contains("Ключ «"), "the menu offers a key");
+        assert!(text.contains("В начало"));
     }
     #[test]
     fn joint_gizmo_rings_and_arrows_preview_and_write_one_key() {

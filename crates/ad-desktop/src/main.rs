@@ -9,6 +9,7 @@ macro_rules! eprintln {
     }};
 }
 
+mod accent;
 mod camera;
 mod diagnostic_ui;
 mod edits;
@@ -1833,6 +1834,7 @@ impl App {
                 );
             }
             A::Grab => self.toggle_grab(),
+            A::TogglePlayback => self.toggle_playback(),
             A::ToggleRightPanel => self.ui.show_summary = !self.ui.show_summary,
             A::ToggleFrameless => self.ui.frameless = !self.ui.frameless,
             A::ToggleFullscreen => {
@@ -2085,6 +2087,26 @@ impl App {
         } else {
             self.ui
                 .set_status("Объект сейчас нельзя удалить: идёт другая работа", true);
+        }
+    }
+    /// Space: play / pause the chosen clip (the first one when none is
+    /// chosen). Nothing happens while an edit is prepared or without clips.
+    fn toggle_playback(&mut self) {
+        if self.editing || self.ui.edit.busy.is_some() {
+            return;
+        }
+        let Some(asset) = self.current.as_ref() else {
+            return;
+        };
+        let durations: Vec<f32> = asset
+            .document()
+            .animation_clips()
+            .iter()
+            .map(|clip| clip.duration)
+            .collect();
+        if let Some(controls) = self.playback.controls.toggled(&durations) {
+            self.playback.apply(controls);
+            self.ui.playback = controls;
         }
     }
     /// Middle button: take the selection (or the object under the pointer)
@@ -3103,7 +3125,7 @@ impl App {
             self.playback.apply(controls);
         }
         if let Some(preview) = actions.animation_preview {
-            self.playback.preview(preview);
+            self.playback.preview_live(preview);
         }
         if let Some(clip_edit) = actions.clip_edit.take() {
             let controls = self.playback.controls;

@@ -28,6 +28,7 @@ pub enum Action {
     ToggleFullscreen,
     ToggleFrameless,
     ToggleSkeleton,
+    TogglePlayback,
     Grab,
     Help,
     Cancel,
@@ -35,7 +36,7 @@ pub enum Action {
     Pan,
 }
 impl Action {
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 25] = [
         Self::Open,
         Self::Save,
         Self::SaveCopy,
@@ -55,6 +56,7 @@ impl Action {
         Self::ToggleFullscreen,
         Self::ToggleFrameless,
         Self::ToggleSkeleton,
+        Self::TogglePlayback,
         Self::Grab,
         Self::Help,
         Self::Cancel,
@@ -82,6 +84,7 @@ impl Action {
             Self::ToggleFullscreen => "Полный экран: вкл/выкл",
             Self::ToggleFrameless => "Окно без рамки и заголовка: вкл/выкл",
             Self::ToggleSkeleton => "Риг (скелет): показать/скрыть",
+            Self::TogglePlayback => "Анимация: воспроизвести / пауза",
             Self::Grab => "Захват: взять / положить выбранное",
             Self::Help => "Справка",
             Self::Cancel => "Отмена загрузки/правки",
@@ -111,6 +114,7 @@ impl Action {
             Self::ToggleFullscreen => "toggle_fullscreen",
             Self::ToggleFrameless => "toggle_frameless",
             Self::ToggleSkeleton => "toggle_skeleton",
+            Self::TogglePlayback => "toggle_playback",
             Self::Grab => "grab",
             Self::Help => "help",
             Self::Cancel => "cancel",
@@ -402,6 +406,7 @@ pub fn default_slots(action: Action) -> Slots {
         Action::ToggleRightPanel => [Some(Chord::plain(K::KeyE)), None],
         Action::ToggleFullscreen => [Some(Chord::plain(K::F11)), None],
         Action::ToggleSkeleton => [Some(Chord::plain(K::KeyZ)), None],
+        Action::TogglePlayback => [Some(Chord::plain(K::Space)), None],
         Action::ToggleFrameless => [Some(Chord::plain(K::F1)), None],
         Action::ToggleFloor => [Some(Chord::plain(K::KeyG)), None],
         Action::Help => [Some(Chord::plain(K::KeyH)), None],
@@ -897,6 +902,11 @@ mod tests {
         );
         // Undo keeps Ctrl+Z; plain Z is the skeleton.
         assert_eq!(b.command(Chord::ctrl(KeyCode::KeyZ)), Some(Action::Undo));
+        // An older file without it still gets Space for play / pause.
+        assert_eq!(
+            b.command(Chord::plain(KeyCode::Space)),
+            Some(Action::TogglePlayback)
+        );
         // A version 3 file keeps whatever the owner put on the middle button.
         let mut v3 = b.to_json();
         v3["actions"]["fit"] = json!(["F", "Mouse Middle"]);

@@ -64,8 +64,10 @@ impl ViewerUi {
         context: &egui::Context,
         root: &egui::Ui,
         overlay: &SkeletonOverlay,
+        document: Option<&ad_document::AssetDocument>,
         actions: &mut Actions,
     ) {
+        let controls = self.playback;
         let scene = self.scene;
         let at = |p: [f32; 2]| {
             egui::pos2(
@@ -153,6 +155,12 @@ impl ViewerUi {
                     joint.animatable,
                     actions,
                 );
+            }
+            // Right click: select it and key its pose (Rigging menu).
+            if let Some(document) = document.filter(|d| d.id().0 == overlay.document) {
+                response.context_menu(|ui| {
+                    super::rig_ui::joint_menu(ui, document, joint.node, controls, actions);
+                });
             }
         }
     }

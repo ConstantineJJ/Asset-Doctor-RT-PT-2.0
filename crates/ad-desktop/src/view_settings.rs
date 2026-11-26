@@ -64,6 +64,7 @@ impl ViewerUi {
             "skeleton": self.skeleton_on,
             "joint_axes_local": self.joint_local_axes,
             "outline_width": self.outline_width,
+            "ui_scale": self.ui_scale,
             "window": self.window_mode.key(),
             "frameless": self.frameless,
             "lamp": {
@@ -193,6 +194,7 @@ impl ViewerUi {
                 &mut bad,
             );
         }
+        number(value, "ui_scale", 0.75..=2.0, &mut self.ui_scale, &mut bad);
         flag(value, "frameless", &mut self.frameless, &mut bad);
         match value.get("window") {
             None => {}
