@@ -2845,11 +2845,7 @@ impl App {
                 .matrix()
                 .transform_point3(glam::Vec3::from_array(delta.pivot));
             let eye = glam::Vec3::from_array(self.camera.eye(width, height)) - origin;
-            let axis_vector = if axis == 0 {
-                glam::Vec3::X
-            } else {
-                glam::Vec3::Y
-            };
+            let axis_vector = [glam::Vec3::X, glam::Vec3::Y, glam::Vec3::Z][axis.min(2)];
             model_gizmo::drag_ring(delta, axis, step, axis_vector.dot(eye.normalize_or_zero()));
         }
         if actions.model_drag_end {

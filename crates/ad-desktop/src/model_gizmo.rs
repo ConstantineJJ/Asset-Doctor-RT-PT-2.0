@@ -1,7 +1,7 @@
 //! ADR-0041 model gizmo: axis arrows move the model, plane squares move it in
 //! two axes (along the floor, along a wall), the centre square scales it
-//! uniformly and two rings turn it about the vertical (Y) and horizontal (X)
-//! axes, all about the bottom centre. A ring turns by the pointer's angle
+//! uniformly and three rings turn it about X, Y and Z, all about the bottom
+//! centre. A ring turns by the pointer's angle
 //! around the centre (ADR-0063). While dragging, the change is only
 //! a renderer preview; releasing prepares one placement edit (one Undo step).
 use crate::camera::Camera;
@@ -12,8 +12,8 @@ use glam::{Mat4, Quat, Vec3};
 const SCALE_PIXELS: f32 = 140.;
 /// Points of one rotation ring on screen.
 pub const RING_POINTS: usize = 48;
-/// The rings the gizmo offers: X (slot 0) and Y (slot 1).
-pub const RING_AXES: [usize; 2] = [0, 1];
+/// The rings the gizmo offers: X, Y and Z (owner 2026-11-28: all three).
+pub const RING_AXES: [usize; 3] = [0, 1, 2];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Handle {
@@ -21,7 +21,7 @@ pub enum Handle {
     /// Move in two axes: 0 = XY, 1 = YZ, 2 = XZ (the floor).
     Plane(usize),
     Scale,
-    /// Turn about world axis 0 (X) or 1 (Y).
+    /// Turn about world axis 0 (X), 1 (Y) or 2 (Z).
     Rotate(usize),
 }
 
@@ -168,23 +168,23 @@ pub fn ring_radius(bounds: Bounds) -> f32 {
 fn axis_vector(axis: usize) -> Vec3 {
     [Vec3::X, Vec3::Y, Vec3::Z][axis.min(2)]
 }
-/// Unit vector of a ring at parameter `angle`: the Y ring lies in the XZ
-/// plane, the X ring in the YZ plane.
+/// Unit vector of a ring at parameter `angle`: the X ring lies in the YZ
+/// plane, the Y ring in the XZ plane, the Z ring in the XY plane.
 fn ring_vector(axis: usize, angle: f32) -> Vec3 {
     let (s, c) = angle.sin_cos();
-    if axis == 0 {
-        Vec3::new(0., c, s)
-    } else {
-        Vec3::new(c, 0., s)
+    match axis {
+        0 => Vec3::new(0., c, s),
+        1 => Vec3::new(c, 0., s),
+        _ => Vec3::new(c, s, 0.),
     }
 }
 /// Ring parameter of the point nearest to the eye: where the knob starts.
 pub fn knob_angle(axis: usize, center: [f32; 3], eye: [f32; 3]) -> f32 {
     let d = Vec3::from_array(eye) - Vec3::from_array(center);
-    if axis == 0 {
-        d.z.atan2(d.y)
-    } else {
-        d.z.atan2(d.x)
+    match axis {
+        0 => d.z.atan2(d.y),
+        1 => d.z.atan2(d.x),
+        _ => d.y.atan2(d.x),
     }
 }
 /// World position of a ring knob after turning `turned` radians.
@@ -284,8 +284,8 @@ pub fn screen(
         })
     });
     let eye = camera.eye(width, height);
-    let mut rings = [[None; RING_POINTS]; 2];
-    let mut knobs = [None; 2];
+    let mut rings = [[None; RING_POINTS]; 3];
+    let mut knobs = [None; 3];
     for (slot, axis) in RING_AXES.into_iter().enumerate() {
         for (i, point) in rings[slot].iter_mut().enumerate() {
             let a = i as f32 / RING_POINTS as f32 * std::f32::consts::TAU;
@@ -495,6 +495,18 @@ mod tests {
         let step = track.step(centre, pos(px(from)));
         drag_ring(&mut d, axis, step, facing);
         assert!(d.turned.abs() < 1e-4, "{}", d.turned);
+        // The Z ring (owner 2026-11-28) turns the same way along itself; seen
+        // at a slant, its screen angle is not the world angle (as for every
+        // ring grabbed anywhere), so only the direction and size are checked.
+        let z_from = knob(2, base, radius, 0.4, 0.);
+        let z_to = knob(2, base, radius, 0.4, 0.2);
+        let mut z_track = crate::gizmo_paint::TurnTrack::new(centre, pos(px(z_from))).unwrap();
+        let mut z = Delta::new(base);
+        let step = z_track.step(centre, pos(px(z_to)));
+        drag_ring(&mut z, 2, step, Vec3::Z.dot(eye.normalize()));
+        assert!((0.1..0.4).contains(&z.turned), "{}", z.turned);
+        let turned = Quat::from_array(z.rotation).to_axis_angle();
+        assert!(turned.0.z.abs() > 0.999, "about Z: {turned:?}");
         // The wrap at ±π does not jump.
         let mut t =
             crate::gizmo_paint::TurnTrack::new(centre, pos([c[0] - 100., c[1] + 1.])).unwrap();

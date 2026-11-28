@@ -158,8 +158,8 @@ pub struct ModelGizmo {
     pub ends: [Option<[f32; 2]>; 3],
     /// Corners of the XY, YZ and XZ plane squares.
     pub planes: [[Option<[f32; 2]>; 4]; 3],
-    pub rings: [[Option<[f32; 2]>; crate::model_gizmo::RING_POINTS]; 2],
-    pub knobs: [Option<[f32; 2]>; 2],
+    pub rings: [[Option<[f32; 2]>; crate::model_gizmo::RING_POINTS]; 3],
+    pub knobs: [Option<[f32; 2]>; 3],
     /// Radians turned by the ring being dragged (shown next to the pointer).
     pub turned: Option<f32>,
 }
@@ -169,8 +169,8 @@ impl Default for ModelGizmo {
             pivot: [0.; 2],
             ends: [None; 3],
             planes: [[None; 4]; 3],
-            rings: [[None; crate::model_gizmo::RING_POINTS]; 2],
-            knobs: [None; 2],
+            rings: [[None; crate::model_gizmo::RING_POINTS]; 3],
+            knobs: [None; 3],
             turned: None,
         }
     }
@@ -1004,7 +1004,7 @@ impl ViewerUi {
     }
     /// ADR-0041/0063 model gizmo: X (red), Y (green), Z (blue) arrows from
     /// the bottom centre move the model, the plane squares move it in two
-    /// axes, the rings (or their knobs) turn it about X and Y by the
+    /// axes, the rings (or their knobs) turn it about X, Y and Z by the
     /// pointer's angle around the centre, the square at the centre scales
     /// it. One handle is hot at a time: arrows, knobs and the centre first,
     /// then a plane square under the pointer, then the nearest ring.
@@ -1078,6 +1078,7 @@ impl ViewerUi {
             Handle::Plane(2),
             Handle::Rotate(0),
             Handle::Rotate(1),
+            Handle::Rotate(2),
         ];
         let fixed_busy = handles
             .iter()
@@ -1199,6 +1200,7 @@ impl ViewerUi {
                         Handle::Plane(1) => "Тяните квадрат — сдвиг в плоскости YZ (вровень со стеной, смотрящей вдоль X). Отпускание — одна правка (Ctrl+Z отменит).",
                         Handle::Plane(_) => "Тяните квадрат — сдвиг по полу (X и Z, высота не меняется). Отпускание — одна правка (Ctrl+Z отменит).",
                         Handle::Rotate(0) => "Тяните по красному кольцу — наклон вокруг X. Чем дальше мышь от центра, тем точнее; угол виден у курсора.",
+                        Handle::Rotate(2) => "Тяните по синему кольцу — наклон вокруг Z. Чем дальше мышь от центра, тем точнее; угол виден у курсора.",
                         _ => "Тяните по зелёному кольцу — поворот вокруг Y. Чем дальше мышь от центра, тем точнее; угол виден у курсора.",
                     });
                 }
@@ -1264,6 +1266,7 @@ impl ViewerUi {
                         Handle::Axis(1) => "Тяните — сдвинуть модель по Y. Отпускание — одна правка (Ctrl+Z отменит).",
                         Handle::Axis(_) => "Тяните — сдвинуть модель по Z. Отпускание — одна правка (Ctrl+Z отменит).",
                         Handle::Rotate(0) => "Тяните по кругу вокруг центра — наклонить модель вокруг оси X. Чем дальше мышь, тем точнее. Отпускание — одна правка (Ctrl+Z отменит).",
+                        Handle::Rotate(2) => "Тяните по кругу вокруг центра — наклонить модель вокруг оси Z. Чем дальше мышь, тем точнее. Отпускание — одна правка (Ctrl+Z отменит).",
                         Handle::Rotate(_) => "Тяните по кругу вокруг центра — повернуть модель вокруг оси Y. Чем дальше мышь, тем точнее. Отпускание — одна правка (Ctrl+Z отменит).",
                         Handle::Scale | Handle::Plane(_) => "Тяните вверх — крупнее, вниз — мельче (от нижней точки центра). ПКМ — меню.",
                     };
@@ -2718,14 +2721,19 @@ FORMAT=32-bit_rle_rgbe
         ui.model_gizmo = Some(ModelGizmo {
             pivot: [0.5, 0.6],
             ends: [Some([0.65, 0.6]), Some([0.5, 0.4]), None],
-            knobs: [Some([0.4, 0.75]), Some([0.6, 0.75])],
+            knobs: [Some([0.4, 0.75]), Some([0.6, 0.75]), Some([0.5, 0.8])],
             ..Default::default()
         });
         let size = (1400., 1000.);
         warm(&mut ui, Some(&asset), size);
         let handles: Vec<_> = ui.model_gizmo_rects.iter().map(|(h, _)| *h).collect();
         assert!(
-            handles.ends_with(&[Handle::Rotate(0), Handle::Rotate(1), Handle::Scale]),
+            handles.ends_with(&[
+                Handle::Rotate(0),
+                Handle::Rotate(1),
+                Handle::Rotate(2),
+                Handle::Scale
+            ]),
             "{handles:?}"
         );
         let rect = ui
