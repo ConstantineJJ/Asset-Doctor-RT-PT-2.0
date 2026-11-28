@@ -701,6 +701,30 @@ struct JointDraft {
     child: String,
     direction: ChildDirection,
     length: f32,
+    /// RIG-03: the bone to this joint (world length) and its rest position
+    /// in the parent's space.
+    bone: f32,
+    position: [f32; 3],
+}
+
+/// World length of the bone from the parent node to `node` at rest.
+fn bone_length(document: &AssetDocument, node: NodeId) -> Option<f32> {
+    let worlds = document
+        .view()
+        .node_worlds(None, &ad_document::Cancellation::default())
+        .ok()?;
+    let parent = document
+        .nodes()
+        .iter()
+        .position(|n| n.children.contains(&node))?;
+    let at = |n: usize| {
+        glam::Mat4::from_cols_array_2d(&worlds[n]?)
+            .w_axis
+            .truncate()
+            .into()
+    };
+    let (a, b): (Option<glam::Vec3>, Option<glam::Vec3>) = (at(parent), at(node.0));
+    Some(a?.distance(b?))
 }
 
 /// RIG-03: the selected joint's name and a new child joint (pink: editing).
@@ -731,6 +755,10 @@ fn joint_card(ui: &mut egui::Ui, document: &AssetDocument, actions: &mut Actions
                 direction: ChildDirection::Bone,
                 length: default_child(document, node, ChildDirection::Bone, None)
                     .map_or(0.1, |(_, length)| length),
+                bone: bone_length(document, node).unwrap_or(0.),
+                position: document
+                    .rest_transform(node)
+                    .map_or([0.; 3], |rest| rest.translation),
             });
         form(egui::Id::new(("joint_form", document.id().0))).show(ui, |ui| {
             accent::field_label(ui, "Имя");
@@ -766,6 +794,64 @@ fn joint_card(ui: &mut egui::Ui, document: &AssetDocument, actions: &mut Actions
             });
             ui.end_row();
 
+            if let Some(rest) = document.rest_transform(node)
+                && let Some(length) = bone_length(document, node)
+            {
+                accent::field_label(ui, "Длина кости");
+                ui.horizontal(|ui| {
+                    accent::values(ui, |ui| {
+                        let response = ui
+                            .add(
+                                egui::DragValue::new(&mut draft.bone)
+                                    .range(0.0001..=10_000.)
+                                    .speed(0.005)
+                                    .max_decimals(4)
+                                    .suffix(" м"),
+                            )
+                            .on_hover_text("От родителя до этого сустава; колёсико — шаг 0.01");
+                        accent::wheel_value(ui, &response, &mut draft.bone, 0.01, 0.0001..=10_000.);
+                    });
+                    let can = length > 1e-6 && (draft.bone - length).abs() > 1e-6;
+                    if ui
+                        .add_enabled(can, egui::Button::new("Применить"))
+                        .on_hover_text("Сустав сдвигается вдоль кости, меш в позе покоя остаётся на месте (перепривязка). Undo отменит.")
+                        .clicked()
+                    {
+                        let k = draft.bone / length;
+                        actions.joint_edit = Some(JointEdit::Rest {
+                            node,
+                            translation: rest.translation.map(|v| v * k),
+                        });
+                    }
+                });
+                ui.end_row();
+                accent::field_label(ui, "Положение");
+                ui.horizontal(|ui| {
+                    for (value, (letter, color)) in draft.position.iter_mut().zip(AXES) {
+                        ui.label(egui::RichText::new(letter).strong().color(color));
+                        accent::values(ui, |ui| {
+                            let response = ui.add(
+                                egui::DragValue::new(value).speed(0.005).max_decimals(4),
+                            );
+                            accent::wheel_value(ui, &response, value, 0.01, -1e6..=1e6);
+                        });
+                    }
+                    if ui
+                        .add_enabled(
+                            draft.position != rest.translation,
+                            egui::Button::new("Применить"),
+                        )
+                        .on_hover_text("Положение сустава в позе покоя, в осях родителя; меш остаётся на месте. Undo отменит.")
+                        .clicked()
+                    {
+                        actions.joint_edit = Some(JointEdit::Rest {
+                            node,
+                            translation: draft.position,
+                        });
+                    }
+                });
+                ui.end_row();
+            }
             accent::field_label(ui, "Удалить");
             delete_button(ui, document, node, actions);
             ui.end_row();
@@ -1521,6 +1607,16 @@ mod tests {
             .find(|n| !document.nodes()[n.0].meshes.is_empty())
             .unwrap();
         assert!(default_child(document, mesh_node, ChildDirection::Bone, None).is_none());
+        // The bone to Tip is as long as Root→Tip; Root (a scene root) has none.
+        let bone = bone_length(document, tip).unwrap();
+        assert!(
+            (bone - bone.max(0.)).abs() < 1e-6
+                && (bone
+                    - (world(tip).w_axis.truncate() - world(NodeId(0)).w_axis.truncate()).length())
+                .abs()
+                    < 1e-5
+        );
+        assert!(bone_length(document, NodeId(0)).is_none());
         let name = child_name(document, tip);
         assert_eq!(name, format!("{}_end", document.nodes()[tip.0].name));
         assert!(document.nodes().iter().all(|n| n.name != name));

@@ -27,7 +27,7 @@ pub struct Transform {
 }
 
 impl Transform {
-    fn matrix(self) -> Mat4 {
+    pub(crate) fn matrix(self) -> Mat4 {
         Mat4::from_scale_rotation_translation(
             Vec3::from_array(self.scale),
             Quat::from_array(self.rotation).normalize(),
@@ -513,6 +513,32 @@ impl AnimationClip {
         self.source_clip
     }
 
+    /// The same clip with `node`'s tracks on a new rest `base` (RIG-03:
+    /// the joint's rest pose changed; keys stay, the file's channels too).
+    pub(crate) fn rebased(&self, node: NodeId, base: Transform) -> Self {
+        let mut clip = self.clone();
+        clip.tracks = self
+            .tracks
+            .iter()
+            .map(|track| {
+                if track.node != node {
+                    return track.clone();
+                }
+                Arc::new(Track {
+                    node: track.node,
+                    base,
+                    kind: track.kind,
+                    interpolation: track.interpolation,
+                    times: track.times.clone(),
+                    values: track.values.clone(),
+                    source_channel: track.source_channel,
+                    edited: track.edited,
+                })
+            })
+            .collect();
+        clip
+    }
+
     pub fn tracks(&self) -> &[Arc<Track>] {
         &self.tracks
     }
@@ -556,6 +582,11 @@ impl AssetDocument {
                     "У этого узла матричная трансформация",
                 )
             })
+    }
+
+    /// The node's rest translation, rotation and scale (None: matrix node).
+    pub fn rest_transform(&self, node: NodeId) -> Option<Transform> {
+        self.animation_bases.get(node.0).copied().flatten()
     }
 
     pub fn can_animate_node(&self, node: NodeId) -> bool {

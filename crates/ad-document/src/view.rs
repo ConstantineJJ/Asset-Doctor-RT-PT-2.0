@@ -146,6 +146,20 @@ impl<'a> DocumentView<'a> {
             _ => self.document.renamed_nodes(),
         }
     }
+    /// Nodes with a new rest transform, as seen through this view.
+    pub fn rested(&self) -> &'a std::collections::BTreeSet<usize> {
+        match self.candidate {
+            Some((_, CandidateData::Skeleton(s))) => &s.rested,
+            _ => self.document.rested_nodes(),
+        }
+    }
+    /// Rest TRS of a node as seen through this view (None: matrix node).
+    pub fn rest_transform(&self, node: crate::NodeId) -> Option<crate::Transform> {
+        match self.candidate {
+            Some((_, CandidateData::Skeleton(s))) => s.bases.get(node.0).copied().flatten(),
+            _ => self.document.rest_transform(node),
+        }
+    }
     /// The export must write nodes, names, skins or weights (RIG-03/04).
     pub fn skeleton_changed(&self) -> bool {
         let restructured = match self.candidate {

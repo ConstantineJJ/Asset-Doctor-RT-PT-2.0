@@ -163,7 +163,15 @@ pub(crate) fn compare_with_nodes(
             .iter()
             .find(|(i, _)| *i == index)
             .map_or(a.local, |(_, m)| *m);
-        if a.name != b.name || local != b.local {
+        // A rest transform written as TRS is rebuilt by the import with its
+        // own rounding: equal within 1e-6 of the matrix's size.
+        let size = local.iter().flatten().fold(1f32, |m, v| m.max(v.abs()));
+        let same = local
+            .iter()
+            .flatten()
+            .zip(b.local.iter().flatten())
+            .all(|(x, y)| (x - y).abs() <= 1e-6 * size);
+        if a.name != b.name || !same {
             return Err(mismatch());
         }
         if detached {

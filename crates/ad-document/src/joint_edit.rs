@@ -39,6 +39,11 @@ pub enum JointEdit {
     /// RIG-04: take a skin joint and everything under it out of the scene;
     /// its weights go to the nearest remaining joint above.
     Delete { node: NodeId },
+    /// RIG-03: a new rest position of a skin joint (its translation in the
+    /// parent's space; rotation and scale stay). Its own and its
+    /// descendants' inverse binds are rebound, so the mesh stays in place
+    /// at rest and only the skeleton moves.
+    Rest { node: NodeId, translation: [f32; 3] },
 }
 
 /// The swapped skeleton state.
@@ -49,8 +54,10 @@ pub(crate) struct Skeleton {
     pub renamed: BTreeSet<usize>,
     /// RIG-04 drops the channels of deleted joints.
     pub clips: Vec<Arc<AnimationClip>>,
-    /// Joints were added or deleted (the export rewrites the skeleton).
+    /// Joints were added, deleted or moved (the export rewrites the skeleton).
     pub restructured: bool,
+    /// Nodes with a new rest transform.
+    pub rested: BTreeSet<usize>,
 }
 
 impl Skeleton {
@@ -137,6 +144,7 @@ impl AssetDocument {
         let mut renamed = self.renamed.clone();
         let mut clips = self.copy_clip_list(0)?;
         let restructured = self.restructured || !matches!(edit, JointEdit::Rename { .. });
+        let mut rested = self.rested.clone();
         cancel.check()?;
         match edit {
             JointEdit::Rename { node, name } => {
@@ -211,6 +219,21 @@ impl AssetDocument {
             JointEdit::Delete { node } => {
                 delete_joint(&mut nodes, &mut rig, &mut clips, *node, cancel)?;
             }
+            JointEdit::Rest { node, translation } => {
+                let changed = rest_joint(
+                    &mut nodes,
+                    &mut rig,
+                    &mut bases,
+                    &mut clips,
+                    *node,
+                    *translation,
+                    cancel,
+                )?;
+                if !changed {
+                    return self.skeleton_plan(expected, None);
+                }
+                rested.insert(node.0);
+            }
         }
         self.skeleton_plan(
             expected,
@@ -221,6 +244,7 @@ impl AssetDocument {
                 renamed,
                 clips,
                 restructured,
+                rested,
             }),
         )
     }
@@ -282,6 +306,11 @@ impl AssetDocument {
         std::mem::swap(&mut self.renamed, &mut skeleton.renamed);
         std::mem::swap(&mut self.animation_clips, &mut skeleton.clips);
         std::mem::swap(&mut self.restructured, &mut skeleton.restructured);
+        std::mem::swap(&mut self.rested, &mut skeleton.rested);
+    }
+    /// Nodes whose rest transform changed since opening.
+    pub fn rested_nodes(&self) -> &BTreeSet<usize> {
+        &self.rested
     }
     /// Joints were added or deleted since opening.
     pub fn is_restructured(&self) -> bool {
@@ -471,6 +500,99 @@ fn delete_joint(
         *clip = Arc::new(clip.with_tracks(tracks, cancel)?);
     }
     Ok(())
+}
+
+/// RIG-03: moves `node`'s rest translation and rebinds. For every skin
+/// joint whose rest world changes (the node and everything under it):
+/// `inverse bind' = inverse(W') × W × inverse bind`, so `W' × bind'` — the
+/// skinning matrix at rest — stays the same and the mesh does not move.
+/// The node's animation base and the bases of its tracks get the new
+/// translation. Returns false when nothing changes.
+fn rest_joint(
+    nodes: &mut [Node],
+    rig: &mut RigInspection,
+    bases: &mut [Option<Transform>],
+    clips: &mut [Arc<AnimationClip>],
+    node: NodeId,
+    translation: [f32; 3],
+    cancel: &Cancellation,
+) -> AssetResult<bool> {
+    use glam::{Mat4, Vec3};
+    if node.0 >= nodes.len() || !rig.skins.iter().any(|skin| skin.joints.contains(&node)) {
+        return Err(refused("Положение меняется только у сустава скина."));
+    }
+    let Some(mut base) = bases.get(node.0).copied().flatten() else {
+        return Err(refused(
+            "У этого сустава матричная трансформация — его положение здесь не меняется.",
+        ));
+    };
+    let offset = Vec3::from_array(translation);
+    if !offset.is_finite() || offset.length() > 1e6 {
+        return Err(refused(
+            "Положение сустава должно быть конечным и не дальше 10⁶.",
+        ));
+    }
+    if base.translation == translation {
+        return Ok(false);
+    }
+    // Rest worlds of every node (authored locals, no placement: the binds
+    // live in the same space).
+    let mut parents = vec![None; nodes.len()];
+    for (index, item) in nodes.iter().enumerate() {
+        for child in &item.children {
+            if let Some(slot) = parents.get_mut(child.0) {
+                *slot = Some(index);
+            }
+        }
+    }
+    let world = |nodes: &[Node], n: usize| -> Mat4 {
+        let mut chain = vec![n];
+        while let Some(p) = parents[chain[chain.len() - 1]] {
+            if chain.len() > nodes.len() {
+                break;
+            }
+            chain.push(p);
+        }
+        chain.iter().rev().fold(Mat4::IDENTITY, |m, i| {
+            m * Mat4::from_cols_array_2d(&nodes[*i].local)
+        })
+    };
+    let mut subtree = vec![node.0];
+    let mut seen = vec![false; nodes.len()];
+    let mut at = 0;
+    while at < subtree.len() {
+        cancel.check()?;
+        let n = subtree[at];
+        at += 1;
+        if std::mem::replace(&mut seen[n], true) {
+            continue;
+        }
+        subtree.extend(nodes[n].children.iter().map(|c| c.0));
+    }
+    let before: Vec<(usize, Mat4)> = subtree.iter().map(|&n| (n, world(nodes, n))).collect();
+    base.translation = translation;
+    nodes[node.0].local = base.matrix().to_cols_array_2d();
+    bases[node.0] = Some(base);
+    for skin in &mut rig.skins {
+        for (slot, joint) in skin.joints.iter().enumerate() {
+            cancel.check()?;
+            let Some((_, old)) = before.iter().find(|(n, _)| *n == joint.0) else {
+                continue;
+            };
+            let new = world(nodes, joint.0);
+            let bind = new.inverse() * *old * Mat4::from_cols_array_2d(&skin.inverse_bind[slot]);
+            if !bind.is_finite() || bind.determinant() == 0. {
+                return Err(refused("Перепривязка дала вырожденную матрицу"));
+            }
+            skin.inverse_bind[slot] = bind.to_cols_array_2d();
+        }
+    }
+    for clip in clips.iter_mut() {
+        if clip.tracks().iter().any(|t| t.node() == node) {
+            *clip = Arc::new(clip.rebased(node, base));
+        }
+    }
+    Ok(true)
 }
 
 /// Checks a proposed skeleton before a view is built on it: the file's

@@ -331,6 +331,24 @@ fn write_skeleton<'a>(
         let node = list.get_mut(index).ok_or_else(invalid)?;
         node["name"] = json!(nodes[index].name);
     }
+    // RIG-03: a new rest transform is written as TRS.
+    for &index in view.rested() {
+        cancel.check()?;
+        if index >= source {
+            continue; // added joints are written below from their local
+        }
+        let rest = view
+            .rest_transform(ad_document::NodeId(index))
+            .ok_or_else(invalid)?;
+        let node = list
+            .get_mut(index)
+            .and_then(Value::as_object_mut)
+            .ok_or_else(invalid)?;
+        node.remove("matrix");
+        node.insert("translation".into(), json!(rest.translation));
+        node.insert("rotation".into(), json!(rest.rotation));
+        node.insert("scale".into(), json!(rest.scale));
+    }
     list.try_reserve_exact(nodes.len() - source)
         .map_err(|_| budget())?;
     for node in &nodes[source..] {
@@ -412,7 +430,7 @@ fn write_skeleton<'a>(
             .and_then(Value::as_array)
             .ok_or_else(invalid)?
             .len();
-        if written == skin.joints.len() {
+        if written == skin.joints.len() && view.rested().is_empty() {
             continue;
         }
         let accessor = add_accessor(

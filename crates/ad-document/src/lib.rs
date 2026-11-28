@@ -190,6 +190,8 @@ pub struct AssetDocument {
     renamed: std::collections::BTreeSet<usize>,
     /// RIG-03/04: joints were added or deleted since opening.
     restructured: bool,
+    /// RIG-03: nodes whose rest transform changed (written as TRS).
+    rested: std::collections::BTreeSet<usize>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -420,6 +422,7 @@ impl AssetDocument {
             source_node_count: parts.nodes.len(),
             renamed: std::collections::BTreeSet::new(),
             restructured: false,
+            rested: std::collections::BTreeSet::new(),
             vertex_maps,
             parts,
             texture_stats: textures.stats,

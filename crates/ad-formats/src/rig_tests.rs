@@ -384,3 +384,107 @@ fn deleting_a_joint_moves_its_weights_up_saves_and_undoes() {
         before[0].as_slice()
     );
 }
+
+#[test]
+fn a_longer_bone_moves_the_joint_but_not_the_mesh() {
+    use ad_document::JointEdit;
+    let cancel = Cancellation::default();
+    let mut doc = open(ANIMATED).unwrap();
+    let tip = NodeId(1);
+    let rest = |doc: &AssetDocument| {
+        doc.snapshot(ImportLimits::default(), &cancel)
+            .unwrap()
+            .positions
+    };
+    let mesh_before = rest(&doc);
+    let worlds = doc.view().node_worlds(None, &cancel).unwrap();
+    let tip_before = matrix(worlds[tip.0].unwrap());
+    let base = doc.rest_transform(tip).expect("TRS joint");
+    let longer = base.translation.map(|v| v * 2.);
+    let edit = JointEdit::Rest {
+        node: tip,
+        translation: longer,
+    };
+    let plan = doc.prepare_joint_edit(doc.tag(), &edit, &cancel).unwrap();
+    {
+        let candidate = plan.candidate(&doc, &cancel).unwrap();
+        let view = doc.candidate_view(candidate, &cancel).unwrap();
+        verify_animation_export(
+            &view,
+            ExportLimits::default(),
+            ImportLimits::default(),
+            &cancel,
+        )
+        .unwrap();
+    }
+    let applied = doc
+        .apply_triangle_removal(plan, ImportLimits::default(), &cancel)
+        .unwrap();
+    // The joint moved by its old offset once more (in the parent's space);
+    // the mesh at rest stayed where it was.
+    let worlds = doc.view().node_worlds(None, &cancel).unwrap();
+    let tip_after = matrix(worlds[tip.0].unwrap());
+    let parent = matrix(worlds[0].unwrap());
+    let moved = tip_after.w_axis.truncate() - tip_before.w_axis.truncate();
+    let expected = parent.transform_vector3(glam::Vec3::from_array(base.translation));
+    assert!(moved.abs_diff_eq(expected, 1e-5), "{moved} vs {expected}");
+    let mesh_after = rest(&doc);
+    assert_eq!(mesh_before.len(), mesh_after.len());
+    for (a, b) in mesh_before.iter().zip(&mesh_after) {
+        assert!(
+            glam::Vec3::from_array(*a).abs_diff_eq(glam::Vec3::from_array(*b), 1e-4),
+            "{a:?} vs {b:?}"
+        );
+    }
+    assert_eq!(doc.rest_transform(tip).unwrap().translation, longer);
+    // Saved and opened again: the new rest and binds come back.
+    let saved = crate::prepare_glb(
+        &doc,
+        doc.tag(),
+        ExportLimits::default(),
+        ImportLimits::default(),
+        &cancel,
+    )
+    .unwrap();
+    let back = open(saved.bytes()).unwrap();
+    assert_eq!(back.rest_transform(tip).unwrap().translation, longer);
+    assert!(
+        back.rig()
+            .unwrap()
+            .matches(doc.rig().unwrap(), &cancel)
+            .unwrap()
+    );
+    // Undo: the file's rest again; the same position is a no-op; a mesh
+    // node or a NaN position is refused.
+    let mut change = applied.change.unwrap();
+    doc.exchange_indices(doc.tag(), &mut change, ImportLimits::default(), &cancel)
+        .unwrap();
+    assert_eq!(
+        doc.rest_transform(tip).unwrap().translation,
+        base.translation
+    );
+    let same = JointEdit::Rest {
+        node: tip,
+        translation: base.translation,
+    };
+    assert!(
+        !doc.prepare_joint_edit(doc.tag(), &same, &cancel)
+            .unwrap()
+            .changes()
+    );
+    for edit in [
+        JointEdit::Rest {
+            node: NodeId(3),
+            translation: [0., 1., 0.],
+        },
+        JointEdit::Rest {
+            node: tip,
+            translation: [f32::NAN, 0., 0.],
+        },
+    ] {
+        assert!(
+            doc.prepare_joint_edit(doc.tag(), &edit, &cancel).is_err(),
+            "{edit:?}"
+        );
+    }
+}
