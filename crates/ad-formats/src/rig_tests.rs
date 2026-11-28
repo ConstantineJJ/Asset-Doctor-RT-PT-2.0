@@ -488,3 +488,138 @@ fn a_longer_bone_moves_the_joint_but_not_the_mesh() {
         );
     }
 }
+
+#[test]
+fn resetting_the_rig_brings_back_the_files_skeleton_and_fits_the_clips() {
+    use ad_document::{ClipEdit, JointEdit, PreparedRemoval};
+    let cancel = Cancellation::default();
+    let file = open(ANIMATED).unwrap();
+    let mut doc = open(ANIMATED).unwrap();
+    let (tip, unused) = (NodeId(1), NodeId(2));
+    let apply = |doc: &mut AssetDocument, plan: PreparedRemoval| {
+        {
+            let candidate = plan.candidate(doc, &cancel).unwrap();
+            let view = doc.candidate_view(candidate, &cancel).unwrap();
+            verify_animation_export(
+                &view,
+                ExportLimits::default(),
+                ImportLimits::default(),
+                &cancel,
+            )
+            .unwrap();
+        }
+        doc.apply_triangle_removal(plan, ImportLimits::default(), &cancel)
+            .unwrap()
+    };
+    let joint = |doc: &mut AssetDocument, edit: JointEdit| {
+        let plan = doc.prepare_joint_edit(doc.tag(), &edit, &cancel).unwrap();
+        apply(doc, plan)
+    };
+    // Nothing changed yet: a reset is a no-op.
+    assert!(
+        !doc.prepare_joint_edit(doc.tag(), &JointEdit::Reset, &cancel)
+            .unwrap()
+            .changes()
+    );
+    let longer = doc
+        .rest_transform(tip)
+        .unwrap()
+        .translation
+        .map(|v| v * 1.5);
+    for edit in [
+        JointEdit::Rename {
+            node: tip,
+            name: "Кончик".into(),
+        },
+        JointEdit::Add {
+            parent: tip,
+            name: "Tip_end".into(),
+            translation: [0., 0.3, 0.],
+        },
+        JointEdit::Rest {
+            node: tip,
+            translation: longer,
+        },
+        JointEdit::Delete { node: unused },
+    ] {
+        joint(&mut doc, edit);
+    }
+    let reset = joint(&mut doc, JointEdit::Reset);
+    // The file's skeleton, rig and poses again.
+    assert_eq!(doc.nodes().len(), file.nodes().len());
+    assert_eq!(doc.nodes()[tip.0].name, "Tip");
+    assert!(
+        doc.rig()
+            .unwrap()
+            .matches(file.rig().unwrap(), &cancel)
+            .unwrap()
+    );
+    assert!(doc.renamed_nodes().is_empty() && doc.rested_nodes().is_empty());
+    for clip in 0..file.animation_clips().len() {
+        let d = file.animation_clips()[clip].duration;
+        for time in [0., d * 0.5, d] {
+            let a = doc
+                .view()
+                .node_worlds(Some((clip, time, None)), &cancel)
+                .unwrap();
+            let b = file
+                .view()
+                .node_worlds(Some((clip, time, None)), &cancel)
+                .unwrap();
+            for (a, b) in a.iter().zip(&b) {
+                if let (Some(a), Some(b)) = (a, b) {
+                    assert!(
+                        matrix(*a).abs_diff_eq(matrix(*b), 1e-5),
+                        "clip {clip} t={time}"
+                    );
+                }
+            }
+        }
+    }
+    let saved = crate::prepare_glb(
+        &doc,
+        doc.tag(),
+        ExportLimits::default(),
+        ImportLimits::default(),
+        &cancel,
+    )
+    .unwrap();
+    let back = open(saved.bytes()).unwrap();
+    assert_eq!(back.nodes().len(), file.nodes().len());
+    assert!(
+        back.rig()
+            .unwrap()
+            .matches(file.rig().unwrap(), &cancel)
+            .unwrap()
+    );
+    // Undo of the reset: the edited skeleton again.
+    let mut change = reset.change.unwrap();
+    doc.exchange_indices(doc.tag(), &mut change, ImportLimits::default(), &cancel)
+        .unwrap();
+    assert_eq!(doc.nodes().len(), file.nodes().len() + 1);
+    assert_eq!(doc.nodes()[tip.0].name, "Кончик");
+    // Deleted Tip: after a reset its channels are back in the clip it had.
+    let mut doc = open(ANIMATED).unwrap();
+    let plan = doc
+        .prepare_clip_edit(doc.tag(), &ClipEdit::Delete { clip: 0 }, &cancel)
+        .unwrap();
+    apply(&mut doc, plan);
+    joint(&mut doc, JointEdit::Delete { node: tip });
+    assert!(
+        doc.animation_clips()[0]
+            .track(tip, ad_document::TrackKind::Translation)
+            .is_none()
+    );
+    joint(&mut doc, JointEdit::Reset);
+    assert!(
+        doc.animation_clips()[0]
+            .track(tip, ad_document::TrackKind::Translation)
+            .is_some()
+    );
+    assert!(
+        doc.rig()
+            .unwrap()
+            .matches(file.rig().unwrap(), &cancel)
+            .unwrap()
+    );
+}

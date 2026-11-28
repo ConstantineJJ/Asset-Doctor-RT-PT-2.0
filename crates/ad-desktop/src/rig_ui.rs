@@ -283,7 +283,14 @@ fn rig_section(
         ui.label("У этой модели нет скина.");
         return;
     };
-    ui.label(egui::RichText::new("Скин и веса").strong());
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Скин и веса").strong());
+        if rig_changed(document) {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                reset_button(ui, actions);
+            });
+        }
+    });
     let selector_id = ui.id().with(("skin", document.id().0));
     let mut selected = ui
         .ctx()
@@ -442,6 +449,9 @@ fn panel_menu(
         .clicked()
     {
         *skeleton_on = !*skeleton_on;
+        ui.close();
+    }
+    if rig_changed(document) && reset_button(ui, actions) {
         ui.close();
     }
 }
@@ -640,6 +650,26 @@ fn child_name(document: &AssetDocument, parent: NodeId) -> String {
         n += 1;
     }
     name
+}
+
+/// The skeleton differs from the file (renamed, added, deleted or moved).
+fn rig_changed(document: &AssetDocument) -> bool {
+    document.is_restructured()
+        || !document.renamed_nodes().is_empty()
+        || !document.rested_nodes().is_empty()
+}
+
+/// RIG-06: «Сбросить риг к файлу» (red); true when pressed.
+fn reset_button(ui: &mut egui::Ui, actions: &mut Actions) -> bool {
+    let pressed = accent::scope(ui, Accent::Main, |ui| {
+        ui.button("Сбросить риг к файлу")
+            .on_hover_text("Имена, положения, суставы, привязки и веса — как в файле. Клипы сохраняют ключи: каналы удалённых суставов возвращаются, каналы добавленных уходят. Undo отменит.")
+            .clicked()
+    });
+    if pressed {
+        actions.joint_edit = Some(JointEdit::Reset);
+    }
+    pressed
 }
 
 /// A joint of some skin in the current document (a deleted joint is not).

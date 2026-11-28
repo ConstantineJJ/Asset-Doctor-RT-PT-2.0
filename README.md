@@ -102,7 +102,9 @@ hotfixes.
     delete a joint with
     everything under it — its weights go to the nearest joint above, its
     channels leave the clips. Rigging card «Сустав» or the joint's
-    right-click menu; one Undo step each, saved and verified.
+    right-click menu; one Undo step each, saved and verified. «Сбросить риг
+    к файлу» brings the file's skeleton back in one step (clips keep their
+    keys).
   - Root motion: how far the skeleton's root (or the selected joint) moves
     during the clip — displacement, distance on the floor, path, speed,
     turn and height — with its path drawn in the viewport.

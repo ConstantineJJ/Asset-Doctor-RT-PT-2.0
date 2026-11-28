@@ -192,6 +192,8 @@ pub struct AssetDocument {
     restructured: bool,
     /// RIG-03: nodes whose rest transform changed (written as TRS).
     rested: std::collections::BTreeSet<usize>,
+    /// RIG-06: the skeleton and clips as the file had them.
+    pristine: Option<Arc<joint_edit::Pristine>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -423,6 +425,7 @@ impl AssetDocument {
             renamed: std::collections::BTreeSet::new(),
             restructured: false,
             rested: std::collections::BTreeSet::new(),
+            pristine: None,
             vertex_maps,
             parts,
             texture_stats: textures.stats,

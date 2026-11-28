@@ -44,6 +44,19 @@ pub enum JointEdit {
     /// descendants' inverse binds are rebound, so the mesh stays in place
     /// at rest and only the skeleton moves.
     Rest { node: NodeId, translation: [f32; 3] },
+    /// RIG-06: the skeleton back to the file (names, rest poses, joints,
+    /// binds, weights). Clips keep their keys: channels of deleted joints
+    /// come back from the file, channels of added joints go, bases follow
+    /// the restored rests.
+    Reset,
+}
+
+/// RIG-06: the file's skeleton and clips, kept from the import.
+pub(crate) struct Pristine {
+    pub nodes: Vec<Node>,
+    pub rig: RigInspection,
+    pub bases: Vec<Option<Transform>>,
+    pub clips: Vec<Arc<AnimationClip>>,
 }
 
 /// The swapped skeleton state.
@@ -218,6 +231,28 @@ impl AssetDocument {
             }
             JointEdit::Delete { node } => {
                 delete_joint(&mut nodes, &mut rig, &mut clips, *node, cancel)?;
+            }
+            JointEdit::Reset => {
+                if !self.restructured && self.renamed.is_empty() && self.rested.is_empty() {
+                    return self.skeleton_plan(expected, None);
+                }
+                let pristine = self
+                    .pristine
+                    .as_ref()
+                    .ok_or_else(|| refused("Исходный скелет файла не сохранён"))?;
+                reset_clips(self, pristine, &mut clips, cancel)?;
+                return self.skeleton_plan(
+                    expected,
+                    Some(Skeleton {
+                        nodes: pristine.nodes.clone(),
+                        rig: Some(pristine.rig.clone()),
+                        bases: pristine.bases.clone(),
+                        renamed: BTreeSet::new(),
+                        clips,
+                        restructured: false,
+                        rested: BTreeSet::new(),
+                    }),
+                );
             }
             JointEdit::Rest { node, translation } => {
                 let changed = rest_joint(
@@ -593,6 +628,75 @@ fn rest_joint(
         }
     }
     Ok(true)
+}
+
+/// RIG-06: the current clips made to fit the file's skeleton again:
+/// channels on added joints go, channels of deleted joints come back from
+/// the file's clip with the same identity, rebased channels get the file's
+/// bases. A clip left without channels is refused (it animates only added
+/// joints).
+fn reset_clips(
+    document: &AssetDocument,
+    pristine: &Pristine,
+    clips: &mut [Arc<AnimationClip>],
+    cancel: &Cancellation,
+) -> AssetResult<()> {
+    let source = document.source_node_count;
+    let current: BTreeSet<usize> = document
+        .rig
+        .iter()
+        .flat_map(|rig| &rig.skins)
+        .flat_map(|skin| skin.joints.iter().map(|j| j.0))
+        .collect();
+    let deleted: BTreeSet<usize> = pristine
+        .rig
+        .skins
+        .iter()
+        .flat_map(|skin| skin.joints.iter().map(|j| j.0))
+        .filter(|j| *j < source && !current.contains(j))
+        .collect();
+    for clip in clips.iter_mut() {
+        cancel.check()?;
+        let mut tracks: Vec<_> = clip
+            .tracks()
+            .iter()
+            .filter(|t| t.node().0 < source)
+            .cloned()
+            .collect();
+        if let Some(original) = pristine.clips.iter().find(|c| c.id() == clip.id()) {
+            for track in original.tracks() {
+                let missing = !tracks
+                    .iter()
+                    .any(|t| t.node() == track.node() && t.kind() == track.kind());
+                if deleted.contains(&track.node().0) && missing {
+                    tracks.push(track.clone());
+                }
+            }
+        }
+        let same = tracks.len() == clip.tracks().len()
+            && tracks
+                .iter()
+                .zip(clip.tracks())
+                .all(|(a, b)| Arc::ptr_eq(a, b));
+        if !same {
+            if tracks.is_empty() {
+                return Err(refused(&format!(
+                    "Клип «{}» анимирует только добавленные суставы — удалите его перед сбросом.",
+                    clip.name
+                )));
+            }
+            *clip = Arc::new(clip.with_tracks(tracks, cancel)?);
+        }
+        for &node in &document.rested {
+            let node = NodeId(node);
+            if let Some(base) = pristine.bases.get(node.0).copied().flatten()
+                && clip.tracks().iter().any(|t| t.node() == node)
+            {
+                *clip = Arc::new(clip.rebased(node, base));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Checks a proposed skeleton before a view is built on it: the file's

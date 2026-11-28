@@ -240,7 +240,7 @@ impl AssetDocument {
                 normalized_vertices,
             })
             .collect();
-        self.rig = Some(RigInspection {
+        let rig = RigInspection {
             skins: rig.skins,
             reports,
             influences: influences
@@ -249,7 +249,16 @@ impl AssetDocument {
                 .collect(),
             edited_influences: std::collections::BTreeSet::new(),
             node_skins: rig.node_skins,
-        });
+        };
+        // RIG-06: the file's skeleton, for «reset the rig» (clips are
+        // attached before the rig; influences are shared, not copied).
+        self.pristine = Some(std::sync::Arc::new(crate::joint_edit::Pristine {
+            nodes: self.parts.nodes.clone(),
+            rig: rig.clone(),
+            bases: self.animation_bases.clone(),
+            clips: self.animation_clips.clone(),
+        }));
+        self.rig = Some(rig);
         Ok(self)
     }
 }
