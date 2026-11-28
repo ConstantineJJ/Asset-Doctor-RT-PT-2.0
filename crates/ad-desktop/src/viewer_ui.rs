@@ -1062,7 +1062,7 @@ impl ViewerUi {
                     .show(context, |ui| {
                         let rect = egui::Rect::from_center_size(p, egui::vec2(20., 20.));
                         let response = ui.interact(rect, grab_id, egui::Sense::drag());
-                        if response.dragged() {
+                        if response.dragged_by(egui::PointerButton::Primary) {
                             let d = response.drag_delta();
                             if d != egui::Vec2::ZERO {
                                 let uv = |q: egui::Pos2| {
@@ -1074,7 +1074,7 @@ impl ViewerUi {
                                 actions.model_ring_drag = Some((axis, uv(p - d), uv(p)));
                             }
                         }
-                        if response.drag_stopped() {
+                        if response.drag_stopped_by(egui::PointerButton::Primary) {
                             actions.model_drag_end = true;
                         }
                         response.on_hover_text(if axis == 0 {
@@ -1105,7 +1105,7 @@ impl ViewerUi {
                     {
                         self.model_gizmo_rects.push((handle, rect));
                     }
-                    let hot = response.hovered() || response.dragged();
+                    let hot = response.hovered() || response.dragged_by(egui::PointerButton::Primary);
                     let painter = ui.painter();
                     let dark = egui::Stroke::new(1.5, Color32::from_rgb(24, 26, 32));
                     match handle {
@@ -1128,14 +1128,14 @@ impl ViewerUi {
                             painter.rect_stroke(square, 1., dark, egui::StrokeKind::Outside);
                         }
                     }
-                    if response.dragged() {
+                    if response.dragged_by(egui::PointerButton::Primary) {
                         let d = response.drag_delta();
                         if d != egui::Vec2::ZERO {
                             actions.model_drag =
                                 Some((handle, [d.x / scene.width(), d.y / scene.height()]));
                         }
                     }
-                    if response.drag_stopped() {
+                    if response.drag_stopped_by(egui::PointerButton::Primary) {
                         actions.model_drag_end = true;
                     }
                     let hint = match handle {
@@ -1262,7 +1262,8 @@ impl ViewerUi {
                         {
                             self.lamp_handle_rects.push((part, rect));
                         }
-                        let hot = response.hovered() || response.dragged();
+                        let hot =
+                            response.hovered() || response.dragged_by(egui::PointerButton::Primary);
                         if hot {
                             self.lamp_hot = Some(part);
                         }
@@ -1283,7 +1284,7 @@ impl ViewerUi {
                             -dir,
                             color,
                         );
-                        if response.dragged() {
+                        if response.dragged_by(egui::PointerButton::Primary) {
                             let d = response.drag_delta();
                             let turn = crate::lamp::handle_turn([d.x, d.y], [t_px.x, t_px.y]);
                             if turn != 0. {
@@ -1316,7 +1317,7 @@ impl ViewerUi {
                 {
                     self.lamp_gizmo_rect = rect;
                 }
-                let hot = response.hovered() || response.dragged();
+                let hot = response.hovered() || response.dragged_by(egui::PointerButton::Primary);
                 if hot && self.lamp_hot.is_none() {
                     self.lamp_hot = Some(LampPart::Icon);
                 }
@@ -1336,7 +1337,7 @@ impl ViewerUi {
                         egui::Stroke::new(2., color),
                     );
                 }
-                if response.dragged() {
+                if response.dragged_by(egui::PointerButton::Primary) {
                     let d = response.drag_delta();
                     if d != egui::Vec2::ZERO {
                         actions.lamp_drag = Some([d.x, d.y]);
@@ -1499,6 +1500,18 @@ impl ViewerUi {
                 )
             });
         }
+        // The side mouse buttons turn and move the camera (owner 2026-11-28):
+        // the interface never sees them, so a gizmo under the pointer does
+        // not take them as a drag.
+        raw.events.retain(|event| {
+            !matches!(
+                event,
+                egui::Event::PointerButton {
+                    button: egui::PointerButton::Extra1 | egui::PointerButton::Extra2,
+                    ..
+                }
+            )
+        });
         let mut actions = Actions::default();
         // Interface scale: the setting wins over egui's own keyboard zoom
         // only when the setting itself changed.
@@ -2737,6 +2750,57 @@ FORMAT=32-bit_rle_rgbe
             click(&mut ui, None, rect, (1200., 760.))
         };
         assert!(!actions.save_copy);
+    }
+    #[test]
+    fn side_and_right_buttons_do_not_drag_the_gizmo() {
+        let mut ui = ViewerUi::default();
+        let asset = crate::imports::prepare(&crate::worker::Request {
+            ticket: 1,
+            input: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/Pbr_Factors.glb"),
+            cancel: ad_document::Cancellation::default(),
+        })
+        .unwrap();
+        ui.lamp_icon = false;
+        ui.model_gizmo = Some(ModelGizmo {
+            pivot: [0.5, 0.6],
+            ends: [Some([0.65, 0.6]), Some([0.5, 0.4]), None],
+            ..Default::default()
+        });
+        for _ in 0..2 {
+            ui.model_gizmo_rects.clear();
+            let (out, _, _) = ui.layout(raw(1400., 1000.), Some(&asset), false);
+            out.drop_without_applying_deltas();
+        }
+        let at = ui.model_gizmo_rects[0].1.center();
+        for button in [
+            egui::PointerButton::Extra1,
+            egui::PointerButton::Extra2,
+            egui::PointerButton::Secondary,
+        ] {
+            let press = |pressed, pos| egui::Event::PointerButton {
+                pos,
+                button,
+                pressed,
+                modifiers: Default::default(),
+            };
+            let end = at + egui::vec2(40., 5.);
+            for events in [
+                vec![egui::Event::PointerMoved(at)],
+                vec![press(true, at)],
+                vec![egui::Event::PointerMoved(at + egui::vec2(20., 0.))],
+                vec![egui::Event::PointerMoved(end)],
+                vec![press(false, end)],
+            ] {
+                let mut input = raw(1400., 1000.);
+                input.events = events;
+                let (out, _, actions) = ui.layout(input, Some(&asset), false);
+                assert!(actions.model_drag.is_none(), "{button:?} moved the model");
+                assert!(!actions.model_drag_end, "{button:?} ended a drag");
+                out.drop_without_applying_deltas();
+            }
+            ui.context_menu = None;
+        }
     }
     #[test]
     fn model_gizmo_arrow_drag_reports_handle_delta_and_release() {

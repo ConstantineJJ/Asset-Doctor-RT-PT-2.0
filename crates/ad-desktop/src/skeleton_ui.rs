@@ -331,7 +331,9 @@ impl ViewerUi {
                     let rect = egui::Rect::from_center_size(position, egui::vec2(26., 26.));
                     let response = ui.interact(rect, id, egui::Sense::drag());
                     if let JointHandle::Arrow(axis) = handle {
-                        let r = if response.hovered() || response.dragged() {
+                        let r = if response.hovered()
+                            || response.dragged_by(egui::PointerButton::Primary)
+                        {
                             9.
                         } else {
                             7.
@@ -346,7 +348,7 @@ impl ViewerUi {
                     response
                 });
             let response = area.inner;
-            if response.drag_started()
+            if response.drag_started_by(egui::PointerButton::Primary)
                 && let Some(p) = response.interact_pointer_pos()
             {
                 let base = match handle {
@@ -358,7 +360,7 @@ impl ViewerUi {
                 };
                 self.joint_drag = Some((handle, uv(p), base));
             }
-            if response.dragged()
+            if response.dragged_by(egui::PointerButton::Primary)
                 && let (Some(p), Some((h, start, _))) =
                     (response.interact_pointer_pos(), self.joint_drag)
                 && h == handle
@@ -381,7 +383,7 @@ impl ViewerUi {
                     value,
                 }));
             }
-            if response.drag_stopped()
+            if response.drag_stopped_by(egui::PointerButton::Primary)
                 && let Some((h, _, value)) = self.joint_drag.take()
                 && h == handle
             {
