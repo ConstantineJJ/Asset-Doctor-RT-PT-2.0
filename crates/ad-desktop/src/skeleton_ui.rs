@@ -94,14 +94,14 @@ impl ViewerUi {
             let color = if in_selection(index) { SELECTED } else { BONE };
             // A thin wedge from parent to child, outlined for contrast.
             let dir = (b - a).normalized();
-            let side = egui::vec2(-dir.y, dir.x) * 3.;
+            let side = egui::vec2(-dir.y, dir.x) * 4.5;
             let shape = vec![a + side, b, a - side];
             painter.add(egui::Shape::convex_polygon(
                 shape.clone(),
                 color.gamma_multiply(0.55),
                 Stroke::new(1., OUTLINE),
             ));
-            painter.line_segment([a, b], Stroke::new(1.5, color));
+            painter.line_segment([a, b], Stroke::new(2., color));
         }
         for joint in &overlay.joints {
             let Some(p) = joint.at.map(at) else {
@@ -116,17 +116,17 @@ impl ViewerUi {
                 joint.node.0,
             )))
             .order(egui::Order::Middle)
-            .fixed_pos(p - egui::vec2(7., 7.))
+            .fixed_pos(p - egui::vec2(11., 11.))
             .show(context, |ui| {
                 let (rect, response) =
-                    ui.allocate_exact_size(egui::vec2(14., 14.), egui::Sense::click());
+                    ui.allocate_exact_size(egui::vec2(22., 22.), egui::Sense::click());
                 let is_selected = Some(joint.node) == selected;
                 let radius = if is_selected {
-                    5.5
+                    8.
                 } else if response.hovered() {
-                    5.
+                    7.
                 } else {
-                    3.5
+                    5.5
                 };
                 let fill = if is_selected {
                     SELECTED
@@ -212,6 +212,35 @@ impl ViewerUi {
     }
 }
 
+impl ViewerUi {
+    /// RIG-05: a line from each joint to its suggested position; selected
+    /// suggestions in green, the others grey.
+    pub(super) fn fit_ui(&self, root: &egui::Ui) {
+        let scene = self.scene;
+        let at = |p: [f32; 2]| {
+            egui::pos2(
+                scene.min.x + p[0] * scene.width(),
+                scene.min.y + p[1] * scene.height(),
+            )
+        };
+        let painter = root.painter().with_clip_rect(scene);
+        let green = Color32::from_rgb(110, 228, 150);
+        let grey = Color32::from_rgb(150, 156, 170);
+        for (now, suggested, selected) in &self.fit_uv {
+            let Some(target) = suggested.map(at) else {
+                continue;
+            };
+            let color = if *selected { green } else { grey };
+            if let Some(from) = now.map(at) {
+                painter.line_segment([from, target], Stroke::new(3.5, OUTLINE));
+                painter.line_segment([from, target], Stroke::new(1.8, color));
+            }
+            let r = if *selected { 6. } else { 4. };
+            painter.circle(target, r, color, Stroke::new(1.5, OUTLINE));
+        }
+    }
+}
+
 /// A part of the joint gizmo.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum JointHandle {
@@ -268,7 +297,7 @@ impl ViewerUi {
                 .is_some_and(|d| d.0 == JointHandle::Ring(axis))
                 || pointer.is_some_and(|p| {
                     (0..ring.len()).any(|i| match (ring[i], ring[(i + 1) % ring.len()]) {
-                        (Some(a), Some(b)) => segment_distance(p, at(a), at(b)) < 6.,
+                        (Some(a), Some(b)) => segment_distance(p, at(a), at(b)) < 9.,
                         _ => false,
                     })
                 });
@@ -276,7 +305,7 @@ impl ViewerUi {
                 if let (Some(a), Some(b)) = (ring[i], ring[(i + 1) % ring.len()]) {
                     painter.line_segment(
                         [at(a), at(b)],
-                        egui::Stroke::new(if hot { 3. } else { 1.6 }, AXIS_COLORS[axis]),
+                        egui::Stroke::new(if hot { 4. } else { 2.4 }, AXIS_COLORS[axis]),
                     );
                 }
             }
@@ -284,28 +313,28 @@ impl ViewerUi {
                 handles.push((JointHandle::Ring(axis), p));
             }
             if let Some(tip) = gizmo.arrows[axis].map(at) {
-                painter.line_segment([centre, tip], egui::Stroke::new(2., AXIS_COLORS[axis]));
+                painter.line_segment([centre, tip], egui::Stroke::new(3., AXIS_COLORS[axis]));
                 handles.push((JointHandle::Arrow(axis), tip));
             }
         }
-        painter.circle_filled(centre, 3., Color32::WHITE);
+        painter.circle_filled(centre, 4., Color32::WHITE);
         self.pointer_on_gizmo |= handles.iter().any(|(h, p)| match h {
             JointHandle::Ring(_) => true,
-            JointHandle::Arrow(_) => pointer.is_some_and(|q| q.distance(*p) < 12.),
+            JointHandle::Arrow(_) => pointer.is_some_and(|q| q.distance(*p) < 16.),
         });
         for (handle, position) in handles {
             let id = egui::Id::new(("joint_gizmo", gizmo.document, format!("{handle:?}")));
             let area = egui::Area::new(id.with("area"))
                 .order(egui::Order::Middle)
-                .fixed_pos(position - egui::vec2(10., 10.))
+                .fixed_pos(position - egui::vec2(13., 13.))
                 .show(context, |ui| {
-                    let rect = egui::Rect::from_center_size(position, egui::vec2(20., 20.));
+                    let rect = egui::Rect::from_center_size(position, egui::vec2(26., 26.));
                     let response = ui.interact(rect, id, egui::Sense::drag());
                     if let JointHandle::Arrow(axis) = handle {
                         let r = if response.hovered() || response.dragged() {
-                            7.
+                            9.
                         } else {
-                            5.
+                            7.
                         };
                         ui.painter().circle(
                             rect.center(),

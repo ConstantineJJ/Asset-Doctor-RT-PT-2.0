@@ -19,6 +19,7 @@ mod helpers;
 mod history;
 mod imports;
 mod input;
+mod joint_fit;
 mod joint_gizmo;
 mod lamp;
 mod log;
@@ -114,6 +115,8 @@ struct App {
     importing: bool,
     current: Option<PreparedAsset>,
     playback: rig_playback::Playback,
+    /// RIG-05: background search for joint fits.
+    fit_worker: joint_fit::FitWorker,
     camera: Camera,
     mouse: Option<MouseButton>,
     /// ADR-0043: drag action of the held mouse button.
@@ -522,6 +525,8 @@ impl App {
                 self.playback.reset();
                 self.reset_gizmo_state();
                 self.ui.root_path.motion = None;
+                self.fit_worker.cancel();
+                self.ui.fit = joint_fit::FitState::default();
                 // ANIM-01: a model with clips starts its first one.
                 if self.ui.autoplay {
                     let durations: Vec<f32> = asset
@@ -654,6 +659,10 @@ impl App {
             self.ui.set_status(error.to_string(), false);
             return false;
         }
+        if self.ui.fit.running {
+            self.fit_worker.cancel();
+            self.ui.fit.running = false;
+        }
         let input = EditInput {
             session: asset.session.clone(),
             base: asset.generation.stamp.clone(),
@@ -692,7 +701,7 @@ impl App {
         true
     }
     fn poll_edit(&mut self) -> GpuResult<()> {
-        if !self.playback.is_idle() {
+        if !self.playback.is_idle() || !self.fit_worker.is_idle() {
             return Ok(());
         }
         let Some(completion) = self.edits.poll() else {
@@ -2507,6 +2516,33 @@ impl App {
             .and_then(|p| self.camera.project(p, width, height));
         Some((points, now))
     }
+    /// RIG-05: current and suggested joint positions in the viewport (and
+    /// whether each is selected), for fresh results in the Rigging tab.
+    #[allow(clippy::type_complexity)]
+    fn fit_overlay(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> Vec<(Option<[f32; 2]>, Option<[f32; 2]>, bool)> {
+        let Some(asset) = self.current.as_ref() else {
+            return Vec::new();
+        };
+        if self.ui.tab != viewer_ui::Tab::Rigging || !self.ui.fit.is_current(asset.document()) {
+            return Vec::new();
+        }
+        self.ui
+            .fit
+            .items
+            .iter()
+            .map(|item| {
+                (
+                    self.camera.project(item.fit.current, width, height),
+                    self.camera.project(item.fit.suggested, width, height),
+                    item.selected,
+                )
+            })
+            .collect()
+    }
     /// One frame back or forward (1/30 s) in the chosen clip, paused.
     fn step_frame(&mut self, frames: f32) {
         if self.editing || self.ui.edit.busy.is_some() {
@@ -2580,6 +2616,7 @@ impl App {
             rotation,
             [translation[0], translation[1], translation[2]],
             self.ui.joint_local_axes,
+            joint_gizmo::RADIUS_PX * self.ui.joint_gizmo_size,
             glam::Vec3::from_array(camera.view_direction()),
             glam::Vec2::new(width.max(1) as f32, height.max(1) as f32),
             |p| camera.project(p.to_array(), width, height),
@@ -2915,6 +2952,7 @@ impl App {
         };
         self.ui.joint_gizmo = self.joint_gizmo(view_w, view_h);
         self.ui.root_path_uv = self.root_path_overlay(view_w, view_h);
+        self.ui.fit_uv = self.fit_overlay(view_w, view_h);
         // ADR-0041 model gizmo at the (previewed) bottom centre.
         // The gizmo follows the selection (owner 2026-11-25): objects
         // selected -> object gizmo on them; nothing selected -> the model.
@@ -3240,6 +3278,18 @@ impl App {
                 Some((key.clip, key.time)),
             ));
         }
+        if actions.fit_search
+            && !self.editing
+            && let Some(asset) = self.current.as_ref()
+        {
+            self.fit_worker.request(asset.session.clone());
+            self.ui.fit.running = true;
+            self.ui.fit.error = None;
+        }
+        if actions.fit_cancel {
+            self.fit_worker.cancel();
+            self.ui.fit.running = false;
+        }
         if let Some(joint_edit) = actions.joint_edit.take() {
             let controls = self.playback.controls;
             self.request_edit_with(
@@ -3424,6 +3474,18 @@ impl App {
                 Err(error) => {
                     self.playback.stop_after_error();
                     self.ui.set_status(format!("Анимация: {error}"), true);
+                }
+            }
+        }
+        if let Some(done) = self.fit_worker.poll() {
+            match done.result {
+                Ok((document, revision, fits)) => {
+                    eprintln!("joint_fit_done suggestions={}", fits.len());
+                    self.ui.fit.publish(document, revision, fits);
+                }
+                Err(error) => {
+                    self.ui.fit.running = false;
+                    self.ui.fit.error = Some(error.to_string());
                 }
             }
         }
@@ -4339,6 +4401,7 @@ fn run() -> GpuResult<()> {
         importing: false,
         current: None,
         playback: rig_playback::Playback::new(),
+        fit_worker: joint_fit::new_worker(),
         camera: Camera::default(),
         mouse: None,
         mouse_drag: None,

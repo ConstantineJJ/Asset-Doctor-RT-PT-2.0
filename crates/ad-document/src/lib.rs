@@ -2,6 +2,7 @@
 mod color;
 mod indices;
 mod joint_edit;
+mod joint_fit;
 mod node_edits;
 mod normals;
 mod placement;
@@ -15,6 +16,7 @@ pub use indices::{
     StagedExchange, StagedRemoval,
 };
 pub use joint_edit::JointEdit;
+pub use joint_fit::{FitConfidence, JointFit};
 pub use node_edits::{NodeEdits, NodeOp};
 pub use placement::Placement;
 pub use skin::{Influence, Rig, RigInspection, Skin, SkinReport};

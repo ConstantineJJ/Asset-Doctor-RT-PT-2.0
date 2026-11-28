@@ -85,6 +85,9 @@ pub struct Actions {
     pub(crate) clip_edit: Option<ad_document::ClipEdit>,
     /// RIG-03: rename a node or add a joint.
     pub(crate) joint_edit: Option<ad_document::JointEdit>,
+    /// RIG-05: start or stop the joint fit search.
+    pub(crate) fit_search: bool,
+    pub(crate) fit_cancel: bool,
     pub(crate) animation_preview: Option<Option<ad_document::ChannelValue>>,
     pub open: bool,
     pub fit: bool,
@@ -379,12 +382,19 @@ pub struct ViewerUi {
     /// drag in progress: handle, start pointer, last previewed value.
     pub joint_gizmo: Option<crate::joint_gizmo::JointGizmo>,
     pub joint_local_axes: bool,
+    /// Joint gizmo size, 0.5–2× of `joint_gizmo::RADIUS_PX`.
+    pub joint_gizmo_size: f32,
     joint_drag: Option<(skeleton_ui::JointHandle, [f32; 2], [f32; 4])>,
     /// P7 skeleton overlay (bones and joints of the skins) and its switch.
     pub skeleton_on: bool,
     pub skeleton: Option<skeleton_ui::SkeletonOverlay>,
     /// ANIM-01: start the first clip when a model with clips opens.
     pub autoplay: bool,
+    /// RIG-05: joint fit results and their viewport projection (current,
+    /// suggested, selected).
+    pub fit: crate::joint_fit::FitState,
+    #[allow(clippy::type_complexity)]
+    pub fit_uv: Vec<(Option<[f32; 2]>, Option<[f32; 2]>, bool)>,
     /// ANIM-05: root motion card state and its projected path (points,
     /// the point at the current time).
     pub root_path: crate::root_motion::PathState,
@@ -562,6 +572,7 @@ impl Default for ViewerUi {
             skeleton: None,
             joint_gizmo: None,
             joint_local_axes: true,
+            joint_gizmo_size: 1.,
             joint_drag: None,
             marquee: None,
             pointer_on_gizmo: false,
@@ -608,6 +619,8 @@ impl Default for ViewerUi {
             ui_scale: 1.,
             applied_scale: 1.,
             autoplay: true,
+            fit: Default::default(),
+            fit_uv: Vec::new(),
             root_path: crate::root_motion::PathState {
                 show: true,
                 ..Default::default()
@@ -1550,6 +1563,9 @@ impl ViewerUi {
                 if asset.is_some() && self.skeleton_on && let Some(overlay)=self.skeleton.take() {
                     self.skeleton_ui(&context,root,&overlay,asset.map(PreparedAsset::document),&mut actions);
                     self.skeleton=Some(overlay);
+                }
+                if asset.is_some() && !self.fit_uv.is_empty() {
+                    self.fit_ui(root);
                 }
                 if asset.is_some() && let Some(path)=self.root_path_uv.take() {
                     self.root_path_ui(root,&path);
@@ -3071,6 +3087,7 @@ FORMAT=32-bit_rle_rgbe
             glam::Quat::IDENTITY.to_array(),
             [0., 0., 0.],
             false,
+            crate::joint_gizmo::RADIUS_PX,
             glam::Vec3::NEG_Z,
             glam::Vec2::new(scene.width(), scene.height()),
             to_uv,
