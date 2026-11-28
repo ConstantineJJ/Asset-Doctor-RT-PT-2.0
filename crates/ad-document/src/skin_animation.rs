@@ -325,7 +325,7 @@ impl DocumentView<'_> {
         if !time.is_finite() {
             return Err(invalid("Animation time must be finite"));
         }
-        let mut pose = vec![None; self.document().nodes().len()];
+        let mut pose = vec![None; self.nodes().len()];
         for track in &clip.tracks {
             cancel.check()?;
             let value = track.sample(time.clamp(0., clip.duration))?;
@@ -359,8 +359,9 @@ impl DocumentView<'_> {
             None => None,
         };
         let document = self.document();
+        let nodes = self.nodes();
         let edits = self.node_edits();
-        let mut worlds = vec![None; document.nodes().len()];
+        let mut worlds = vec![None; nodes.len()];
         let mut pending: Vec<_> = document
             .roots()
             .iter()
@@ -378,11 +379,11 @@ impl DocumentView<'_> {
             let local = locals
                 .as_ref()
                 .and_then(|locals| locals[id.0])
-                .unwrap_or_else(|| Mat4::from_cols_array_2d(&edits.local(document, id)));
+                .unwrap_or_else(|| self.local(id));
             let world = parent * local;
             *slot = Some(world.to_cols_array_2d());
             pending.extend(
-                document.nodes()[id.0]
+                nodes[id.0]
                     .children
                     .iter()
                     .filter(|child| !edits.is_detached(**child))
@@ -410,7 +411,7 @@ impl DocumentView<'_> {
             .duration;
         let document = self.document();
         let edits = self.node_edits();
-        let nodes = document.nodes();
+        let nodes = self.nodes();
         if node.0 >= nodes.len() {
             return Err(invalid("Unknown node"));
         }
@@ -440,9 +441,7 @@ impl DocumentView<'_> {
                 let locals = self.pose_locals(clip, time, None, cancel)?;
                 let mut world = self.placement().matrix();
                 for id in chain.iter().rev() {
-                    let local = locals[id.0]
-                        .unwrap_or_else(|| Mat4::from_cols_array_2d(&edits.local(document, *id)));
-                    world *= local;
+                    world *= locals[id.0].unwrap_or_else(|| self.local(*id));
                 }
                 Ok((time, world.to_cols_array_2d()))
             })

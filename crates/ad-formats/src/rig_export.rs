@@ -39,7 +39,7 @@ pub(super) fn verify(
     if source_bytes.len() > max {
         return Err(budget());
     }
-    let bytes = if view.animations_changed() {
+    let bytes = if view.animations_changed() || view.skeleton_changed() {
         encode(view, source_bytes, max, limits, import, cancel)?
     } else {
         source_bytes.clone()
@@ -59,6 +59,8 @@ pub(super) fn verify(
 enum TrackData<'a> {
     Times(&'a [f32]),
     Values(&'a [[f32; 4]], usize),
+    /// RIG-03: a skin's inverse bind matrices (column-major).
+    Matrices(&'a [[[f32; 4]; 4]]),
 }
 impl TrackData<'_> {
     fn shape(&self) -> (usize, usize, &'static str) {
@@ -66,6 +68,7 @@ impl TrackData<'_> {
             Self::Times(times) => (times.len(), 1, "SCALAR"),
             Self::Values(values, 4) => (values.len(), 4, "VEC4"),
             Self::Values(values, _) => (values.len(), 3, "VEC3"),
+            Self::Matrices(matrices) => (matrices.len(), 16, "MAT4"),
         }
     }
 }
@@ -206,6 +209,9 @@ fn encode(
     if !animations.is_empty() {
         meta["animations"] = Value::Array(animations);
     }
+    if view.skeleton_changed() {
+        write_skeleton(view, &mut meta, &mut suffix, &mut bin_len, max, cancel)?;
+    }
     array(&mut meta, "buffers")?
         .first_mut()
         .ok_or_else(invalid)?["byteLength"] = json!(bin_len);
@@ -264,6 +270,14 @@ fn encode(
                     }
                 }
             }
+            TrackData::Matrices(matrices) => {
+                for chunk in matrices.chunks(1024) {
+                    cancel.check()?;
+                    for value in chunk.iter().flatten().flatten() {
+                        bytes.extend(value.to_le_bytes());
+                    }
+                }
+            }
         }
     }
     if bytes.len() != total {
@@ -272,13 +286,86 @@ fn encode(
     Ok(Arc::from(bytes))
 }
 
+/// RIG-03: renamed nodes get their names; added nodes (after the file's
+/// own) are appended with their translation, linked from their parents'
+/// children; a skin whose joint table grew gets its joints and a new
+/// inverse-bind accessor. Indices of the file's nodes never change.
+fn write_skeleton<'a>(
+    view: &DocumentView<'a>,
+    meta: &mut Value,
+    suffix: &mut Vec<TrackData<'a>>,
+    bin_len: &mut usize,
+    max: usize,
+    cancel: &Cancellation,
+) -> AssetResult<()> {
+    let source = view.document().source_node_count();
+    let nodes = view.nodes();
+    let list = array(meta, "nodes")?;
+    if list.len() != source || nodes.len() < source {
+        return Err(invalid());
+    }
+    for &index in view.renamed() {
+        cancel.check()?;
+        let node = list.get_mut(index).ok_or_else(invalid)?;
+        node["name"] = json!(nodes[index].name);
+    }
+    list.try_reserve_exact(nodes.len() - source)
+        .map_err(|_| budget())?;
+    for node in &nodes[source..] {
+        cancel.check()?;
+        let m = node.local;
+        let translation_only =
+            (0..3).all(|c| (0..4).all(|r| m[c][r] == f32::from(u8::from(c == r)))) && m[3][3] == 1.;
+        if !translation_only || !node.meshes.is_empty() {
+            return Err(invalid());
+        }
+        let mut entry = json!({"name": node.name, "translation": [m[3][0], m[3][1], m[3][2]]});
+        if !node.children.is_empty() {
+            entry["children"] = json!(node.children.iter().map(|c| c.0).collect::<Vec<_>>());
+        }
+        list.push(entry);
+    }
+    for (index, node) in nodes[..source].iter().enumerate() {
+        if node.children.iter().any(|child| child.0 >= source) {
+            list[index]["children"] = json!(node.children.iter().map(|c| c.0).collect::<Vec<_>>());
+        }
+    }
+    let Some(rig) = view.rig() else {
+        return Ok(());
+    };
+    for (index, skin) in rig.skins.iter().enumerate() {
+        cancel.check()?;
+        let written = meta
+            .get("skins")
+            .and_then(|skins| skins.get(index))
+            .and_then(|skin| skin.get("joints"))
+            .and_then(Value::as_array)
+            .ok_or_else(invalid)?
+            .len();
+        if written == skin.joints.len() {
+            continue;
+        }
+        let accessor = add_accessor(
+            meta,
+            suffix,
+            bin_len,
+            max,
+            TrackData::Matrices(&skin.inverse_bind),
+        )?;
+        let entry = &mut array(meta, "skins")?[index];
+        entry["joints"] = json!(skin.joints.iter().map(|j| j.0).collect::<Vec<_>>());
+        entry["inverseBindMatrices"] = json!(accessor);
+    }
+    Ok(())
+}
+
 pub(crate) fn compare(
     view: &DocumentView<'_>,
     loaded: &AssetDocument,
     cancel: &Cancellation,
 ) -> AssetResult<()> {
-    roundtrip::compare(view.document(), loaded, &[], cancel)?;
-    match (view.document().rig(), loaded.rig()) {
+    roundtrip::compare_with_nodes(view.document(), view.nodes(), loaded, &[], cancel)?;
+    match (view.rig(), loaded.rig()) {
         (None, None) => {}
         (Some(a), Some(b)) if a.matches(b, cancel)? => {}
         _ => return Err(roundtrip::mismatch()),

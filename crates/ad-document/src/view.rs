@@ -18,6 +18,8 @@ pub(crate) enum CandidateData<'a> {
     /// ADR-0048: a new object edit state; primitives stay current.
     Nodes(&'a crate::NodeEdits),
     Animation(&'a [Arc<crate::AnimationClip>]),
+    /// RIG-03: a new skeleton state; primitives stay current.
+    Skeleton(&'a crate::joint_edit::Skeleton),
 }
 impl<'a> CandidateData<'a> {
     /// Proposed indices, or None when the primitive data stays current.
@@ -25,7 +27,7 @@ impl<'a> CandidateData<'a> {
         match self {
             Self::Indices(v) => Some(v),
             Self::Primitive(p, ..) => Some(&p.indices),
-            Self::Placement(_) | Self::Nodes(_) | Self::Animation(..) => None,
+            Self::Placement(_) | Self::Nodes(_) | Self::Animation(..) | Self::Skeleton(_) => None,
         }
     }
 }
@@ -86,6 +88,10 @@ impl<'a> CandidateIndices<'a> {
     pub fn changes_animation(&self) -> bool {
         matches!(self.data, CandidateData::Animation(..))
     }
+    /// True when publication changes the skeleton (RIG-03).
+    pub fn changes_skeleton(&self) -> bool {
+        matches!(self.data, CandidateData::Skeleton(_))
+    }
 }
 
 /// Immutable view used by snapshots and analysis. A candidate view never
@@ -117,6 +123,40 @@ impl<'a> DocumentView<'a> {
     }
     pub fn document(&self) -> &'a AssetDocument {
         self.document
+    }
+    /// Scene nodes as seen through this view (RIG-03 adds joints).
+    pub fn nodes(&self) -> &'a [crate::Node] {
+        match self.candidate {
+            Some((_, CandidateData::Skeleton(s))) => &s.nodes,
+            _ => self.document.nodes(),
+        }
+    }
+    /// Skins as seen through this view.
+    pub fn rig(&self) -> Option<&'a crate::RigInspection> {
+        match self.candidate {
+            Some((_, CandidateData::Skeleton(s))) => s.rig.as_ref(),
+            _ => self.document.rig(),
+        }
+    }
+    /// Nodes renamed since opening, as seen through this view.
+    pub fn renamed(&self) -> &'a std::collections::BTreeSet<usize> {
+        match self.candidate {
+            Some((_, CandidateData::Skeleton(s))) => &s.renamed,
+            _ => self.document.renamed_nodes(),
+        }
+    }
+    /// The export must write nodes, names or skins (RIG-03).
+    pub fn skeleton_changed(&self) -> bool {
+        self.nodes().len() != self.document.source_node_count() || !self.renamed().is_empty()
+    }
+    /// Effective local transform of a node through this view.
+    pub(crate) fn local(&self, node: crate::NodeId) -> glam::Mat4 {
+        glam::Mat4::from_cols_array_2d(
+            self.node_edits()
+                .locals
+                .get(&node.0)
+                .unwrap_or(&self.nodes()[node.0].local),
+        )
     }
     pub fn tag(&self) -> DocumentTag {
         self.tag
@@ -257,6 +297,15 @@ impl AssetDocument {
                 if !p.valid() {
                     return Err(invalid());
                 }
+                cancel.check()?;
+                return Ok(DocumentView {
+                    document: self,
+                    tag: candidate.next,
+                    candidate: Some((candidate.mesh, candidate.data)),
+                });
+            }
+            CandidateData::Skeleton(s) => {
+                crate::joint_edit::valid_skeleton(self, s)?;
                 cancel.check()?;
                 return Ok(DocumentView {
                     document: self,

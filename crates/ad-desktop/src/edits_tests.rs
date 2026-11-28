@@ -572,3 +572,55 @@ fn unused_vertex_repair_compacts_publishes_undoes_and_saves() {
     let outcome = prepare_edit(&asset.session, &asset.generation.stamp, kind, &c).unwrap();
     assert!(matches!(outcome, EditOutcome::NoChange(_)));
 }
+
+#[test]
+fn a_joint_edit_is_prepared_verified_published_and_undone() {
+    use ad_document::{JointEdit, NodeId};
+    let (mut asset, mut scene) = open("Animation_Checker.glb");
+    let nodes = asset.document().nodes().len();
+    let cancel = Cancellation::default();
+    let mut run = |asset: &mut PreparedAsset, kind: EditKind, joint: Option<JointEdit>| {
+        let outcome = prepare_edit_with_clip(
+            &asset.session,
+            &asset.generation.stamp,
+            kind,
+            None,
+            joint.as_ref(),
+            &cancel,
+        )
+        .unwrap();
+        let EditOutcome::Candidate(candidate) = outcome else {
+            panic!("expected a change");
+        };
+        publish_edit(asset, &mut scene, *candidate, &cancel).unwrap();
+    };
+    run(
+        &mut asset,
+        EditKind::Animation(AnimationEdit::Joint, Some((0, 0.))),
+        Some(JointEdit::Add {
+            parent: NodeId(1),
+            name: "Tip_end".into(),
+            translation: [0., 0.25, 0.],
+        }),
+    );
+    assert_eq!(asset.document().nodes().len(), nodes + 1);
+    assert!(asset.session.can_undo());
+    run(
+        &mut asset,
+        EditKind::Animation(AnimationEdit::Undo, Some((0, 0.))),
+        None,
+    );
+    assert_eq!(asset.document().nodes().len(), nodes);
+    // A joint edit without its edit data is refused as stale.
+    assert!(
+        prepare_edit_with_clip(
+            &asset.session,
+            &asset.generation.stamp,
+            EditKind::Animation(AnimationEdit::Joint, None),
+            None,
+            None,
+            &cancel,
+        )
+        .is_err()
+    );
+}

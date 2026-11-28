@@ -99,10 +99,22 @@ impl SceneTree {
         self.document = Some(document.id());
         self.selected = None;
         self.selection.clear();
-        self.rows.clear();
         self.hidden.clear();
         self.tints.clear();
+        self.refresh(document);
+    }
+    /// Rebuilds the rows of the same document (RIG-03: renamed or added
+    /// nodes), keeping selection, hidden nodes and marks.
+    pub fn refresh(&mut self, document: &AssetDocument) {
+        let count = document.nodes().len();
+        self.rows.clear();
         self.rev += 1;
+        self.selection.retain(|n| n.0 < count);
+        if self.selected.is_some_and(|n| n.0 >= count) {
+            self.selected = self.selection.last().copied();
+        }
+        self.hidden.retain(|n| *n < count);
+        self.tints.retain(|n, _| *n < count);
         let mut seen = vec![false; document.nodes().len()];
         let mut pending: Vec<_> = document
             .roots()

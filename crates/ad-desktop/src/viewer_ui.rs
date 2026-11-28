@@ -83,6 +83,8 @@ pub struct Actions {
     pub(crate) playback: Option<crate::rig_playback::Controls>,
     pub(crate) animation_key: Option<ad_document::AnimationKey>,
     pub(crate) clip_edit: Option<ad_document::ClipEdit>,
+    /// RIG-03: rename a node or add a joint.
+    pub(crate) joint_edit: Option<ad_document::JointEdit>,
     pub(crate) animation_preview: Option<Option<ad_document::ChannelValue>>,
     pub open: bool,
     pub fit: bool,
@@ -2869,6 +2871,7 @@ FORMAT=32-bit_rle_rgbe
         // The Rigging tree lists the joints by their node names.
         let (out, _, _) = ui.layout(raw(1400., 1000.), Some(&asset), false);
         let text = format!("{:?}", out.shapes);
+        out.drop_without_applying_deltas();
         assert!(
             text.contains(&document.nodes()[first.0].name),
             "tree shows the root joint"

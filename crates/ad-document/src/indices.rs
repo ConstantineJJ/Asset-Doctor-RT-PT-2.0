@@ -42,6 +42,8 @@ pub(crate) enum Alternate {
     /// ADR-0048: the other object edit state.
     Nodes(Box<crate::NodeEdits>),
     Animation(Vec<Arc<crate::AnimationClip>>),
+    /// RIG-03: the other skeleton state (nodes, rig, bases, names).
+    Skeleton(Box<crate::joint_edit::Skeleton>),
 }
 impl Alternate {
     fn data(&self) -> CandidateData<'_> {
@@ -53,6 +55,7 @@ impl Alternate {
             Self::Placement(p) => CandidateData::Placement(*p),
             Self::Nodes(e) => CandidateData::Nodes(e),
             Self::Animation(clips) => CandidateData::Animation(clips),
+            Self::Skeleton(s) => CandidateData::Skeleton(s),
         }
     }
     /// Shape used for decoded-budget admission: (vertices, UV channels, indices).
@@ -60,7 +63,7 @@ impl Alternate {
         match self {
             Self::Indices(v) => (current.positions.len(), current.uv_channels.len(), v.len()),
             Self::Primitive(p, ..) => (p.positions.len(), p.uv_channels.len(), p.indices.len()),
-            Self::Placement(_) | Self::Nodes(_) | Self::Animation(..) => (
+            Self::Placement(_) | Self::Nodes(_) | Self::Animation(..) | Self::Skeleton(_) => (
                 current.positions.len(),
                 current.uv_channels.len(),
                 current.indices.len(),
@@ -78,6 +81,7 @@ impl Alternate {
             Self::Nodes(e) => Ok(std::mem::size_of::<crate::NodeEdits>()
                 + e.locals.len() * 96
                 + e.detached.len() * 32),
+            Self::Skeleton(s) => Ok(s.bytes()),
         }
     }
 }
@@ -103,7 +107,12 @@ impl PreparedRemoval {
         Ok(match &self.replacement {
             Some(Alternate::Indices(v)) => v,
             Some(Alternate::Primitive(p, ..)) => &p.indices,
-            Some(Alternate::Placement(_) | Alternate::Nodes(_) | Alternate::Animation(..))
+            Some(
+                Alternate::Placement(_)
+                | Alternate::Nodes(_)
+                | Alternate::Animation(..)
+                | Alternate::Skeleton(_),
+            )
             | None => &document.parts.meshes[self.preview.mesh.0].indices,
         })
     }
@@ -440,7 +449,10 @@ impl AssetDocument {
         limits: ImportLimits,
         cancel: &Cancellation,
     ) -> AssetResult<StagedExchange<'a>> {
-        if !matches!(change.alternate, Alternate::Animation(..)) {
+        if !matches!(
+            change.alternate,
+            Alternate::Animation(..) | Alternate::Skeleton(_)
+        ) {
             self.require_editable()?;
         }
         self.verify_tag(expected, cancel)?;
@@ -462,6 +474,7 @@ impl AssetDocument {
                     + self.node_edits.locals.len() * 96
                     + self.node_edits.detached.len() * 32
             }
+            Alternate::Skeleton(_) => self.skeleton_bytes(),
         };
         if current.max(change.alternate.retained()?) > change.retained_bytes {
             return Err(budget());
@@ -531,6 +544,7 @@ fn swap_in(document: &mut AssetDocument, mesh: MeshId, alternate: &mut Alternate
         Alternate::Placement(p) => std::mem::swap(&mut document.placement, p),
         Alternate::Nodes(e) => std::mem::swap(&mut document.node_edits, &mut **e),
         Alternate::Animation(clips) => std::mem::swap(&mut document.animation_clips, clips),
+        Alternate::Skeleton(s) => document.swap_skeleton(s),
     }
 }
 

@@ -4,6 +4,7 @@ use super::{
 use glam::Mat4;
 use std::collections::HashSet;
 
+#[derive(Clone)]
 pub struct Skin {
     pub name: String,
     pub joints: Vec<NodeId>,
@@ -11,7 +12,7 @@ pub struct Skin {
     pub skeleton: Option<NodeId>,
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Influence {
     pub joints: [u16; 4],
     pub weights: [f32; 4],
@@ -23,16 +24,19 @@ pub struct Rig {
     pub influences: Vec<Option<Vec<Influence>>>,
 }
 
+#[derive(Clone)]
 pub struct SkinReport {
     pub unused_joints: Vec<usize>,
     pub normalized_vertices: usize,
 }
 
+#[derive(Clone)]
 pub struct RigInspection {
     pub skins: Vec<Skin>,
     pub reports: Vec<SkinReport>,
-    node_skins: Vec<Option<usize>>,
-    influences: Vec<Option<Vec<Influence>>>,
+    pub(crate) node_skins: Vec<Option<usize>>,
+    /// Vertex influences per primitive, shared by skeleton edit states.
+    influences: std::sync::Arc<Vec<Option<Vec<Influence>>>>,
 }
 
 impl RigInspection {
@@ -53,7 +57,7 @@ impl RigInspection {
                 return Ok(false);
             }
         }
-        for (a, b) in self.influences.iter().zip(&other.influences) {
+        for (a, b) in self.influences.iter().zip(other.influences.iter()) {
             cancel.check()?;
             match (a, b) {
                 (None, None) => {}
@@ -226,7 +230,7 @@ impl AssetDocument {
         self.rig = Some(RigInspection {
             skins: rig.skins,
             reports,
-            influences,
+            influences: std::sync::Arc::new(influences),
             node_skins: rig.node_skins,
         });
         Ok(self)

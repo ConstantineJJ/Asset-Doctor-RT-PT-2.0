@@ -130,3 +130,150 @@ fn a_channel_with_a_missing_sampler_is_refused() {
     let error = open(BAD_SAMPLER).err().expect("refused");
     assert!(error.message.contains("sampler"), "{}", error.message);
 }
+
+#[test]
+fn renamed_and_added_joints_are_saved_read_back_and_undone() {
+    use ad_document::JointEdit;
+    let cancel = Cancellation::default();
+    let mut doc = open(ANIMATED).unwrap();
+    let source = doc.nodes().len();
+    let tip = NodeId(1);
+    let rig = doc.rig().unwrap();
+    let slot = rig.skins[0].joints.iter().position(|j| *j == tip).unwrap();
+    let tip_bind = matrix(rig.skins[0].inverse_bind[slot]);
+    let joints_before = rig.skins[0].joints.len();
+    let apply = |doc: &mut AssetDocument, edit: JointEdit| {
+        let plan = doc.prepare_joint_edit(doc.tag(), &edit, &cancel).unwrap();
+        {
+            // The candidate saves and reads back before it is applied.
+            let candidate = plan.candidate(doc, &cancel).unwrap();
+            let view = doc.candidate_view(candidate, &cancel).unwrap();
+            assert!(view.skeleton_changed());
+            verify_animation_export(
+                &view,
+                ExportLimits::default(),
+                ImportLimits::default(),
+                &cancel,
+            )
+            .unwrap();
+            view.snapshot(ImportLimits::default(), &cancel).unwrap();
+        }
+        doc.apply_triangle_removal(plan, ImportLimits::default(), &cancel)
+            .unwrap()
+    };
+    let renamed = apply(
+        &mut doc,
+        JointEdit::Rename {
+            node: tip,
+            name: "  Кончик  ".into(),
+        },
+    );
+    assert_eq!(doc.nodes()[tip.0].name, "Кончик");
+    let added = apply(
+        &mut doc,
+        JointEdit::Add {
+            parent: tip,
+            name: "Tip_end".into(),
+            translation: [0., 0.5, 0.],
+        },
+    );
+    // The new joint: last node, child of Tip, in the skin, bind continued
+    // from Tip's, no weights.
+    assert_eq!(doc.nodes().len(), source + 1);
+    let new = NodeId(source);
+    assert_eq!(doc.nodes()[new.0].name, "Tip_end");
+    assert_eq!(doc.nodes()[tip.0].children.last(), Some(&new));
+    let skin = &doc.rig().unwrap().skins[0];
+    assert_eq!(skin.joints.len(), joints_before + 1);
+    assert_eq!(skin.joints.last(), Some(&new));
+    let expected = Mat4::from_translation(glam::Vec3::new(0., 0.5, 0.)).inverse() * tip_bind;
+    assert!(matrix(*skin.inverse_bind.last().unwrap()).abs_diff_eq(expected, 1e-6));
+    assert_eq!(
+        doc.rig().unwrap().reports[0].unused_joints.last(),
+        Some(&joints_before)
+    );
+    let worlds = doc.view().node_worlds(None, &cancel).unwrap();
+    let offset = matrix(worlds[tip.0].unwrap()).inverse() * matrix(worlds[new.0].unwrap());
+    assert!(offset.abs_diff_eq(Mat4::from_translation(glam::Vec3::new(0., 0.5, 0.)), 1e-5));
+    // Saved and opened again: same names, nodes and skin; clips untouched.
+    let saved = crate::prepare_glb(
+        &doc,
+        doc.tag(),
+        ExportLimits::default(),
+        ImportLimits::default(),
+        &cancel,
+    )
+    .unwrap();
+    let back = open(saved.bytes()).unwrap();
+    assert_eq!(back.nodes().len(), source + 1);
+    assert_eq!(back.nodes()[tip.0].name, "Кончик");
+    assert_eq!(back.nodes()[new.0].name, "Tip_end");
+    assert_eq!(back.rig().unwrap().skins[0].joints, skin.joints);
+    assert_eq!(back.animation_clips().len(), doc.animation_clips().len());
+    assert!(back.can_animate_node(new), "the new joint can be keyed");
+    // Undo both: the file's skeleton again.
+    for applied in [added, renamed] {
+        let mut change = applied.change.unwrap();
+        doc.exchange_indices(doc.tag(), &mut change, ImportLimits::default(), &cancel)
+            .unwrap();
+    }
+    assert_eq!(doc.nodes().len(), source);
+    assert_eq!(doc.nodes()[tip.0].name, "Tip");
+    assert_eq!(doc.rig().unwrap().skins[0].joints.len(), joints_before);
+    // Refusals: empty name, unknown node, non-joint parent, zero offset.
+    let tag = doc.tag();
+    for edit in [
+        JointEdit::Rename {
+            node: tip,
+            name: "   ".into(),
+        },
+        JointEdit::Rename {
+            node: NodeId(999),
+            name: "x".into(),
+        },
+        JointEdit::Add {
+            parent: tip,
+            name: "x".into(),
+            translation: [0.; 3],
+        },
+        JointEdit::Add {
+            parent: tip,
+            name: "x".into(),
+            translation: [f32::NAN, 0., 0.],
+        },
+    ] {
+        assert!(
+            doc.prepare_joint_edit(tag, &edit, &cancel).is_err(),
+            "{edit:?}"
+        );
+    }
+    let mesh_node = (0..doc.nodes().len())
+        .map(NodeId)
+        .find(|n| !doc.nodes()[n.0].meshes.is_empty())
+        .unwrap();
+    assert!(
+        doc.prepare_joint_edit(
+            tag,
+            &JointEdit::Add {
+                parent: mesh_node,
+                name: "x".into(),
+                translation: [0., 1., 0.],
+            },
+            &cancel
+        )
+        .is_err(),
+        "only under a skin joint"
+    );
+    // A rename to the same name changes nothing.
+    let same = doc
+        .prepare_joint_edit(
+            tag,
+            &JointEdit::Rename {
+                node: tip,
+                name: "Tip".into(),
+            },
+            &cancel,
+        )
+        .unwrap();
+    assert!(!same.changes());
+}

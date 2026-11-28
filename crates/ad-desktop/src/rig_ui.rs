@@ -6,7 +6,8 @@ use crate::{
     viewer_ui::Actions,
 };
 use ad_document::{
-    AnimationClip, AnimationKey, AssetDocument, ChannelValue, ClipEdit, NodeId, TrackKind,
+    AnimationClip, AnimationKey, AssetDocument, ChannelValue, ClipEdit, JointEdit, NodeId,
+    TrackKind,
 };
 
 pub(super) fn show(
@@ -335,6 +336,9 @@ fn rig_section(
             pastel::PEACH,
         );
     }
+    ui.add_space(6.);
+    joint_card(ui, document, actions);
+    ui.add_space(6.);
     ui.separator();
 
     ui.horizontal(|ui| {
@@ -469,6 +473,32 @@ pub(super) fn joint_menu(
         select_joint(ui.ctx(), document.id().0, node, animatable, actions);
         ui.close();
     }
+    accent::scope(ui, Accent::Edit, |ui| {
+        if ui
+            .button("Переименовать…")
+            .on_hover_text("Поле имени в карточке «Сустав» над деревом")
+            .clicked()
+        {
+            select_joint(ui.ctx(), document.id().0, node, animatable, actions);
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(rename_focus_id(document), true));
+            ui.close();
+        }
+        let child = default_child(document, node, ChildDirection::Bone, None);
+        if ui
+            .add_enabled(child.is_some(), egui::Button::new("＋ Дочерний сустав"))
+            .on_hover_text("Новый сустав-продолжение кости, без весов; Undo отменит")
+            .clicked()
+            && let Some((translation, _)) = child
+        {
+            actions.joint_edit = Some(JointEdit::Add {
+                parent: node,
+                name: child_name(document, node),
+                translation,
+            });
+            ui.close();
+        }
+    });
     let clips = document.animation_clips();
     let Some(clip) = controls.clip.filter(|&clip| clip < clips.len()) else {
         ui.weak("Выберите клип внизу, чтобы ставить ключи.");
@@ -526,6 +556,238 @@ pub(super) fn joint_menu(
                 ui.close();
             }
         }
+    });
+}
+
+/// Where a new child joint points: along the parent's bone, or along one of
+/// the parent's local axes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChildDirection {
+    Bone,
+    X,
+    Y,
+    Z,
+}
+
+/// The new joint's translation in the parent's local space and its length
+/// in world units: `direction` from the parent, `length` (default: the
+/// parent's own bone, else a tenth of the skeleton's size).
+fn default_child(
+    document: &AssetDocument,
+    parent: NodeId,
+    direction: ChildDirection,
+    length: Option<f32>,
+) -> Option<([f32; 3], f32)> {
+    use glam::{Mat4, Vec3};
+    let rig = document.rig()?;
+    if !rig.skins.iter().any(|skin| skin.joints.contains(&parent)) {
+        return None;
+    }
+    let worlds = document
+        .view()
+        .node_worlds(None, &ad_document::Cancellation::default())
+        .ok()?;
+    let world = Mat4::from_cols_array_2d(&worlds.get(parent.0).copied().flatten()?);
+    let at = world.w_axis.truncate();
+    let up = document
+        .nodes()
+        .iter()
+        .position(|n| n.children.contains(&parent))
+        .and_then(|p| worlds[p])
+        .map(|m| at - Mat4::from_cols_array_2d(&m).w_axis.truncate())
+        .filter(|bone| bone.length() > 1e-6);
+    let size = {
+        let joints = rig.skins.iter().flat_map(|s| &s.joints);
+        let points: Vec<Vec3> = joints
+            .filter_map(|j| worlds.get(j.0).copied().flatten())
+            .map(|m| Mat4::from_cols_array_2d(&m).w_axis.truncate())
+            .collect();
+        let (lo, hi) = points.iter().fold(
+            (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
+            |(lo, hi), p| (lo.min(*p), hi.max(*p)),
+        );
+        (hi - lo).max_element().max(0.)
+    };
+    let length =
+        length
+            .or(up.map(Vec3::length))
+            .unwrap_or(if size > 0. { size * 0.1 } else { 0.1 });
+    let axis = |a: Vec3| world.transform_vector3(a).normalize_or_zero();
+    let direction = match direction {
+        ChildDirection::Bone => up.map_or(Vec3::Y, Vec3::normalize),
+        ChildDirection::X => axis(Vec3::X),
+        ChildDirection::Y => axis(Vec3::Y),
+        ChildDirection::Z => axis(Vec3::Z),
+    };
+    if direction == Vec3::ZERO || !length.is_finite() || length <= 0. {
+        return None;
+    }
+    let local = world.inverse().transform_vector3(direction * length);
+    local.is_finite().then(|| (local.to_array(), length))
+}
+
+/// «<parent>_end», or «<parent>_end2», «_end3»… when taken.
+fn child_name(document: &AssetDocument, parent: NodeId) -> String {
+    let stem: String = document.nodes()[parent.0].name.chars().take(100).collect();
+    let taken = |name: &str| document.nodes().iter().any(|n| n.name == name);
+    let mut name = format!("{stem}_end");
+    let mut n = 2;
+    while taken(&name) {
+        name = format!("{stem}_end{n}");
+        n += 1;
+    }
+    name
+}
+
+fn rename_focus_id(document: &AssetDocument) -> egui::Id {
+    egui::Id::new(("joint_rename_focus", document.id().0))
+}
+
+#[derive(Clone)]
+struct JointDraft {
+    node: NodeId,
+    revision: u64,
+    name: String,
+    child: String,
+    direction: ChildDirection,
+    length: f32,
+}
+
+/// RIG-03: the selected joint's name and a new child joint (pink: editing).
+fn joint_card(ui: &mut egui::Ui, document: &AssetDocument, actions: &mut Actions) {
+    use crate::viewer_ui::skeleton_ui::joint_id;
+    let selected = ui
+        .ctx()
+        .data(|d| d.get_temp::<NodeId>(joint_id(document.id().0)))
+        .filter(|n| n.0 < document.nodes().len());
+    roomy(ui);
+    accent::card(ui, Accent::Edit, "Сустав", |ui| {
+        let Some(node) = selected else {
+            ui.weak(
+                "Выберите сустав в дереве или во вьюпорте: здесь его имя и новый дочерний сустав.",
+            );
+            return;
+        };
+        let id = egui::Id::new(("joint_draft", document.id().0));
+        let mut draft = ui
+            .ctx()
+            .data(|d| d.get_temp::<JointDraft>(id))
+            .filter(|d| d.node == node && d.revision == document.revision())
+            .unwrap_or_else(|| JointDraft {
+                node,
+                revision: document.revision(),
+                name: document.nodes()[node.0].name.clone(),
+                child: child_name(document, node),
+                direction: ChildDirection::Bone,
+                length: default_child(document, node, ChildDirection::Bone, None)
+                    .map_or(0.1, |(_, length)| length),
+            });
+        form(egui::Id::new(("joint_form", document.id().0))).show(ui, |ui| {
+            accent::field_label(ui, "Имя");
+            ui.horizontal(|ui| {
+                let field = accent::values(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut draft.name)
+                            .char_limit(120)
+                            .desired_width((ui.available_width() - 130.).max(80.)),
+                    )
+                });
+                let focus = rename_focus_id(document);
+                if ui
+                    .ctx()
+                    .data(|d| d.get_temp::<bool>(focus))
+                    .unwrap_or(false)
+                {
+                    field.request_focus();
+                    ui.ctx().data_mut(|d| d.remove::<bool>(focus));
+                }
+                let name = draft.name.trim();
+                let changed = !name.is_empty() && name != document.nodes()[node.0].name;
+                let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let clicked = ui
+                    .add_enabled(changed, egui::Button::new("Переименовать"))
+                    .clicked();
+                if clicked || (enter && changed) {
+                    actions.joint_edit = Some(JointEdit::Rename {
+                        node,
+                        name: name.to_owned(),
+                    });
+                }
+            });
+            ui.end_row();
+
+            let can_add = default_child(document, node, ChildDirection::Bone, None).is_some();
+            if !can_add {
+                ui.label("");
+                ui.weak("Дочерний сустав — только под суставом скина.");
+                ui.end_row();
+                return;
+            }
+            accent::field_label(ui, "Новый дочерний");
+            accent::values(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut draft.child)
+                        .char_limit(120)
+                        .desired_width(f32::INFINITY),
+                )
+            });
+            ui.end_row();
+            accent::field_label(ui, "Направление");
+            let directions = [
+                (ChildDirection::Bone, "Вдоль кости"),
+                (ChildDirection::X, "X"),
+                (ChildDirection::Y, "Y"),
+                (ChildDirection::Z, "Z"),
+            ];
+            let group = ui
+                .horizontal(|ui| {
+                    for (choice, label) in directions {
+                        ui.selectable_value(&mut draft.direction, choice, label);
+                    }
+                })
+                .response
+                .on_hover_text(
+                    "Вдоль кости — продолжение кости родителя; X, Y, Z — локальные оси родителя",
+                );
+            let at = directions
+                .iter()
+                .position(|(d, _)| *d == draft.direction)
+                .unwrap_or(0);
+            draft.direction = directions[accent::wheel_choice(ui, &group, at, directions.len())].0;
+            ui.end_row();
+            accent::field_label(ui, "Длина");
+            ui.horizontal(|ui| {
+                accent::values(ui, |ui| {
+                    let response = ui.add(
+                        egui::DragValue::new(&mut draft.length)
+                            .range(0.0001..=10_000.)
+                            .speed(0.005)
+                            .max_decimals(4)
+                            .suffix(" м"),
+                    );
+                    accent::wheel_value(ui, &response, &mut draft.length, 0.01, 0.0001..=10_000.);
+                });
+                let child = default_child(document, node, draft.direction, Some(draft.length));
+                let name = draft.child.trim();
+                if ui
+                    .add_enabled(
+                        child.is_some() && !name.is_empty(),
+                        egui::Button::new("＋ Добавить сустав"),
+                    )
+                    .on_hover_text("Новый сустав без весов, в скине родителя; Undo отменит")
+                    .clicked()
+                    && let Some((translation, _)) = child
+                {
+                    actions.joint_edit = Some(JointEdit::Add {
+                        parent: node,
+                        name: name.to_owned(),
+                        translation,
+                    });
+                }
+            });
+            ui.end_row();
+        });
+        ui.ctx().data_mut(|d| d.insert_temp(id, draft));
     });
 }
 
@@ -1167,4 +1429,47 @@ fn key_value_rows(
     });
     ui.end_row();
     ui.ctx().data_mut(|data| data.insert_temp(draft_id, draft));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_child_joint_continues_the_bone_or_follows_an_axis() {
+        let asset = crate::imports::prepare(&crate::worker::Request {
+            ticket: 1,
+            input: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/Animation_Checker.glb"),
+            cancel: ad_document::Cancellation::default(),
+        })
+        .unwrap();
+        let document = asset.document();
+        let tip = NodeId(1);
+        let worlds = document
+            .view()
+            .node_worlds(None, &ad_document::Cancellation::default())
+            .unwrap();
+        let world = |n: NodeId| glam::Mat4::from_cols_array_2d(&worlds[n.0].unwrap());
+        let bone = world(tip).w_axis.truncate() - world(NodeId(0)).w_axis.truncate();
+        // Along the bone, default length = the parent's bone.
+        let (t, length) = default_child(document, tip, ChildDirection::Bone, None).unwrap();
+        assert!((length - bone.length()).abs() < 1e-5);
+        let end = world(tip).transform_point3(glam::Vec3::from_array(t));
+        let expected = world(tip).w_axis.truncate() + bone;
+        assert!(end.abs_diff_eq(expected, 1e-4), "{end} vs {expected}");
+        // Along the parent's local Y with a chosen length.
+        let (t, _) = default_child(document, tip, ChildDirection::Y, Some(0.5)).unwrap();
+        let moved = world(tip).transform_vector3(glam::Vec3::from_array(t));
+        assert!((moved.length() - 0.5).abs() < 1e-4);
+        // Not under a mesh node; names are unique.
+        let mesh_node = (0..document.nodes().len())
+            .map(NodeId)
+            .find(|n| !document.nodes()[n.0].meshes.is_empty())
+            .unwrap();
+        assert!(default_child(document, mesh_node, ChildDirection::Bone, None).is_none());
+        let name = child_name(document, tip);
+        assert_eq!(name, format!("{}_end", document.nodes()[tip.0].name));
+        assert!(document.nodes().iter().all(|n| n.name != name));
+    }
 }

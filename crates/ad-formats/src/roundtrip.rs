@@ -124,8 +124,20 @@ pub(crate) fn compare(
     roots: &[(usize, [[f32; 4]; 4])],
     c: &Cancellation,
 ) -> AssetResult<()> {
+    compare_with_nodes(a, a.nodes(), b, roots, c)
+}
+
+/// `compare` against `nodes` (RIG-03: the skeleton the export wrote, which
+/// may have more nodes and other names than `a` itself).
+pub(crate) fn compare_with_nodes(
+    a: &AssetDocument,
+    nodes: &[ad_document::Node],
+    b: &AssetDocument,
+    roots: &[(usize, [[f32; 4]; 4])],
+    c: &Cancellation,
+) -> AssetResult<()> {
     c.check()?;
-    if a.nodes().len() != b.nodes().len()
+    if nodes.len() != b.nodes().len()
         || a.primitives().len() != b.primitives().len()
         || a.texture_stats() != b.texture_stats()
     {
@@ -144,7 +156,8 @@ pub(crate) fn compare(
         return Err(mismatch());
     }
     let document = a;
-    for (index, (a, b)) in a.nodes().iter().zip(b.nodes()).enumerate() {
+    let detached = !a.node_edits().detached.is_empty();
+    for (index, (a, b)) in nodes.iter().zip(b.nodes()).enumerate() {
         c.check()?;
         let local = roots
             .iter()
@@ -153,11 +166,15 @@ pub(crate) fn compare(
         if a.name != b.name || local != b.local {
             return Err(mismatch());
         }
-        equal(
-            &document.scene_children(ad_document::NodeId(index)),
-            &b.children,
-            c,
-        )?;
+        if detached {
+            equal(
+                &document.scene_children(ad_document::NodeId(index)),
+                &b.children,
+                c,
+            )?;
+        } else {
+            equal(&a.children, &b.children, c)?;
+        }
         equal(&a.meshes, &b.meshes, c)?;
     }
     let mut images = Images { pairs: Vec::new() };
