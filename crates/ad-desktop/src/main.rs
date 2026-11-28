@@ -19,6 +19,7 @@ mod helpers;
 mod history;
 mod imports;
 mod input;
+mod joint_fit;
 mod joint_gizmo;
 mod lamp;
 mod log;
@@ -106,6 +107,10 @@ struct App {
     saw_resize: bool,
     saw_minimized: bool,
     saw_restore: bool,
+    /// --smoke-cycles: extra minimize/restore rounds before closing, and the
+    /// smoke time budget that grows with them.
+    restore_cycles: u32,
+    smoke_budget: Duration,
     minimized_frame_baseline: Option<u64>,
     close_requested: bool,
     suspended: bool,
@@ -114,6 +119,8 @@ struct App {
     importing: bool,
     current: Option<PreparedAsset>,
     playback: rig_playback::Playback,
+    /// RIG-05: background search for joint fits.
+    fit_worker: joint_fit::FitWorker,
     camera: Camera,
     mouse: Option<MouseButton>,
     /// ADR-0043: drag action of the held mouse button.
@@ -522,6 +529,8 @@ impl App {
                 self.playback.reset();
                 self.reset_gizmo_state();
                 self.ui.root_path.motion = None;
+                self.fit_worker.cancel();
+                self.ui.fit = joint_fit::FitState::default();
                 // ANIM-01: a model with clips starts its first one.
                 if self.ui.autoplay {
                     let durations: Vec<f32> = asset
@@ -654,6 +663,10 @@ impl App {
             self.ui.set_status(error.to_string(), false);
             return false;
         }
+        if self.ui.fit.running {
+            self.fit_worker.cancel();
+            self.ui.fit.running = false;
+        }
         let input = EditInput {
             session: asset.session.clone(),
             base: asset.generation.stamp.clone(),
@@ -692,7 +705,7 @@ impl App {
         true
     }
     fn poll_edit(&mut self) -> GpuResult<()> {
-        if !self.playback.is_idle() {
+        if !self.playback.is_idle() || !self.fit_worker.is_idle() {
             return Ok(());
         }
         let Some(completion) = self.edits.poll() else {
@@ -2507,6 +2520,33 @@ impl App {
             .and_then(|p| self.camera.project(p, width, height));
         Some((points, now))
     }
+    /// RIG-05: current and suggested joint positions in the viewport (and
+    /// whether each is selected), for fresh results in the Rigging tab.
+    #[allow(clippy::type_complexity)]
+    fn fit_overlay(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> Vec<(Option<[f32; 2]>, Option<[f32; 2]>, bool)> {
+        let Some(asset) = self.current.as_ref() else {
+            return Vec::new();
+        };
+        if self.ui.tab != viewer_ui::Tab::Rigging || !self.ui.fit.is_current(asset.document()) {
+            return Vec::new();
+        }
+        self.ui
+            .fit
+            .items
+            .iter()
+            .map(|item| {
+                (
+                    self.camera.project(item.fit.current, width, height),
+                    self.camera.project(item.fit.suggested, width, height),
+                    item.selected,
+                )
+            })
+            .collect()
+    }
     /// One frame back or forward (1/30 s) in the chosen clip, paused.
     fn step_frame(&mut self, frames: f32) {
         if self.editing || self.ui.edit.busy.is_some() {
@@ -2580,6 +2620,7 @@ impl App {
             rotation,
             [translation[0], translation[1], translation[2]],
             self.ui.joint_local_axes,
+            joint_gizmo::RADIUS_PX * self.ui.joint_gizmo_size,
             glam::Vec3::from_array(camera.view_direction()),
             glam::Vec2::new(width.max(1) as f32, height.max(1) as f32),
             |p| camera.project(p.to_array(), width, height),
@@ -2915,6 +2956,7 @@ impl App {
         };
         self.ui.joint_gizmo = self.joint_gizmo(view_w, view_h);
         self.ui.root_path_uv = self.root_path_overlay(view_w, view_h);
+        self.ui.fit_uv = self.fit_overlay(view_w, view_h);
         // ADR-0041 model gizmo at the (previewed) bottom centre.
         // The gizmo follows the selection (owner 2026-11-25): objects
         // selected -> object gizmo on them; nothing selected -> the model.
@@ -3240,6 +3282,18 @@ impl App {
                 Some((key.clip, key.time)),
             ));
         }
+        if actions.fit_search
+            && !self.editing
+            && let Some(asset) = self.current.as_ref()
+        {
+            self.fit_worker.request(asset.session.clone());
+            self.ui.fit.running = true;
+            self.ui.fit.error = None;
+        }
+        if actions.fit_cancel {
+            self.fit_worker.cancel();
+            self.ui.fit.running = false;
+        }
         if let Some(joint_edit) = actions.joint_edit.take() {
             let controls = self.playback.controls;
             self.request_edit_with(
@@ -3427,6 +3481,18 @@ impl App {
                 }
             }
         }
+        if let Some(done) = self.fit_worker.poll() {
+            match done.result {
+                Ok((document, revision, fits)) => {
+                    eprintln!("joint_fit_done suggestions={}", fits.len());
+                    self.ui.fit.publish(document, revision, fits);
+                }
+                Err(error) => {
+                    self.ui.fit.running = false;
+                    self.ui.fit.error = Some(error.to_string());
+                }
+            }
+        }
         self.poll_edit()?;
         self.poll_save(event_loop)?;
         if std::mem::take(&mut self.pending_overwrite) {
@@ -3543,7 +3609,7 @@ impl App {
                 return Err("Import smoke timed out".into());
             }
         } else if let Some(stage) = self.smoke.as_mut() {
-            if self.started.elapsed() > Duration::from_secs(20) {
+            if self.started.elapsed() > self.smoke_budget {
                 return Err(format!("Native smoke timed out at {stage:?}").into());
             }
             let frames = if self.smoke_import {
@@ -3575,6 +3641,16 @@ impl App {
                     window.set_minimized(false);
                     *stage = SmokeStage::Restoring(frames);
                     eprintln!("smoke_request_restore");
+                }
+                SmokeStage::Restoring(before)
+                    if self.saw_restore && frames >= *before + 5 && self.restore_cycles > 0 =>
+                {
+                    self.restore_cycles -= 1;
+                    self.saw_minimized = false;
+                    self.saw_restore = false;
+                    window.set_minimized(true);
+                    *stage = SmokeStage::Minimizing(Instant::now());
+                    eprintln!("smoke_cycle left={}", self.restore_cycles);
                 }
                 SmokeStage::Restoring(before) if self.saw_restore && frames >= *before + 5 => {
                     native::request_close(window)?;
@@ -3871,7 +3947,12 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(size) => {
                 self.resize_events += 1;
                 self.saw_resize |= size == PhysicalSize::new(960, 600);
-                if let Some(renderer) = self.renderer.as_mut() {
+                // While minimized the swapchain stays released; the restore
+                // in `tick` creates it once, so a resize arriving with the
+                // restore does not build a swapchain only to drop it.
+                if self.suspended {
+                    Ok(())
+                } else if let Some(renderer) = self.renderer.as_mut() {
                     renderer.recreate(SurfaceSize {
                         width: size.width,
                         height: size.height,
@@ -4051,6 +4132,7 @@ fn run() -> GpuResult<()> {
             updates.restart_args.extend([key.to_owned(), value.clone()]);
         }
     }
+    let mut restore_cycles = 0u32;
     let mut args = argv.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -4063,6 +4145,13 @@ fn run() -> GpuResult<()> {
             "--smoke" => {
                 smoke = true;
                 validation = true;
+            }
+            "--smoke-cycles" => {
+                restore_cycles = args
+                    .next()
+                    .and_then(|n| n.parse::<u32>().ok())
+                    .filter(|n| (1..=50).contains(n))
+                    .ok_or("--smoke-cycles needs a number from 1 to 50")?;
             }
             "--open" => {
                 initial_path = Some(PathBuf::from(args.next().ok_or("--open needs a GLB path")?))
@@ -4331,6 +4420,8 @@ fn run() -> GpuResult<()> {
         saw_resize: false,
         saw_minimized: false,
         saw_restore: false,
+        restore_cycles,
+        smoke_budget: Duration::from_secs(20 + 2 * u64::from(restore_cycles)),
         minimized_frame_baseline: None,
         close_requested: false,
         suspended: false,
@@ -4339,6 +4430,7 @@ fn run() -> GpuResult<()> {
         importing: false,
         current: None,
         playback: rig_playback::Playback::new(),
+        fit_worker: joint_fit::new_worker(),
         camera: Camera::default(),
         mouse: None,
         mouse_drag: None,

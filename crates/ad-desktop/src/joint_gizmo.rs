@@ -8,8 +8,9 @@ use glam::{Mat4, Quat, Vec2, Vec3};
 
 /// Points of each ring on screen.
 pub const RING_POINTS: usize = 48;
-/// Ring radius on screen, in viewport pixels.
-pub const RADIUS_PX: f32 = 70.;
+/// Default ring radius on screen, in viewport pixels (owner 2026-11-28:
+/// larger, for precise fitting; «Размер» scales it 0.5–2×).
+pub const RADIUS_PX: f32 = 110.;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct JointGizmo {
@@ -52,6 +53,7 @@ pub fn build(
     rotation: [f32; 4],
     translation: [f32; 3],
     local_axes: bool,
+    radius_px: f32,
     camera_forward: Vec3,
     viewport_px: Vec2,
     project: impl Fn(Vec3) -> Option<[f32; 2]>,
@@ -72,7 +74,7 @@ pub fn build(
     if !(px_per_unit.is_finite() && px_per_unit > 1e-6) {
         return None;
     }
-    let radius = RADIUS_PX / px_per_unit;
+    let radius = radius_px / px_per_unit;
     let rings = axes.map(|axis| {
         let u = axis.any_orthonormal_vector();
         let v = axis.cross(u);
@@ -174,6 +176,7 @@ mod tests {
             Quat::IDENTITY.to_array(),
             [0., 1., 0.],
             local,
+            RADIUS_PX,
             Vec3::NEG_Z,
             Vec2::new(1000., 1000.),
             project,

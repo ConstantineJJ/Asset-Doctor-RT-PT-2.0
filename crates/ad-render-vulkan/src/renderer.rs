@@ -83,6 +83,12 @@ pub struct Renderer {
     pool: vk::CommandPool,
     command: vk::CommandBuffer,
     acquired: vk::Semaphore,
+    /// Render-finished semaphores, one per swapchain image index. They live
+    /// as long as the renderer: a recreated swapchain reuses them instead of
+    /// destroying and creating new ones, so a semaphore handle never changes
+    /// meaning between swapchains (sync validation keys signals by handle).
+    /// Each is unsignaled again when its present's fence has signaled.
+    finished: Vec<vk::Semaphore>,
     submitted: vk::Fence,
     presented: vk::Fence,
     presentation_pending: bool,
@@ -160,6 +166,7 @@ impl Renderer {
             pool: vk::CommandPool::null(),
             command: vk::CommandBuffer::null(),
             acquired: vk::Semaphore::null(),
+            finished: Vec::new(),
             submitted: vk::Fence::null(),
             presented: vk::Fence::null(),
             presentation_pending: false,
@@ -517,6 +524,16 @@ impl Renderer {
         self.swapchain = None;
         if size.drawable() {
             self.swapchain = Swapchain::new(self.gpu.clone(), size)?;
+            let images = self.swapchain.as_ref().map_or(0, |c| c.framebuffers.len());
+            while self.finished.len() < images {
+                // SAFETY: live device; the renderer owns the semaphore until Drop.
+                let semaphore = unsafe {
+                    self.gpu
+                        .device
+                        .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)?
+                };
+                self.finished.push(semaphore);
+            }
             if let (Some(overlay), Some(chain)) = (&self.overlay, &self.swapchain)
                 && overlay.format != chain.format
             {
@@ -1252,7 +1269,7 @@ impl Renderer {
             let waits = [self.acquired];
             let stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
             let commands = [self.command];
-            let signals = [chain.finished[image as usize]];
+            let signals = [self.finished[image as usize]];
             let submit = [vk::SubmitInfo::default()
                 .wait_semaphores(&waits)
                 .wait_dst_stage_mask(&stages)
@@ -1346,6 +1363,9 @@ impl Drop for Renderer {
             self.gpu.device.destroy_fence(self.submitted, None);
             self.gpu.device.destroy_fence(self.presented, None);
             self.gpu.device.destroy_semaphore(self.acquired, None);
+            for semaphore in self.finished.drain(..) {
+                self.gpu.device.destroy_semaphore(semaphore, None);
+            }
         }
         eprintln!(
             "renderer_shutdown frames={} recreations={}",

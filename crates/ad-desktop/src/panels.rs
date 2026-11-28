@@ -1011,8 +1011,10 @@ impl ViewerUi {
                             asset,
                             self.playback,
                             &mut self.joint_local_axes,
+                            &mut self.joint_gizmo_size,
                             &mut self.skeleton_on,
                             &mut self.root_path,
+                            &mut self.fit,
                             actions,
                         );
                     });

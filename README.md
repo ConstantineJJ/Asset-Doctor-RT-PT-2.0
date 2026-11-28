@@ -5,7 +5,7 @@
 Native Windows application for diagnosing, repairing and preparing 3D assets,
 written from scratch in Rust with a Vulkan renderer. Engineering prototype.
 
-Current build: **AD RT-PT v2.12.0**. Versions are MAJOR.MINOR.PATCH by
+Current build: **AD RT-PT v2.12.1**. Versions are MAJOR.MINOR.PATCH by
 significance: major reworks, notable features or large sets of fixes, and
 hotfixes.
 
@@ -105,6 +105,10 @@ hotfixes.
     right-click menu; one Undo step each, saved and verified. «Сбросить риг
     к файлу» brings the file's skeleton back in one step (clips keep their
     keys).
+  - Fit to the mesh: suggestions put each joint in the middle of the ring of
+    vertices it shares with its parent, with a confidence; chosen ones apply
+    as one Undo step (rebind, the mesh stays). Larger joint gizmo, its size
+    0.5–2×.
   - Root motion: how far the skeleton's root (or the selected joint) moves
     during the clip — displacement, distance on the floor, path, speed,
     turn and height — with its path drawn in the viewport.

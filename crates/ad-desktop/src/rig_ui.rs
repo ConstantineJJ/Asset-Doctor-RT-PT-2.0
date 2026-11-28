@@ -10,13 +10,16 @@ use ad_document::{
     TrackKind,
 };
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn show(
     ui: &mut egui::Ui,
     asset: Option<&PreparedAsset>,
     mut controls: Controls,
     local_axes: &mut bool,
+    gizmo_size: &mut f32,
     skeleton_on: &mut bool,
     root_path: &mut PathState,
+    fit: &mut crate::joint_fit::FitState,
     actions: &mut Actions,
 ) {
     let Some(asset) = asset else {
@@ -36,14 +39,14 @@ pub(super) fn show(
                 .max_height(top)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    animation_section(ui, document, &mut controls, local_axes, actions);
+                    animation_section(ui, document, &mut controls, local_axes, gizmo_size, actions);
                     if let Some(clip) = controls.clip {
                         ui.add_space(8.);
                         root_motion_card(ui, document, clip, controls.time, root_path);
                     }
                 });
             ui.separator();
-            rig_section(ui, document, controls, actions);
+            rig_section(ui, document, controls, fit, actions);
         })
         .response;
     panel.context_menu(|ui| {
@@ -68,6 +71,7 @@ fn animation_section(
     document: &AssetDocument,
     controls: &mut Controls,
     local_axes: &mut bool,
+    gizmo_size: &mut f32,
     actions: &mut Actions,
 ) {
     let clips = document.animation_clips();
@@ -121,7 +125,9 @@ fn animation_section(
         });
         ui.add_space(8.);
         accent::card(ui, Accent::Edit, "Ключи и поза", |ui| {
-            key_editor(ui, document, clip, controls, local_axes, actions);
+            key_editor(
+                ui, document, clip, controls, local_axes, gizmo_size, actions,
+            );
         });
     });
 }
@@ -277,6 +283,7 @@ fn rig_section(
     ui: &mut egui::Ui,
     document: &AssetDocument,
     controls: Controls,
+    fit: &mut crate::joint_fit::FitState,
     actions: &mut Actions,
 ) {
     let Some(rig) = document.rig() else {
@@ -345,6 +352,8 @@ fn rig_section(
     }
     ui.add_space(6.);
     joint_card(ui, document, actions);
+    ui.add_space(6.);
+    fit_card(ui, document, fit, actions);
     ui.add_space(6.);
     ui.separator();
 
@@ -670,6 +679,120 @@ fn reset_button(ui: &mut egui::Ui, actions: &mut Actions) -> bool {
         actions.joint_edit = Some(JointEdit::Reset);
     }
     pressed
+}
+
+/// RIG-05: «Подгонка к мешу» — search, the suggestions with their shift
+/// and confidence, and applying the chosen ones as one edit.
+fn fit_card(
+    ui: &mut egui::Ui,
+    document: &AssetDocument,
+    fit: &mut crate::joint_fit::FitState,
+    actions: &mut Actions,
+) {
+    use accent::pastel;
+    use ad_document::FitConfidence;
+    roomy(ui);
+    accent::card(ui, Accent::Edit, "Подгонка к мешу", |ui| {
+        if fit.running {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Ищу положения суставов…");
+                actions.fit_cancel |= ui.button("Отмена").clicked();
+            });
+            return;
+        }
+        let current = fit.is_current(document);
+        ui.horizontal_wrapped(|ui| {
+            actions.fit_search |= ui
+                .button(if current {
+                    "Найти заново"
+                } else {
+                    "Найти положения суставов"
+                })
+                .on_hover_text("Сустав ставится в центр сгиба: в среднюю точку вершин, которые тянут и он, и его родитель. Модель не меняется, пока вы не примените.")
+                .clicked();
+            if fit.searched && !current {
+                ui.weak("Модель изменилась — найдите заново.");
+            }
+        });
+        if let Some(error) = &fit.error {
+            ui.label(egui::RichText::new(error).color(Accent::Main.text()));
+        }
+        if !current {
+            return;
+        }
+        if fit.items.is_empty() {
+            ui.weak("Подсказок нет: веса суставов не смешиваются с весами родителей.");
+            return;
+        }
+        let confident = fit
+            .items
+            .iter()
+            .filter(|i| i.fit.confidence == FitConfidence::High)
+            .count();
+        let chosen: Vec<(NodeId, [f32; 3])> = fit
+            .items
+            .iter()
+            .filter(|i| i.selected)
+            .map(|i| (i.fit.node, i.fit.suggested))
+            .collect();
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Подсказок:");
+            accent::bold(ui, fit.items.len().to_string(), accent::VALUE);
+            ui.label("· уверенных:");
+            accent::bold(ui, confident.to_string(), pastel::MINT);
+        });
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Выбрать уверенные").clicked() {
+                for item in &mut fit.items {
+                    item.selected =
+                        item.fit.confidence == FitConfidence::High && item.fit.shift() > 1e-3;
+                }
+            }
+            if ui.button("Снять выбор").clicked() {
+                for item in &mut fit.items {
+                    item.selected = false;
+                }
+            }
+            if ui
+                .add_enabled(
+                    !chosen.is_empty(),
+                    egui::Button::new(format!("Применить ({})", chosen.len())),
+                )
+                .on_hover_text("Выбранные суставы встанут в предложенные точки одной правкой; меш в позе покоя остаётся на месте. Undo отменит.")
+                .clicked()
+            {
+                actions.joint_edit = Some(JointEdit::Fit { targets: chosen });
+            }
+        });
+        egui::ScrollArea::vertical()
+            .id_salt(("fit_list", document.id().0))
+            .max_height(220.)
+            .show(ui, |ui| {
+                for item in &mut fit.items {
+                    let name = document
+                        .nodes()
+                        .get(item.fit.node.0)
+                        .map_or("", |n| n.name.as_str());
+                    let (label, color) = match item.fit.confidence {
+                        FitConfidence::High => ("высокая", pastel::MINT),
+                        FitConfidence::Medium => ("средняя", pastel::LEMON),
+                        FitConfidence::Low => ("низкая", pastel::ROSE),
+                    };
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut item.selected, name);
+                        accent::bold(ui, format!("{:.1}", item.fit.shift() * 100.), accent::VALUE);
+                        ui.label("см ·");
+                        ui.label(egui::RichText::new(label).color(color));
+                    })
+                    .response
+                    .on_hover_text(format!(
+                        "Вершин в кольце сгиба: {} · длина кости: {:.3} м",
+                        item.fit.samples, item.fit.bone
+                    ));
+                }
+            });
+    });
 }
 
 /// A joint of some skin in the current document (a deleted joint is not).
@@ -1334,6 +1457,7 @@ fn key_editor(
     clip: usize,
     controls: &mut Controls,
     local_axes: &mut bool,
+    gizmo_size: &mut f32,
     actions: &mut Actions,
 ) {
     let active = &document.animation_clips()[clip];
@@ -1482,6 +1606,20 @@ fn key_editor(
         if accent::wheel_steps(ui, &group) != 0 {
             *local_axes = !*local_axes;
         }
+        ui.end_row();
+        accent::field_label(ui, "Размер gizmo");
+        accent::values(ui, |ui| {
+            let response = ui
+                .add(
+                    egui::DragValue::new(gizmo_size)
+                        .range(0.5..=2.)
+                        .speed(0.01)
+                        .fixed_decimals(1)
+                        .suffix("×"),
+                )
+                .on_hover_text("Размер колец и стрелок gizmo сустава, 0.5–2×; колёсико — шаг 0.1");
+            accent::wheel_value(ui, &response, gizmo_size, 0.1, 0.5..=2.);
+        });
         ui.end_row();
     });
 }

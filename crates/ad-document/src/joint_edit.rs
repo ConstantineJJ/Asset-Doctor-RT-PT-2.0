@@ -44,6 +44,9 @@ pub enum JointEdit {
     /// descendants' inverse binds are rebound, so the mesh stays in place
     /// at rest and only the skeleton moves.
     Rest { node: NodeId, translation: [f32; 3] },
+    /// RIG-05: move joints to world positions at rest (fitting to the
+    /// mesh), parents first, each with the rebind of `Rest`; one Undo step.
+    Fit { targets: Vec<(NodeId, [f32; 3])> },
     /// RIG-06: the skeleton back to the file (names, rest poses, joints,
     /// binds, weights). Clips keep their keys: channels of deleted joints
     /// come back from the file, channels of added joints go, bases follow
@@ -253,6 +256,31 @@ impl AssetDocument {
                         rested: BTreeSet::new(),
                     }),
                 );
+            }
+            JointEdit::Fit { targets } => {
+                let mut moved = false;
+                for (node, translation) in fit_order(&nodes, targets)? {
+                    cancel.check()?;
+                    let local = rest_parent_world(&nodes, node)
+                        .ok_or_else(|| refused("Сустав без родителя не подгоняется"))?
+                        .inverse()
+                        .transform_point3(glam::Vec3::from_array(translation));
+                    if rest_joint(
+                        &mut nodes,
+                        &mut rig,
+                        &mut bases,
+                        &mut clips,
+                        node,
+                        local.to_array(),
+                        cancel,
+                    )? {
+                        rested.insert(node.0);
+                        moved = true;
+                    }
+                }
+                if !moved {
+                    return self.skeleton_plan(expected, None);
+                }
             }
             JointEdit::Rest { node, translation } => {
                 let changed = rest_joint(
@@ -628,6 +656,61 @@ fn rest_joint(
         }
     }
     Ok(true)
+}
+
+/// Fit targets parents first (by depth), so a joint's target is reached
+/// after its parent moved; unknown nodes and duplicates are refused.
+fn fit_order(
+    nodes: &[Node],
+    targets: &[(NodeId, [f32; 3])],
+) -> AssetResult<Vec<(NodeId, [f32; 3])>> {
+    let mut parents = vec![None; nodes.len()];
+    for (index, item) in nodes.iter().enumerate() {
+        for child in &item.children {
+            if let Some(slot) = parents.get_mut(child.0) {
+                *slot = Some(index);
+            }
+        }
+    }
+    let depth = |mut n: usize| {
+        let mut d = 0;
+        while let Some(p) = parents[n] {
+            n = p;
+            d += 1;
+            if d > nodes.len() {
+                break;
+            }
+        }
+        d
+    };
+    let mut seen = BTreeSet::new();
+    let mut ordered = Vec::new();
+    for &(node, target) in targets {
+        if node.0 >= nodes.len() || !seen.insert(node.0) || !target.iter().all(|v| v.is_finite()) {
+            return Err(refused("Неверный список подгонки суставов"));
+        }
+        ordered.push((depth(node.0), node, target));
+    }
+    ordered.sort_by_key(|(d, n, _)| (*d, n.0));
+    Ok(ordered.into_iter().map(|(_, n, t)| (n, t)).collect())
+}
+
+/// Rest world of `node`'s parent (authored locals, no placement).
+fn rest_parent_world(nodes: &[Node], node: NodeId) -> Option<glam::Mat4> {
+    let parent = nodes.iter().position(|n| n.children.contains(&node))?;
+    let mut chain = vec![parent];
+    while let Some(p) = nodes
+        .iter()
+        .position(|n| n.children.contains(&NodeId(chain[chain.len() - 1])))
+    {
+        if chain.len() > nodes.len() {
+            return None;
+        }
+        chain.push(p);
+    }
+    Some(chain.iter().rev().fold(glam::Mat4::IDENTITY, |m, i| {
+        m * glam::Mat4::from_cols_array_2d(&nodes[*i].local)
+    }))
 }
 
 /// RIG-06: the current clips made to fit the file's skeleton again:

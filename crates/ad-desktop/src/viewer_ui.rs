@@ -85,6 +85,9 @@ pub struct Actions {
     pub(crate) clip_edit: Option<ad_document::ClipEdit>,
     /// RIG-03: rename a node or add a joint.
     pub(crate) joint_edit: Option<ad_document::JointEdit>,
+    /// RIG-05: start or stop the joint fit search.
+    pub(crate) fit_search: bool,
+    pub(crate) fit_cancel: bool,
     pub(crate) animation_preview: Option<Option<ad_document::ChannelValue>>,
     pub open: bool,
     pub fit: bool,
@@ -379,12 +382,19 @@ pub struct ViewerUi {
     /// drag in progress: handle, start pointer, last previewed value.
     pub joint_gizmo: Option<crate::joint_gizmo::JointGizmo>,
     pub joint_local_axes: bool,
+    /// Joint gizmo size, 0.5–2× of `joint_gizmo::RADIUS_PX`.
+    pub joint_gizmo_size: f32,
     joint_drag: Option<(skeleton_ui::JointHandle, [f32; 2], [f32; 4])>,
     /// P7 skeleton overlay (bones and joints of the skins) and its switch.
     pub skeleton_on: bool,
     pub skeleton: Option<skeleton_ui::SkeletonOverlay>,
     /// ANIM-01: start the first clip when a model with clips opens.
     pub autoplay: bool,
+    /// RIG-05: joint fit results and their viewport projection (current,
+    /// suggested, selected).
+    pub fit: crate::joint_fit::FitState,
+    #[allow(clippy::type_complexity)]
+    pub fit_uv: Vec<(Option<[f32; 2]>, Option<[f32; 2]>, bool)>,
     /// ANIM-05: root motion card state and its projected path (points,
     /// the point at the current time).
     pub root_path: crate::root_motion::PathState,
@@ -562,6 +572,7 @@ impl Default for ViewerUi {
             skeleton: None,
             joint_gizmo: None,
             joint_local_axes: true,
+            joint_gizmo_size: 1.,
             joint_drag: None,
             marquee: None,
             pointer_on_gizmo: false,
@@ -608,6 +619,8 @@ impl Default for ViewerUi {
             ui_scale: 1.,
             applied_scale: 1.,
             autoplay: true,
+            fit: Default::default(),
+            fit_uv: Vec::new(),
             root_path: crate::root_motion::PathState {
                 show: true,
                 ..Default::default()
@@ -1049,7 +1062,7 @@ impl ViewerUi {
                     .show(context, |ui| {
                         let rect = egui::Rect::from_center_size(p, egui::vec2(20., 20.));
                         let response = ui.interact(rect, grab_id, egui::Sense::drag());
-                        if response.dragged() {
+                        if response.dragged_by(egui::PointerButton::Primary) {
                             let d = response.drag_delta();
                             if d != egui::Vec2::ZERO {
                                 let uv = |q: egui::Pos2| {
@@ -1061,7 +1074,7 @@ impl ViewerUi {
                                 actions.model_ring_drag = Some((axis, uv(p - d), uv(p)));
                             }
                         }
-                        if response.drag_stopped() {
+                        if response.drag_stopped_by(egui::PointerButton::Primary) {
                             actions.model_drag_end = true;
                         }
                         response.on_hover_text(if axis == 0 {
@@ -1092,7 +1105,7 @@ impl ViewerUi {
                     {
                         self.model_gizmo_rects.push((handle, rect));
                     }
-                    let hot = response.hovered() || response.dragged();
+                    let hot = response.hovered() || response.dragged_by(egui::PointerButton::Primary);
                     let painter = ui.painter();
                     let dark = egui::Stroke::new(1.5, Color32::from_rgb(24, 26, 32));
                     match handle {
@@ -1115,14 +1128,14 @@ impl ViewerUi {
                             painter.rect_stroke(square, 1., dark, egui::StrokeKind::Outside);
                         }
                     }
-                    if response.dragged() {
+                    if response.dragged_by(egui::PointerButton::Primary) {
                         let d = response.drag_delta();
                         if d != egui::Vec2::ZERO {
                             actions.model_drag =
                                 Some((handle, [d.x / scene.width(), d.y / scene.height()]));
                         }
                     }
-                    if response.drag_stopped() {
+                    if response.drag_stopped_by(egui::PointerButton::Primary) {
                         actions.model_drag_end = true;
                     }
                     let hint = match handle {
@@ -1249,7 +1262,8 @@ impl ViewerUi {
                         {
                             self.lamp_handle_rects.push((part, rect));
                         }
-                        let hot = response.hovered() || response.dragged();
+                        let hot =
+                            response.hovered() || response.dragged_by(egui::PointerButton::Primary);
                         if hot {
                             self.lamp_hot = Some(part);
                         }
@@ -1270,7 +1284,7 @@ impl ViewerUi {
                             -dir,
                             color,
                         );
-                        if response.dragged() {
+                        if response.dragged_by(egui::PointerButton::Primary) {
                             let d = response.drag_delta();
                             let turn = crate::lamp::handle_turn([d.x, d.y], [t_px.x, t_px.y]);
                             if turn != 0. {
@@ -1303,7 +1317,7 @@ impl ViewerUi {
                 {
                     self.lamp_gizmo_rect = rect;
                 }
-                let hot = response.hovered() || response.dragged();
+                let hot = response.hovered() || response.dragged_by(egui::PointerButton::Primary);
                 if hot && self.lamp_hot.is_none() {
                     self.lamp_hot = Some(LampPart::Icon);
                 }
@@ -1323,7 +1337,7 @@ impl ViewerUi {
                         egui::Stroke::new(2., color),
                     );
                 }
-                if response.dragged() {
+                if response.dragged_by(egui::PointerButton::Primary) {
                     let d = response.drag_delta();
                     if d != egui::Vec2::ZERO {
                         actions.lamp_drag = Some([d.x, d.y]);
@@ -1486,6 +1500,18 @@ impl ViewerUi {
                 )
             });
         }
+        // The side mouse buttons turn and move the camera (owner 2026-11-28):
+        // the interface never sees them, so a gizmo under the pointer does
+        // not take them as a drag.
+        raw.events.retain(|event| {
+            !matches!(
+                event,
+                egui::Event::PointerButton {
+                    button: egui::PointerButton::Extra1 | egui::PointerButton::Extra2,
+                    ..
+                }
+            )
+        });
         let mut actions = Actions::default();
         // Interface scale: the setting wins over egui's own keyboard zoom
         // only when the setting itself changed.
@@ -1550,6 +1576,9 @@ impl ViewerUi {
                 if asset.is_some() && self.skeleton_on && let Some(overlay)=self.skeleton.take() {
                     self.skeleton_ui(&context,root,&overlay,asset.map(PreparedAsset::document),&mut actions);
                     self.skeleton=Some(overlay);
+                }
+                if asset.is_some() && !self.fit_uv.is_empty() {
+                    self.fit_ui(root);
                 }
                 if asset.is_some() && let Some(path)=self.root_path_uv.take() {
                     self.root_path_ui(root,&path);
@@ -2723,6 +2752,57 @@ FORMAT=32-bit_rle_rgbe
         assert!(!actions.save_copy);
     }
     #[test]
+    fn side_and_right_buttons_do_not_drag_the_gizmo() {
+        let mut ui = ViewerUi::default();
+        let asset = crate::imports::prepare(&crate::worker::Request {
+            ticket: 1,
+            input: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/Pbr_Factors.glb"),
+            cancel: ad_document::Cancellation::default(),
+        })
+        .unwrap();
+        ui.lamp_icon = false;
+        ui.model_gizmo = Some(ModelGizmo {
+            pivot: [0.5, 0.6],
+            ends: [Some([0.65, 0.6]), Some([0.5, 0.4]), None],
+            ..Default::default()
+        });
+        for _ in 0..2 {
+            ui.model_gizmo_rects.clear();
+            let (out, _, _) = ui.layout(raw(1400., 1000.), Some(&asset), false);
+            out.drop_without_applying_deltas();
+        }
+        let at = ui.model_gizmo_rects[0].1.center();
+        for button in [
+            egui::PointerButton::Extra1,
+            egui::PointerButton::Extra2,
+            egui::PointerButton::Secondary,
+        ] {
+            let press = |pressed, pos| egui::Event::PointerButton {
+                pos,
+                button,
+                pressed,
+                modifiers: Default::default(),
+            };
+            let end = at + egui::vec2(40., 5.);
+            for events in [
+                vec![egui::Event::PointerMoved(at)],
+                vec![press(true, at)],
+                vec![egui::Event::PointerMoved(at + egui::vec2(20., 0.))],
+                vec![egui::Event::PointerMoved(end)],
+                vec![press(false, end)],
+            ] {
+                let mut input = raw(1400., 1000.);
+                input.events = events;
+                let (out, _, actions) = ui.layout(input, Some(&asset), false);
+                assert!(actions.model_drag.is_none(), "{button:?} moved the model");
+                assert!(!actions.model_drag_end, "{button:?} ended a drag");
+                out.drop_without_applying_deltas();
+            }
+            ui.context_menu = None;
+        }
+    }
+    #[test]
     fn model_gizmo_arrow_drag_reports_handle_delta_and_release() {
         use crate::model_gizmo::Handle;
         let mut ui = ViewerUi::default();
@@ -3071,6 +3151,7 @@ FORMAT=32-bit_rle_rgbe
             glam::Quat::IDENTITY.to_array(),
             [0., 0., 0.],
             false,
+            crate::joint_gizmo::RADIUS_PX,
             glam::Vec3::NEG_Z,
             glam::Vec2::new(scene.width(), scene.height()),
             to_uv,

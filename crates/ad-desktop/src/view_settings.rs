@@ -63,6 +63,7 @@ impl ViewerUi {
             "bounds": self.show_bounds,
             "skeleton": self.skeleton_on,
             "joint_axes_local": self.joint_local_axes,
+            "joint_gizmo_size": self.joint_gizmo_size,
             "outline_width": self.outline_width,
             "ui_scale": self.ui_scale,
             "autoplay": self.autoplay,
@@ -200,6 +201,13 @@ impl ViewerUi {
         flag(value, "autoplay", &mut self.autoplay, &mut bad);
         flag(value, "root_path", &mut self.root_path.show, &mut bad);
         flag(value, "frameless", &mut self.frameless, &mut bad);
+        number(
+            value,
+            "joint_gizmo_size",
+            0.5..=2.0,
+            &mut self.joint_gizmo_size,
+            &mut bad,
+        );
         match value.get("window") {
             None => {}
             Some(Value::String(key)) if super::WindowMode::from_key(key).is_some() => {

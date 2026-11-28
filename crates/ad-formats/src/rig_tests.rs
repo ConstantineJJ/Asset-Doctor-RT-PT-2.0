@@ -623,3 +623,58 @@ fn resetting_the_rig_brings_back_the_files_skeleton_and_fits_the_clips() {
             .unwrap()
     );
 }
+
+#[test]
+fn joints_fit_to_the_bend_ring_of_the_mesh() {
+    use ad_document::JointEdit;
+    let cancel = Cancellation::default();
+    let mut doc = open(ANIMATED).unwrap();
+    let fits = doc.suggest_joint_fits(&cancel).unwrap();
+    let tip = fits
+        .iter()
+        .find(|f| f.node == NodeId(1))
+        .expect("Tip bends against Root in the fixture")
+        .clone();
+    assert!(tip.samples > 0 && tip.bone > 0.);
+    assert!(tip.suggested.iter().all(|v| v.is_finite()));
+    let mesh = |doc: &AssetDocument| {
+        doc.snapshot(ImportLimits::default(), &cancel)
+            .unwrap()
+            .positions
+    };
+    let before = mesh(&doc);
+    let edit = JointEdit::Fit {
+        targets: vec![(tip.node, tip.suggested)],
+    };
+    let plan = doc.prepare_joint_edit(doc.tag(), &edit, &cancel).unwrap();
+    {
+        let candidate = plan.candidate(&doc, &cancel).unwrap();
+        let view = doc.candidate_view(candidate, &cancel).unwrap();
+        verify_animation_export(
+            &view,
+            ExportLimits::default(),
+            ImportLimits::default(),
+            &cancel,
+        )
+        .unwrap();
+    }
+    doc.apply_triangle_removal(plan, ImportLimits::default(), &cancel)
+        .unwrap();
+    // The joint is where it was suggested; the mesh at rest did not move.
+    let worlds = doc.view().node_worlds(None, &cancel).unwrap();
+    let at = matrix(worlds[1].unwrap()).w_axis.truncate();
+    assert!(
+        at.abs_diff_eq(glam::Vec3::from_array(tip.suggested), 1e-4),
+        "{at}"
+    );
+    for (a, b) in before.iter().zip(&mesh(&doc)) {
+        assert!(glam::Vec3::from_array(*a).abs_diff_eq(glam::Vec3::from_array(*b), 1e-4));
+    }
+    // Fitting again to the same place changes nothing; a bad list is refused.
+    let again = doc.prepare_joint_edit(doc.tag(), &edit, &cancel).unwrap();
+    assert!(!again.changes());
+    let twice = JointEdit::Fit {
+        targets: vec![(tip.node, tip.suggested), (tip.node, tip.suggested)],
+    };
+    assert!(doc.prepare_joint_edit(doc.tag(), &twice, &cancel).is_err());
+}
