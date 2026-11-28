@@ -558,22 +558,31 @@ fn delete_joint(
     }
     for clip in clips.iter_mut() {
         cancel.check()?;
-        if !clip.tracks().iter().any(|t| gone[t.node().0]) {
+        let gone_at = |n: NodeId| gone.get(n.0).copied().unwrap_or(false);
+        if !clip.tracks().iter().any(|t| gone_at(t.node()))
+            && !clip.weights().iter().any(|t| gone_at(t.node()))
+        {
             continue;
         }
         let tracks: Vec<_> = clip
             .tracks()
             .iter()
-            .filter(|t| !gone[t.node().0])
+            .filter(|t| !gone_at(t.node()))
             .cloned()
             .collect();
-        if tracks.is_empty() {
+        let weights: Vec<_> = clip
+            .weights()
+            .iter()
+            .filter(|t| !gone_at(t.node()))
+            .cloned()
+            .collect();
+        if tracks.is_empty() && weights.is_empty() {
             return Err(refused(&format!(
                 "Клип «{}» анимирует только удаляемые суставы и остался бы пустым.",
                 clip.name
             )));
         }
-        *clip = Arc::new(clip.with_tracks(tracks, cancel)?);
+        *clip = Arc::new(clip.with_parts(tracks, weights, cancel)?);
     }
     Ok(())
 }

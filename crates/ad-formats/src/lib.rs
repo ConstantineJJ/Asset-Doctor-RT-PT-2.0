@@ -30,6 +30,9 @@ pub fn compare_reimported(
 mod export_tests;
 #[cfg(test)]
 mod export_vertex_tests;
+mod morph;
+#[cfg(test)]
+mod morph_tests;
 #[cfg(test)]
 mod rig_tests;
 mod skin;
@@ -78,6 +81,8 @@ pub fn import_glb(
         .animations()
         .map(|clip| skin_animation::read_clip(clip, bin, &mut remaining, cancel))
         .collect::<AssetResult<Vec<_>>>()?;
+    // ADR-0065: morph targets per primitive, in document order.
+    let mut morph_primitives = Vec::new();
     let mut influences = Vec::new();
     let mut meshes = Vec::new();
     let mut mesh_ids = Vec::new();
@@ -90,12 +95,8 @@ pub fn import_glb(
         let mut ids = Vec::new();
         for primitive in mesh.primitives() {
             cancel.check()?;
-            if primitive.mode() != gltf::mesh::Mode::Triangles
-                || primitive.morph_targets().len() > 0
-            {
-                return Err(unsupported(
-                    "This build supports static triangle primitives without morph targets",
-                ));
+            if primitive.mode() != gltf::mesh::Mode::Triangles {
+                return Err(unsupported("This build supports triangle primitives"));
             }
             let position = primitive
                 .get(&gltf::Semantic::Positions)
@@ -353,6 +354,15 @@ pub fn import_glb(
             } else {
                 indices.extend(0..position.count() as u32);
             }
+            morph_primitives.push(morph::read_targets(
+                &mesh,
+                &primitive,
+                bin,
+                position.count(),
+                &mut decoded,
+                remaining,
+                cancel,
+            )?);
             ids.push(MeshId(meshes.len()));
             meshes.push(MeshPrimitive {
                 positions,
@@ -419,6 +429,12 @@ pub fn import_glb(
     if doc.scenes().len() > 1 {
         notes.push("Отображается только основная/первая сцена.".into());
     }
+    if doc
+        .meshes()
+        .any(|m| m.primitives().any(|p| p.morph_targets().len() > 0))
+    {
+        notes.push("Морф-цели показываются с весами из файла и клипов; геометрию таких моделей не правят, при сохранении цели остаются как в файле.".into());
+    }
     if textures_without_uv > 0 {
         notes.push(format!(
             "{textures_without_uv} текстур(ы) материалов ссылаются на UV-набор, которого нет у примитива; они не показываются."
@@ -470,7 +486,17 @@ pub fn import_glb(
         limits,
         cancel,
     )?
-    .with_animation_clips(clips, bases)?;
+    .with_animation_clips(clips, bases)?
+    .with_morphs(
+        ad_document::Morphs {
+            primitives: morph_primitives,
+            nodes: doc
+                .nodes()
+                .map(|node| node.weights().map(std::sync::Arc::from))
+                .collect(),
+        },
+        cancel,
+    )?;
     if skins.is_empty() {
         Ok(document)
     } else {
@@ -1105,15 +1131,21 @@ mod tests {
                 ..
             })
         ));
+        // ADR-0065: a morph target opens (here it moves each vertex by its
+        // own position, so weight 0.5 scales the triangle by 1.5).
         let mut json = json_doc();
         json["meshes"][0]["primitives"][0]["targets"] = json!([{"POSITION":0}]);
-        assert!(matches!(
-            load(&json),
-            Err(AssetError {
-                code: ErrorCode::Unsupported,
-                ..
-            })
-        ));
+        json["meshes"][0]["weights"] = json!([0.5]);
+        let doc = load(&json).unwrap();
+        assert!(doc.is_read_only(), "morphing geometry is not edited");
+        let scene = doc
+            .snapshot(ImportLimits::default(), &Cancellation::default())
+            .unwrap();
+        assert_eq!(scene.positions[1], [3.5, 0., 0.]);
+        // A target with a quantized accessor is refused, not misread.
+        let mut json = json_doc();
+        json["meshes"][0]["primitives"][0]["targets"] = json!([{"POSITION":1}]);
+        assert!(load(&json).is_err());
     }
     #[test]
     fn resource_caps_and_cancellation_refuse_before_publication() {

@@ -162,10 +162,11 @@ hotfixes.
 Transparent (alpha BLEND) materials are drawn blended, back to front. A
 required `KHR_lights_punctual` is left out (the program's lamp lights the
 scene), and common export slips (`texCoord: -1`, a texture without its UV set)
-open with a note instead of a refusal. Morph targets, compressed geometry and
-external resources are
-refused at import. Geometry and object edits are not yet available for skinned
-or animated models. GPU skinning, multi-model comparison, RT and PT are
+open with a note instead of a refusal. Morph targets (blend shapes) open and
+play with the weights of the file and its clips; the Rigging tab lists them
+(«Морф-цели»), and saving keeps them as the file has them. Compressed geometry
+and external resources are refused at import. Geometry and object edits are
+not yet available for skinned, animated or morphing models. GPU skinning, multi-model comparison, RT and PT are
 planned.
 
 ## Build

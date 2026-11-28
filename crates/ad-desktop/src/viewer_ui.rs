@@ -3317,6 +3317,34 @@ FORMAT=32-bit_rle_rgbe
         assert!(text.contains("В начало"));
     }
     #[test]
+    fn the_rigging_tab_lists_morph_targets_and_a_weight_clip_poses_the_mesh() {
+        let asset = fixture("Morph_Checker.glb");
+        let document = asset.document();
+        assert!(document.morphs().is_some() && document.is_read_only());
+        let mut ui = ViewerUi {
+            tab: Tab::Rigging,
+            ..Default::default()
+        };
+        warm(&mut ui, Some(&asset), (1600., 1000.));
+        let (out, _, _) = ui.layout(raw(1600., 1000.), Some(&asset), false);
+        let text = format!("{:?}", out.shapes);
+        out.drop_without_applying_deltas();
+        assert!(
+            text.contains("Морф-цели") && text.contains("Lift"),
+            "the card lists the target"
+        );
+        // The clip has only a weight channel; its pose lifts the vertex.
+        let scene = document
+            .animated_snapshot(
+                0,
+                1.,
+                ad_document::ImportLimits::default(),
+                &Default::default(),
+            )
+            .unwrap();
+        assert_eq!(scene.positions[2][1], 2.);
+    }
+    #[test]
     fn the_rigging_tab_measures_the_root_motion_of_the_clip() {
         let mut ui = ViewerUi::default();
         let asset = crate::imports::prepare(&crate::worker::Request {

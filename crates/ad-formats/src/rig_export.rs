@@ -64,6 +64,8 @@ enum TrackData<'a> {
     /// RIG-04: JOINTS_0 (unsigned short) and WEIGHTS_0 (float) of a primitive.
     Joints(&'a [Influence]),
     Weights(&'a [Influence]),
+    /// ADR-0065: morph weight keys (one float per target per key).
+    Scalars(&'a [f32]),
 }
 impl TrackData<'_> {
     /// (count, components, accessor type, component type, bytes per component)
@@ -75,6 +77,7 @@ impl TrackData<'_> {
             Self::Matrices(matrices) => (matrices.len(), 16, "MAT4", 5126, 4),
             Self::Joints(influences) => (influences.len(), 4, "VEC4", 5123, 2),
             Self::Weights(influences) => (influences.len(), 4, "VEC4", 5126, 4),
+            Self::Scalars(values) => (values.len(), 1, "SCALAR", 5126, 4),
         }
     }
 }
@@ -163,7 +166,7 @@ fn encode(
         let original_channels = std::mem::take(array(&mut animation, "channels")?);
         let mut channels = Vec::new();
         channels
-            .try_reserve_exact(clip.tracks().len())
+            .try_reserve_exact(clip.tracks().len() + clip.weights().len())
             .map_err(|_| budget())?;
         let samplers = array(&mut animation, "samplers")?;
         for track in clip.tracks() {
@@ -196,6 +199,45 @@ fn encode(
                     &mut bin_len,
                     max,
                     TrackData::Values(track.values(), width),
+                )?;
+                sampler["input"] = json!(input);
+                sampler["output"] = json!(output);
+                sampler["interpolation"] = json!(match track.interpolation() {
+                    Interpolation::Step => "STEP",
+                    Interpolation::Linear => "LINEAR",
+                    Interpolation::CubicSpline => "CUBICSPLINE",
+                });
+                channel["sampler"] = json!(samplers.len());
+                samplers.push(sampler);
+            }
+            channels.push(channel);
+        }
+        // ADR-0065: morph weight channels, the file's own when untouched.
+        for track in clip.weights() {
+            cancel.check()?;
+            let mut channel = match track.source_channel() {
+                Some(id) => original_channels.get(id).cloned().ok_or_else(invalid)?,
+                None => json!({"target": {"node": track.node().0, "path": "weights"}}),
+            };
+            if track.is_edited() || track.source_channel().is_none() {
+                let mut sampler = if let Some(id) = channel.get("sampler").and_then(Value::as_u64) {
+                    samplers.get(id as usize).cloned().ok_or_else(invalid)?
+                } else {
+                    json!({})
+                };
+                let input = add_accessor(
+                    &mut meta,
+                    &mut suffix,
+                    &mut bin_len,
+                    max,
+                    TrackData::Times(track.times()),
+                )?;
+                let output = add_accessor(
+                    &mut meta,
+                    &mut suffix,
+                    &mut bin_len,
+                    max,
+                    TrackData::Scalars(track.values()),
                 )?;
                 sampler["input"] = json!(input);
                 sampler["output"] = json!(output);
@@ -297,6 +339,14 @@ fn encode(
                     cancel.check()?;
                     for weight in chunk.iter().flat_map(|i| i.weights) {
                         bytes.extend(weight.to_le_bytes());
+                    }
+                }
+            }
+            TrackData::Scalars(values) => {
+                for chunk in values.chunks(4096) {
+                    cancel.check()?;
+                    for value in chunk {
+                        bytes.extend(value.to_le_bytes());
                     }
                 }
             }
@@ -477,6 +527,56 @@ pub(crate) fn compare(
             roundtrip::equal(a.times(), b.times(), cancel)?;
             compare_values(a, b, cancel)?;
         }
+        if a.weights().len() != b.weights().len() {
+            return Err(roundtrip::mismatch());
+        }
+        for (a, b) in a.weights().iter().zip(b.weights()) {
+            cancel.check()?;
+            if a.node() != b.node()
+                || a.interpolation() != b.interpolation()
+                || a.targets() != b.targets()
+            {
+                return Err(roundtrip::mismatch());
+            }
+            roundtrip::equal(a.times(), b.times(), cancel)?;
+            roundtrip::equal(a.values(), b.values(), cancel)?;
+        }
+    }
+    compare_morphs(view.document(), loaded, cancel)
+}
+
+/// ADR-0065: the saved file has the same morph targets and weights.
+fn compare_morphs(a: &AssetDocument, b: &AssetDocument, cancel: &Cancellation) -> AssetResult<()> {
+    let (a, b) = match (a.morphs(), b.morphs()) {
+        (None, None) => return Ok(()),
+        (Some(a), Some(b)) => (a, b),
+        _ => return Err(roundtrip::mismatch()),
+    };
+    if a.primitives.len() != b.primitives.len() || a.nodes.len() > b.nodes.len() {
+        return Err(roundtrip::mismatch());
+    }
+    for (a, b) in a.primitives.iter().zip(&b.primitives) {
+        cancel.check()?;
+        match (a, b) {
+            (None, None) => {}
+            (Some(a), Some(b)) => {
+                if a.targets.len() != b.targets.len() || a.weights != b.weights {
+                    return Err(roundtrip::mismatch());
+                }
+                for (a, b) in a.targets.iter().zip(&b.targets) {
+                    roundtrip::equal(&a.positions, &b.positions, cancel)?;
+                    match (&a.normals, &b.normals) {
+                        (None, None) => {}
+                        (Some(a), Some(b)) => roundtrip::equal(a, b, cancel)?,
+                        _ => return Err(roundtrip::mismatch()),
+                    }
+                }
+            }
+            _ => return Err(roundtrip::mismatch()),
+        }
+    }
+    if a.nodes.iter().zip(&b.nodes).any(|(a, b)| a != b) {
+        return Err(roundtrip::mismatch());
     }
     Ok(())
 }

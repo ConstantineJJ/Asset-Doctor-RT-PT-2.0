@@ -197,16 +197,24 @@ pub struct AnimationClip {
     pub name: String,
     pub duration: f32,
     tracks: Vec<Arc<Track>>,
+    /// ADR-0065: morph weight channels (kept as the file has them).
+    weights: Vec<Arc<crate::WeightTrack>>,
     edited: bool,
     id: u64,
     source_clip: Option<usize>,
 }
 
 impl AnimationClip {
-    pub fn new(name: String, tracks: Vec<Track>, cancel: &Cancellation) -> AssetResult<Self> {
+    pub fn new(
+        name: String,
+        tracks: Vec<Track>,
+        weights: Vec<crate::WeightTrack>,
+        cancel: &Cancellation,
+    ) -> AssetResult<Self> {
         Self::build(
             name,
             tracks.into_iter().map(Arc::new).collect(),
+            weights.into_iter().map(Arc::new).collect(),
             false,
             cancel,
         )
@@ -215,11 +223,20 @@ impl AnimationClip {
     fn build(
         name: String,
         tracks: Vec<Arc<Track>>,
+        weights: Vec<Arc<crate::WeightTrack>>,
         edited: bool,
         cancel: &Cancellation,
     ) -> AssetResult<Self> {
-        if tracks.is_empty() {
+        if tracks.is_empty() && weights.is_empty() {
             return Err(invalid("Animation clip has no channels"));
+        }
+        let mut weighted = HashSet::new();
+        for track in &weights {
+            if !weighted.insert(track.node().0) {
+                return Err(invalid(
+                    "Duplicate animation channel targeting the same property",
+                ));
+            }
         }
         let mut targets = HashSet::new();
         let mut duration: f32 = 0.;
@@ -232,10 +249,14 @@ impl AnimationClip {
             }
             duration = duration.max(track.times[track.times.len() - 1]);
         }
+        for track in &weights {
+            duration = duration.max(track.times()[track.times().len() - 1]);
+        }
         Ok(Self {
             name,
             duration,
             tracks,
+            weights,
             edited,
             id: 0,
             source_clip: None,
@@ -260,6 +281,10 @@ impl AssetDocument {
                 .iter()
                 .flat_map(|clip| &clip.tracks)
                 .any(|track| track.node.0 >= self.nodes().len())
+            || clips
+                .iter()
+                .flat_map(|clip| &clip.weights)
+                .any(|track| track.node().0 >= self.nodes().len())
         {
             return Err(invalid("Animation does not match the loaded document"));
         }
@@ -277,9 +302,10 @@ impl AssetDocument {
         Ok(self)
     }
 
-    /// Rigged and animated documents protect geometry and scene transforms from edits.
+    /// Rigged, animated and morphing documents protect geometry and scene
+    /// transforms from edits.
     pub fn is_read_only(&self) -> bool {
-        self.rig().is_some() || self.source_clip_count != 0
+        self.rig().is_some() || self.source_clip_count != 0 || self.morphs.is_some()
     }
 
     pub fn source_clip_count(&self) -> usize {
@@ -308,7 +334,29 @@ impl DocumentView<'_> {
         cancel: &Cancellation,
     ) -> AssetResult<GeometrySnapshot> {
         let locals = self.pose_locals(clip, time, preview, cancel)?;
-        self.snapshot_with_pose(Some(&locals), limits, cancel)
+        let weights = self.pose_weights(clip, time, cancel)?;
+        self.snapshot_with_pose(Some(&locals), Some(&weights), limits, cancel)
+    }
+
+    /// ADR-0065: animated morph weights per node at `time` (None: not
+    /// animated in this clip).
+    fn pose_weights(
+        &self,
+        clip: usize,
+        time: f32,
+        cancel: &Cancellation,
+    ) -> AssetResult<Vec<Option<Vec<f32>>>> {
+        let clip = self
+            .animation_clip(clip)
+            .ok_or_else(|| invalid("Unknown animation clip"))?;
+        let mut weights = vec![None; self.nodes().len()];
+        for track in &clip.weights {
+            cancel.check()?;
+            if let Some(slot) = weights.get_mut(track.node().0) {
+                *slot = Some(track.sample(time.clamp(0., clip.duration)));
+            }
+        }
+        Ok(weights)
     }
 
     /// Animated local matrices of a clip at `time` (None: authored local).
@@ -543,6 +591,11 @@ impl AnimationClip {
         &self.tracks
     }
 
+    /// ADR-0065: the clip's morph weight channels.
+    pub fn weights(&self) -> &[Arc<crate::WeightTrack>] {
+        &self.weights
+    }
+
     pub fn track(&self, node: NodeId, kind: TrackKind) -> Option<&Track> {
         self.tracks
             .iter()
@@ -566,6 +619,11 @@ impl AnimationClip {
                         + track.times.capacity() * size_of::<f32>()
                         + track.values.capacity() * size_of::<[f32; 4]>()
                 })
+                .sum::<usize>()
+            + self
+                .weights
+                .iter()
+                .map(|track| track.retained_bytes())
                 .sum::<usize>()
     }
 }
@@ -666,7 +724,7 @@ impl AssetDocument {
             tracks.push(Arc::new(track));
             true
         };
-        if tracks.is_empty() {
+        if tracks.is_empty() && clip.weights.is_empty() {
             return Err(AssetError::new(
                 ErrorCode::Unsupported,
                 "В клипе должен остаться хотя бы один канал",

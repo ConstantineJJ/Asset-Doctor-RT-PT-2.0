@@ -260,6 +260,67 @@ fn root_motion_card(
     );
 }
 
+/// ADR-0065: «Морф-цели» — what the file has, view only: targets per
+/// primitive with names and default weights, and the clips that animate
+/// them.
+fn morph_card(ui: &mut egui::Ui, document: &AssetDocument) {
+    use accent::pastel;
+    let Some(morphs) = document.morphs() else {
+        return;
+    };
+    let (primitives, most) = morphs.summary();
+    let animated = document
+        .animation_clips()
+        .iter()
+        .filter(|c| !c.weights().is_empty())
+        .count();
+    accent::card(ui, Accent::Existing, "Морф-цели", |ui| {
+        ui.horizontal_wrapped(|ui| {
+            accent::stat(
+                ui,
+                "Примитивов с целями:",
+                primitives.to_string(),
+                "",
+                pastel::SKY,
+            );
+            accent::stat(ui, "целей до:", most.to_string(), "", pastel::MINT);
+            accent::stat(
+                ui,
+                "клипов с весами:",
+                animated.to_string(),
+                "",
+                pastel::LEMON,
+            );
+        });
+        for (index, primitive) in morphs.primitives.iter().enumerate() {
+            let Some(primitive) = primitive else { continue };
+            egui::CollapsingHeader::new(format!(
+                "Примитив {index}: целей {}",
+                primitive.targets.len()
+            ))
+            .id_salt(("morph_primitive", document.id().0, index))
+            .default_open(primitives <= 3)
+            .show(ui, |ui| {
+                for (t, weight) in primitive.weights.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        let name = primitive
+                            .names
+                            .get(t)
+                            .filter(|n| !n.is_empty())
+                            .cloned()
+                            .unwrap_or_else(|| format!("Цель {}", t + 1));
+                        ui.label(name);
+                        ui.weak("вес по умолчанию");
+                        accent::bold(ui, format!("{weight:.3}"), accent::VALUE);
+                    });
+                }
+            });
+        }
+        ui.weak("Веса из клипов играют вместе с анимацией. Геометрию таких моделей не правят; при сохранении цели остаются как в файле.");
+    });
+    ui.add_space(6.);
+}
+
 /// More air between rows and taller controls in the Rigging forms.
 fn roomy(ui: &mut egui::Ui) {
     let spacing = ui.spacing_mut();
@@ -286,6 +347,7 @@ fn rig_section(
     fit: &mut crate::joint_fit::FitState,
     actions: &mut Actions,
 ) {
+    morph_card(ui, document);
     let Some(rig) = document.rig() else {
         ui.label("У этой модели нет скина.");
         return;
@@ -1149,7 +1211,8 @@ pub(super) fn can_remove_key(
     let count = active
         .track(node, kind)
         .map_or(0, |track| track.times().len());
-    key_exists(document, clip, node, kind, time) && (count > 1 || active.tracks().len() > 1)
+    key_exists(document, clip, node, kind, time)
+        && (count > 1 || active.tracks().len() + active.weights().len() > 1)
 }
 
 /// A key of the channel's current value at `time` (or its removal).
@@ -1495,11 +1558,18 @@ fn key_editor(
     let mut node = ui
         .ctx()
         .data(|data| data.get_temp::<NodeId>(node_id))
-        .unwrap_or_else(|| active.tracks()[0].node());
+        .or_else(|| active.tracks().first().map(|t| t.node()))
+        .or_else(|| {
+            (0..document.nodes().len())
+                .map(NodeId)
+                .find(|&n| document.can_animate_node(n))
+        })
+        .unwrap_or(NodeId(0));
     let mut kind = ui
         .ctx()
         .data(|data| data.get_temp::<TrackKind>(kind_id))
-        .unwrap_or_else(|| active.tracks()[0].kind());
+        .or_else(|| active.tracks().first().map(|t| t.kind()))
+        .unwrap_or(TrackKind::Rotation);
     let previous_selection = (node, kind);
     let node_label = |index: usize| format!("{} · {}", index, document.nodes()[index].name);
     let keyable: Vec<NodeId> = (0..document.nodes().len())
@@ -1742,7 +1812,8 @@ fn key_value_rows(
                 remove: false,
             });
         }
-        let can_remove = exists && (times.len() > 1 || active.tracks().len() > 1);
+        let can_remove =
+            exists && (times.len() > 1 || active.tracks().len() + active.weights().len() > 1);
         if ui
             .add_enabled(can_remove, egui::Button::new("Удалить"))
             .clicked()
