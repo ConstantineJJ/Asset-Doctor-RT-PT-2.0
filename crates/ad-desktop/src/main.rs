@@ -107,6 +107,10 @@ struct App {
     saw_resize: bool,
     saw_minimized: bool,
     saw_restore: bool,
+    /// --smoke-cycles: extra minimize/restore rounds before closing, and the
+    /// smoke time budget that grows with them.
+    restore_cycles: u32,
+    smoke_budget: Duration,
     minimized_frame_baseline: Option<u64>,
     close_requested: bool,
     suspended: bool,
@@ -3605,7 +3609,7 @@ impl App {
                 return Err("Import smoke timed out".into());
             }
         } else if let Some(stage) = self.smoke.as_mut() {
-            if self.started.elapsed() > Duration::from_secs(20) {
+            if self.started.elapsed() > self.smoke_budget {
                 return Err(format!("Native smoke timed out at {stage:?}").into());
             }
             let frames = if self.smoke_import {
@@ -3637,6 +3641,16 @@ impl App {
                     window.set_minimized(false);
                     *stage = SmokeStage::Restoring(frames);
                     eprintln!("smoke_request_restore");
+                }
+                SmokeStage::Restoring(before)
+                    if self.saw_restore && frames >= *before + 5 && self.restore_cycles > 0 =>
+                {
+                    self.restore_cycles -= 1;
+                    self.saw_minimized = false;
+                    self.saw_restore = false;
+                    window.set_minimized(true);
+                    *stage = SmokeStage::Minimizing(Instant::now());
+                    eprintln!("smoke_cycle left={}", self.restore_cycles);
                 }
                 SmokeStage::Restoring(before) if self.saw_restore && frames >= *before + 5 => {
                     native::request_close(window)?;
@@ -3933,7 +3947,12 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(size) => {
                 self.resize_events += 1;
                 self.saw_resize |= size == PhysicalSize::new(960, 600);
-                if let Some(renderer) = self.renderer.as_mut() {
+                // While minimized the swapchain stays released; the restore
+                // in `tick` creates it once, so a resize arriving with the
+                // restore does not build a swapchain only to drop it.
+                if self.suspended {
+                    Ok(())
+                } else if let Some(renderer) = self.renderer.as_mut() {
                     renderer.recreate(SurfaceSize {
                         width: size.width,
                         height: size.height,
@@ -4113,6 +4132,7 @@ fn run() -> GpuResult<()> {
             updates.restart_args.extend([key.to_owned(), value.clone()]);
         }
     }
+    let mut restore_cycles = 0u32;
     let mut args = argv.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -4125,6 +4145,13 @@ fn run() -> GpuResult<()> {
             "--smoke" => {
                 smoke = true;
                 validation = true;
+            }
+            "--smoke-cycles" => {
+                restore_cycles = args
+                    .next()
+                    .and_then(|n| n.parse::<u32>().ok())
+                    .filter(|n| (1..=50).contains(n))
+                    .ok_or("--smoke-cycles needs a number from 1 to 50")?;
             }
             "--open" => {
                 initial_path = Some(PathBuf::from(args.next().ok_or("--open needs a GLB path")?))
@@ -4393,6 +4420,8 @@ fn run() -> GpuResult<()> {
         saw_resize: false,
         saw_minimized: false,
         saw_restore: false,
+        restore_cycles,
+        smoke_budget: Duration::from_secs(20 + 2 * u64::from(restore_cycles)),
         minimized_frame_baseline: None,
         close_requested: false,
         suspended: false,

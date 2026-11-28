@@ -9,7 +9,6 @@ pub(crate) struct Swapchain {
     pub extent: vk::Extent2D,
     pub pass: vk::RenderPass,
     pub framebuffers: Vec<vk::Framebuffer>,
-    pub finished: Vec<vk::Semaphore>,
     pub pipeline: Option<MeshPipeline>,
     pub grid: Option<GridPipeline>,
     pub sky: Option<SkyPipeline>,
@@ -65,7 +64,6 @@ impl Swapchain {
                 extent,
                 pass: vk::RenderPass::null(),
                 framebuffers: vec![],
-                finished: vec![],
                 pipeline: None,
                 grid: None,
                 sky: None,
@@ -193,12 +191,6 @@ impl Swapchain {
                     None,
                 )?;
                 result.framebuffers.push(framebuffer);
-                result.finished.push(
-                    result
-                        .gpu
-                        .device
-                        .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)?,
-                );
             }
             eprintln!(
                 "swapchain={}x{}; images={}; format={:?}",
@@ -229,9 +221,6 @@ impl Drop for Swapchain {
             self.gpu.device.destroy_render_pass(self.pass, None);
             for view in self.views.drain(..) {
                 self.gpu.device.destroy_image_view(view, None);
-            }
-            for semaphore in self.finished.drain(..) {
-                self.gpu.device.destroy_semaphore(semaphore, None);
             }
             self.depth = None;
             self.loader.destroy_swapchain(self.handle, None);
