@@ -86,6 +86,8 @@ pub(crate) struct Gpu {
     pub family: u32,
     /// Line polygon mode for the wireframe overlay (fillModeNonSolid).
     pub wireframe: bool,
+    /// ADR-0066: the queue can run the skinning compute pass.
+    pub compute: bool,
 }
 
 impl Gpu {
@@ -168,8 +170,12 @@ impl Gpu {
             let device = instance.create_device(physical, &create, None)?;
             let queue = device.get_device_queue(family, 0);
             let props = instance.get_physical_device_properties(physical);
+            let compute = instance
+                .get_physical_device_queue_family_properties(physical)
+                .get(family as usize)
+                .is_some_and(|f| f.queue_flags.contains(vk::QueueFlags::COMPUTE));
             eprintln!(
-                "selected_gpu={}; queue_family={family}; present_fences={present_fences}",
+                "selected_gpu={}; queue_family={family}; present_fences={present_fences}; compute={compute}",
                 CStr::from_ptr(props.device_name.as_ptr()).to_string_lossy()
             );
             Ok(Arc::new(Self {
@@ -179,6 +185,7 @@ impl Gpu {
                 queue,
                 family,
                 wireframe,
+                compute,
             }))
         }
     }

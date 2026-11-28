@@ -108,6 +108,8 @@ struct App {
     saw_resize: bool,
     saw_minimized: bool,
     saw_restore: bool,
+    /// ADR-0066: the smoke compared one GPU-skinned frame with the CPU.
+    gpu_skin_checked: bool,
     /// --smoke-cycles: extra minimize/restore rounds before closing, and the
     /// smoke time budget that grows with them.
     restore_cycles: u32,
@@ -2760,6 +2762,17 @@ impl App {
             self.ui.bindings.describe(input::Action::ToggleWireframe)
         );
     }
+    /// ADR-0066 smoke: the opened model autoplays a clip that the GPU can
+    /// skin (no morph targets), and its first GPU frame is not checked yet.
+    fn gpu_skin_expected(&self) -> bool {
+        !self.gpu_skin_checked
+            && self.ui.autoplay
+            && self.renderer.as_ref().is_some_and(Renderer::gpu_skinning)
+            && self.current.as_ref().is_some_and(|asset| {
+                let document = asset.document();
+                !document.animation_clips().is_empty() && document.morphs().is_none()
+            })
+    }
     /// ADR-0041: gizmo drags update the preview; release or reset requests
     /// one placement edit.
     fn model_gizmo_actions(&mut self, actions: &viewer_ui::Actions, width: u32, height: u32) {
@@ -3488,6 +3501,38 @@ impl App {
                 }
             }
         }
+        // ADR-0066 smoke: the first GPU-skinned frame is read back and must
+        // match the CPU pose of the same moment.
+        if (self.smoke.is_some() || self.smoke_import)
+            && !self.gpu_skin_checked
+            && let (Some(asset), Some(renderer)) = (&self.current, &mut self.renderer)
+            && renderer.skin_frames > 0
+            && !renderer.skin_pending()
+            && let Some((clip, time)) = self.playback.shown_on_gpu()
+        {
+            self.gpu_skin_checked = true;
+            let expected = asset.document().view().animated_snapshot(
+                clip,
+                time,
+                None,
+                ad_document::ImportLimits::default(),
+                &ad_document::Cancellation::default(),
+            )?;
+            let got = renderer.scene_positions()?;
+            let error = got
+                .iter()
+                .zip(&expected.positions)
+                .flat_map(|(a, b)| a.iter().zip(b).map(|(a, b)| (a - b).abs() / (1. + b.abs())))
+                .fold(0f32, f32::max);
+            let ok = got.len() == expected.positions.len() && error <= 1e-3;
+            eprintln!(
+                "gpu_skin_check vertices={} max_error={error:.2e} ok={ok}",
+                got.len()
+            );
+            if !ok {
+                return Err("GPU skinning differs from the CPU pose".into());
+            }
+        }
         if let Some(done) = self.fit_worker.poll() {
             match done.result {
                 Ok((document, revision, fits)) => {
@@ -3572,6 +3617,7 @@ impl App {
             self.start_import(path);
             return Ok(());
         }
+        let gpu_skin_wait = self.gpu_skin_expected();
         let Some(window) = self.window.as_ref() else {
             return Ok(());
         };
@@ -3610,7 +3656,9 @@ impl App {
                 // A skybox restored from the view settings loads in the
                 // background; the smoke waits for it.
                 || self.skybox_job.is_some()
-                || self.pending_skybox.is_some())
+                || self.pending_skybox.is_some()
+                // ADR-0066: a playing clip is checked once on the GPU.
+                || gpu_skin_wait)
         {
             if self.started.elapsed() > Duration::from_secs(20) {
                 return Err("Import smoke timed out".into());
@@ -4427,6 +4475,7 @@ fn run() -> GpuResult<()> {
         saw_resize: false,
         saw_minimized: false,
         saw_restore: false,
+        gpu_skin_checked: false,
         restore_cycles,
         smoke_budget: Duration::from_secs(20 + 2 * u64::from(restore_cycles)),
         minimized_frame_baseline: None,

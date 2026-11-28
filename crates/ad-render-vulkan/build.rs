@@ -12,6 +12,7 @@ fn main() {
         ("mask.vert", naga::ShaderStage::Vertex),
         ("mask.frag", naga::ShaderStage::Fragment),
         ("outline.frag", naga::ShaderStage::Fragment),
+        ("skin.comp", naga::ShaderStage::Compute),
     ] {
         let path = format!("shaders/{name}");
         println!("cargo:rerun-if-changed={path}");

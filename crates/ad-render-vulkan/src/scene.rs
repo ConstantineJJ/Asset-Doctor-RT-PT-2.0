@@ -36,6 +36,8 @@ pub(crate) struct GpuScene {
     pub colors: Buffer,
     pub textures: TextureBindings,
     pub draws: Vec<GpuDraw>,
+    /// ADR-0066: GPU skinning of this scene (read-only scenes, on demand).
+    pub skin: Option<crate::renderer::skinning::GpuSkin>,
     pub document_id: DocumentId,
     pub revision: u64,
     pub has_mr_maps: bool,
@@ -198,12 +200,15 @@ impl GpuScene {
                 ),
             )
         };
-        let vertices = Buffer::upload(gpu.clone(), vertices, vk::BufferUsageFlags::VERTEX_BUFFER)?;
+        // Positions, normals and tangents are also storage buffers: the
+        // skinning pass writes poses into them (ADR-0066).
+        let posed = vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER;
+        let vertices = Buffer::upload(gpu.clone(), vertices, posed)?;
         let indices = Buffer::upload(gpu.clone(), indices, vk::BufferUsageFlags::INDEX_BUFFER)?;
         let uvs = Buffer::upload(gpu.clone(), uvs, vk::BufferUsageFlags::VERTEX_BUFFER)?;
         let colors = Buffer::upload(gpu.clone(), colors, vk::BufferUsageFlags::VERTEX_BUFFER)?;
-        let normals = Buffer::upload(gpu.clone(), normals, vk::BufferUsageFlags::VERTEX_BUFFER)?;
-        let tangents = Buffer::upload(gpu.clone(), tangents, vk::BufferUsageFlags::VERTEX_BUFFER)?;
+        let normals = Buffer::upload(gpu.clone(), normals, posed)?;
+        let tangents = Buffer::upload(gpu.clone(), tangents, posed)?;
         let normal_uvs =
             Buffer::upload(gpu.clone(), normal_uvs, vk::BufferUsageFlags::VERTEX_BUFFER)?;
         let occlusion_uvs = Buffer::upload(
@@ -256,6 +261,7 @@ impl GpuScene {
             colors,
             textures,
             draws,
+            skin: None,
             document_id: snapshot.document_id,
             revision: snapshot.revision,
             has_mr_maps: snapshot

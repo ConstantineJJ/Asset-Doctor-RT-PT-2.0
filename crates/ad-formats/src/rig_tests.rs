@@ -780,3 +780,68 @@ fn apply_joint(doc: &mut AssetDocument, edit: ad_document::JointEdit) {
     doc.apply_triangle_removal(plan, ImportLimits::default(), &cancel)
         .unwrap();
 }
+
+#[test]
+fn the_gpu_skinning_layout_matches_the_cpu_pose() {
+    let cancel = Cancellation::default();
+    for source in [SKIN, ANIMATED] {
+        let doc = open(source).unwrap();
+        let view = doc.view();
+        let layout = view
+            .skin_layout(ImportLimits::default(), &cancel)
+            .unwrap()
+            .expect("a skinned or animated scene");
+        let rest = doc.snapshot(ImportLimits::default(), &cancel).unwrap();
+        assert_eq!(layout.vertices.len(), rest.positions.len());
+        let mut poses: Vec<Option<(usize, f32)>> = vec![None];
+        for (clip, active) in doc.animation_clips().iter().enumerate() {
+            for step in 0..=4 {
+                poses.push(Some((clip, active.duration * step as f32 / 4.)));
+            }
+        }
+        for pose in poses {
+            let expected = match pose {
+                Some((clip, time)) => view
+                    .animated_snapshot(clip, time, None, ImportLimits::default(), &cancel)
+                    .unwrap(),
+                None => doc.snapshot(ImportLimits::default(), &cancel).unwrap(),
+            };
+            let matrices = view
+                .pose_matrices(&layout, pose.map(|(c, t)| (c, t, None)), &cancel)
+                .unwrap();
+            assert_eq!(matrices.len(), layout.matrices);
+            for (i, vertex) in layout.vertices.iter().enumerate() {
+                let (p, n, t) = ad_document::skin_reference(vertex, &matrices);
+                let close = |a: &[f32], b: &[f32], eps: f32| {
+                    a.iter()
+                        .zip(b)
+                        .all(|(a, b)| (a - b).abs() <= eps * (1. + b.abs()))
+                };
+                assert!(
+                    close(&p, &expected.positions[i], 1e-5),
+                    "{pose:?} v{i} {p:?} {:?}",
+                    expected.positions[i]
+                );
+                assert!(
+                    close(&n, &expected.normals[i], 1e-4),
+                    "{pose:?} v{i} {n:?} {:?}",
+                    expected.normals[i]
+                );
+                assert!(
+                    close(&t, &expected.tangents[i], 1e-4),
+                    "{pose:?} v{i} {t:?} {:?}",
+                    expected.tangents[i]
+                );
+            }
+        }
+    }
+    // Morph targets keep the CPU pose.
+    let morph = open(include_bytes!("../../../tests/fixtures/Morph_Checker.glb")).unwrap();
+    assert!(
+        morph
+            .view()
+            .skin_layout(ImportLimits::default(), &cancel)
+            .unwrap()
+            .is_none()
+    );
+}

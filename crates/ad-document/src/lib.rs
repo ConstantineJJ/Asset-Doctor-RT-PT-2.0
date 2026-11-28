@@ -9,6 +9,7 @@ mod normals;
 mod placement;
 mod skin;
 mod skin_animation;
+mod skin_gpu;
 mod uv;
 mod vertices;
 mod view;
@@ -25,6 +26,7 @@ pub use skin::{Influence, Rig, RigInspection, Skin, SkinReport};
 pub use skin_animation::{
     AnimationClip, AnimationKey, ChannelValue, ClipEdit, Interpolation, Track, TrackKind, Transform,
 };
+pub use skin_gpu::{SkinLayout, SkinVertex, skin_reference};
 pub use view::{CandidateIndices, DocumentView, Primitives};
 #[cfg(test)]
 mod index_tests;

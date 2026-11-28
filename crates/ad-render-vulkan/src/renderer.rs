@@ -13,7 +13,7 @@ use ash::vk;
 use std::sync::Arc;
 
 #[path = "skinning.rs"]
-mod skinning;
+pub(crate) mod skinning;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum FrameResult {
@@ -56,7 +56,6 @@ impl StagedScene<'_> {
         let (document, revision) = self.tag();
         let bytes = self.scene.geometry_bytes();
         self.renderer.scene = Some(self.scene);
-        self.renderer.pose_buffers = None;
         eprintln!(
             "gpu_scene_published document={} revision={} vertices={} triangles={} stage_ms={} geometry_bytes={}",
             document.0, revision, self.vertices, self.triangles, self.stage_ms, bytes
@@ -93,7 +92,8 @@ pub struct Renderer {
     presented: vk::Fence,
     presentation_pending: bool,
     scene: Option<GpuScene>,
-    pose_buffers: Option<skinning::PoseBuffers>,
+    /// ADR-0066: frames whose vertices the skinning pass wrote.
+    pub skin_frames: u64,
     scene_fault: Option<SceneFault>,
     overlay: Option<Overlay>,
     frame: Option<FrameBinding>,
@@ -171,7 +171,7 @@ impl Renderer {
             presented: vk::Fence::null(),
             presentation_pending: false,
             scene: None,
-            pose_buffers: None,
+            skin_frames: 0,
             scene_fault: None,
             sample_textures: true,
             sample_mr_maps: true,
@@ -668,6 +668,13 @@ impl Renderer {
                 &vk::CommandBufferBeginInfo::default()
                     .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             )?;
+            // ADR-0066: a waiting GPU pose is skinned before any pass reads
+            // the vertices (the previous frame retired above).
+            if let Some(skin) = self.scene.as_mut().and_then(|scene| scene.skin.as_mut())
+                && skin.record(self.command)?
+            {
+                self.skin_frames += 1;
+            }
             // ADR-0044: the lamp's depth map before the main pass.
             if let (Some(shadow), Some(map), Some(scene)) = (
                 self.active_shadow(),
@@ -1368,8 +1375,8 @@ impl Drop for Renderer {
             }
         }
         eprintln!(
-            "renderer_shutdown frames={} recreations={}",
-            self.frames, self.recreations
+            "renderer_shutdown frames={} recreations={} skin_frames={}",
+            self.frames, self.recreations, self.skin_frames
         );
     }
 }

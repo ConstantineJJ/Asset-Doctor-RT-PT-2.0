@@ -123,6 +123,9 @@ hotfixes.
     and plane squares along two, local or world axes; releasing writes a
     key at the current time.
   - Saving writes the animation back and verifies it by reimporting.
+  - A playing clip is skinned on the GPU (a compute pass writes the posed
+    vertices); paused poses, scrubbing and key previews stay exact on the
+    CPU. Models with morph targets play on the CPU.
 - **Model gizmo.** Arrows move the model, plane squares move it in two axes
   (along the floor or a wall), rings turn it, the centre square scales it.
   A ring turns by the pointer's angle around the centre, with the angle
@@ -166,8 +169,8 @@ open with a note instead of a refusal. Morph targets (blend shapes) open and
 play with the weights of the file and its clips; the Rigging tab lists them
 («Морф-цели»), and saving keeps them as the file has them. Compressed geometry
 and external resources are refused at import. Geometry and object edits are
-not yet available for skinned, animated or morphing models. GPU skinning, multi-model comparison, RT and PT are
-planned.
+not yet available for skinned, animated or morphing models. Multi-model
+comparison, RT and PT are planned.
 
 ## Build
 
