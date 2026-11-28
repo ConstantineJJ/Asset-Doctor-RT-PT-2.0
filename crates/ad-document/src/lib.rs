@@ -188,6 +188,8 @@ pub struct AssetDocument {
     source_node_count: usize,
     /// RIG-03: nodes renamed since opening (the export writes their names).
     renamed: std::collections::BTreeSet<usize>,
+    /// RIG-03/04: joints were added or deleted since opening.
+    restructured: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -417,6 +419,7 @@ impl AssetDocument {
             source_clip_count: 0,
             source_node_count: parts.nodes.len(),
             renamed: std::collections::BTreeSet::new(),
+            restructured: false,
             vertex_maps,
             parts,
             texture_stats: textures.stats,

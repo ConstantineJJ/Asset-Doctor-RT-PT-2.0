@@ -97,8 +97,10 @@ hotfixes.
     search field. A model with clips starts its first clip when it opens
     («Настройки → Анимация»).
   - Joints: rename the selected joint; add a child joint (along the parent's
-    bone or a local axis, chosen length, no weights) — Rigging card «Сустав»
-    or the joint's right-click menu; one Undo step each, saved and verified.
+    bone or a local axis, chosen length, no weights); delete a joint with
+    everything under it — its weights go to the nearest joint above, its
+    channels leave the clips. Rigging card «Сустав» or the joint's
+    right-click menu; one Undo step each, saved and verified.
   - Root motion: how far the skeleton's root (or the selected joint) moves
     during the clip — displacement, distance on the floor, path, speed,
     turn and height — with its path drawn in the viewport.

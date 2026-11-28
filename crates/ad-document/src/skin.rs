@@ -12,7 +12,7 @@ pub struct Skin {
     pub skeleton: Option<NodeId>,
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Influence {
     pub joints: [u16; 4],
     pub weights: [f32; 4],
@@ -35,11 +35,17 @@ pub struct RigInspection {
     pub skins: Vec<Skin>,
     pub reports: Vec<SkinReport>,
     pub(crate) node_skins: Vec<Option<usize>>,
-    /// Vertex influences per primitive, shared by skeleton edit states.
-    influences: std::sync::Arc<Vec<Option<Vec<Influence>>>>,
+    /// Vertex influences per primitive; skeleton edit states share the
+    /// primitives they do not change.
+    pub(crate) influences: Vec<Option<std::sync::Arc<[Influence]>>>,
+    /// RIG-04: primitives whose JOINTS_0/WEIGHTS_0 the export must write.
+    pub(crate) edited_influences: std::collections::BTreeSet<usize>,
 }
 
 impl RigInspection {
+    /// Same skins, bindings and influences. Joint slots must be equal;
+    /// weights may differ by 1e-6 (an export writes rewritten weights as
+    /// floats and the import normalises them again).
     pub fn matches(&self, other: &Self, cancel: &Cancellation) -> AssetResult<bool> {
         if self.skins.len() != other.skins.len()
             || self.node_skins != other.node_skins
@@ -64,7 +70,14 @@ impl RigInspection {
                 (Some(a), Some(b)) if a.len() == b.len() => {
                     for (a, b) in a.chunks(4096).zip(b.chunks(4096)) {
                         cancel.check()?;
-                        if a != b {
+                        let same = a.iter().zip(b).all(|(a, b)| {
+                            a.joints == b.joints
+                                && a.weights
+                                    .iter()
+                                    .zip(&b.weights)
+                                    .all(|(x, y)| (x - y).abs() <= 1e-6)
+                        });
+                        if !same {
                             return Ok(false);
                         }
                     }
@@ -230,7 +243,11 @@ impl AssetDocument {
         self.rig = Some(RigInspection {
             skins: rig.skins,
             reports,
-            influences: std::sync::Arc::new(influences),
+            influences: influences
+                .into_iter()
+                .map(|weights| weights.map(std::sync::Arc::from))
+                .collect(),
+            edited_influences: std::collections::BTreeSet::new(),
             node_skins: rig.node_skins,
         });
         Ok(self)
@@ -259,6 +276,15 @@ impl RigInspection {
                 Ok(matrix)
             })
             .collect()
+    }
+
+    /// Vertex influences of a primitive (normalised weights).
+    pub fn primitive_influences(&self, mesh: MeshId) -> Option<&[Influence]> {
+        self.influences.get(mesh.0)?.as_deref()
+    }
+    /// RIG-04: primitives whose JOINTS_0/WEIGHTS_0 changed since opening.
+    pub fn edited_influences(&self) -> &std::collections::BTreeSet<usize> {
+        &self.edited_influences
     }
 
     pub(crate) fn skin_at(&self, node: NodeId) -> Option<usize> {

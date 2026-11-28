@@ -107,6 +107,7 @@ impl<'a> DocumentView<'a> {
     fn animation_list(&self) -> &'a [Arc<crate::AnimationClip>] {
         match self.candidate {
             Some((_, CandidateData::Animation(clips))) => clips,
+            Some((_, CandidateData::Skeleton(s))) => &s.clips,
             _ => self.document.animation_clips(),
         }
     }
@@ -145,9 +146,15 @@ impl<'a> DocumentView<'a> {
             _ => self.document.renamed_nodes(),
         }
     }
-    /// The export must write nodes, names or skins (RIG-03).
+    /// The export must write nodes, names, skins or weights (RIG-03/04).
     pub fn skeleton_changed(&self) -> bool {
-        self.nodes().len() != self.document.source_node_count() || !self.renamed().is_empty()
+        let restructured = match self.candidate {
+            Some((_, CandidateData::Skeleton(s))) => s.restructured,
+            _ => self.document.is_restructured(),
+        };
+        restructured
+            || self.nodes().len() != self.document.source_node_count()
+            || !self.renamed().is_empty()
     }
     /// Effective local transform of a node through this view.
     pub(crate) fn local(&self, node: crate::NodeId) -> glam::Mat4 {

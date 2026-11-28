@@ -3,7 +3,7 @@ use super::{
 };
 use ad_document::{
     AssetDocument, AssetError, AssetResult, Cancellation, DocumentView, ErrorCode, ImportLimits,
-    Interpolation, Track, TrackKind,
+    Influence, Interpolation, MeshId, Track, TrackKind,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -61,14 +61,20 @@ enum TrackData<'a> {
     Values(&'a [[f32; 4]], usize),
     /// RIG-03: a skin's inverse bind matrices (column-major).
     Matrices(&'a [[[f32; 4]; 4]]),
+    /// RIG-04: JOINTS_0 (unsigned short) and WEIGHTS_0 (float) of a primitive.
+    Joints(&'a [Influence]),
+    Weights(&'a [Influence]),
 }
 impl TrackData<'_> {
-    fn shape(&self) -> (usize, usize, &'static str) {
+    /// (count, components, accessor type, component type, bytes per component)
+    fn shape(&self) -> (usize, usize, &'static str, u32, usize) {
         match self {
-            Self::Times(times) => (times.len(), 1, "SCALAR"),
-            Self::Values(values, 4) => (values.len(), 4, "VEC4"),
-            Self::Values(values, _) => (values.len(), 3, "VEC3"),
-            Self::Matrices(matrices) => (matrices.len(), 16, "MAT4"),
+            Self::Times(times) => (times.len(), 1, "SCALAR", 5126, 4),
+            Self::Values(values, 4) => (values.len(), 4, "VEC4", 5126, 4),
+            Self::Values(values, _) => (values.len(), 3, "VEC3", 5126, 4),
+            Self::Matrices(matrices) => (matrices.len(), 16, "MAT4", 5126, 4),
+            Self::Joints(influences) => (influences.len(), 4, "VEC4", 5123, 2),
+            Self::Weights(influences) => (influences.len(), 4, "VEC4", 5126, 4),
         }
     }
 }
@@ -79,8 +85,8 @@ fn add_accessor<'a>(
     max: usize,
     data: TrackData<'a>,
 ) -> AssetResult<usize> {
-    let (count, width, kind) = data.shape();
-    let len = count.checked_mul(width * 4).ok_or_else(budget)?;
+    let (count, width, kind, component, bytes) = data.shape();
+    let len = count.checked_mul(width * bytes).ok_or_else(budget)?;
     let offset = *bin_len;
     *bin_len = offset
         .checked_add(len)
@@ -92,7 +98,7 @@ fn add_accessor<'a>(
     let accessors = array(meta, "accessors")?;
     let index = accessors.len();
     let mut accessor = json!({
-        "bufferView": view_index, "componentType": 5126, "type": kind, "count": count
+        "bufferView": view_index, "componentType": component, "type": kind, "count": count
     });
     if let TrackData::Times(times) = data {
         accessor["min"] = json!([times[0]]);
@@ -278,6 +284,22 @@ fn encode(
                     }
                 }
             }
+            TrackData::Joints(influences) => {
+                for chunk in influences.chunks(4096) {
+                    cancel.check()?;
+                    for joint in chunk.iter().flat_map(|i| i.joints) {
+                        bytes.extend(joint.to_le_bytes());
+                    }
+                }
+            }
+            TrackData::Weights(influences) => {
+                for chunk in influences.chunks(4096) {
+                    cancel.check()?;
+                    for weight in chunk.iter().flat_map(|i| i.weights) {
+                        bytes.extend(weight.to_le_bytes());
+                    }
+                }
+            }
         }
     }
     if bytes.len() != total {
@@ -325,14 +347,62 @@ fn write_skeleton<'a>(
         }
         list.push(entry);
     }
+    // Children that differ from the file (an added joint, a deleted one).
     for (index, node) in nodes[..source].iter().enumerate() {
-        if node.children.iter().any(|child| child.0 >= source) {
-            list[index]["children"] = json!(node.children.iter().map(|c| c.0).collect::<Vec<_>>());
+        cancel.check()?;
+        let children: Vec<u64> = node.children.iter().map(|c| c.0 as u64).collect();
+        let written: Vec<u64> = list[index]
+            .get("children")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_u64).collect())
+            .unwrap_or_default();
+        if children != written {
+            let entry = list[index].as_object_mut().ok_or_else(invalid)?;
+            if children.is_empty() {
+                entry.remove("children");
+            } else {
+                entry.insert("children".into(), json!(children));
+            }
         }
     }
     let Some(rig) = view.rig() else {
         return Ok(());
     };
+    // RIG-04: rewritten vertex joints and weights. Primitive ordinals run
+    // over meshes, then their primitives, in file order.
+    if !rig.edited_influences().is_empty() {
+        let mut places = Vec::new();
+        for (mesh, entry) in meta
+            .get("meshes")
+            .and_then(Value::as_array)
+            .ok_or_else(invalid)?
+            .iter()
+            .enumerate()
+        {
+            let count = entry
+                .get("primitives")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+            places.extend((0..count).map(|primitive| (mesh, primitive)));
+        }
+        for &ordinal in rig.edited_influences() {
+            cancel.check()?;
+            let influences = rig
+                .primitive_influences(MeshId(ordinal))
+                .ok_or_else(invalid)?;
+            let (mesh, primitive) = *places.get(ordinal).ok_or_else(invalid)?;
+            let joints = add_accessor(meta, suffix, bin_len, max, TrackData::Joints(influences))?;
+            let weights = add_accessor(meta, suffix, bin_len, max, TrackData::Weights(influences))?;
+            let attributes = array(meta, "meshes")?[mesh]
+                .get_mut("primitives")
+                .and_then(|p| p.get_mut(primitive))
+                .and_then(|p| p.get_mut("attributes"))
+                .and_then(Value::as_object_mut)
+                .ok_or_else(invalid)?;
+            attributes.insert("JOINTS_0".into(), json!(joints));
+            attributes.insert("WEIGHTS_0".into(), json!(weights));
+        }
+    }
     for (index, skin) in rig.skins.iter().enumerate() {
         cancel.check()?;
         let written = meta

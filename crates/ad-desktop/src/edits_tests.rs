@@ -611,6 +611,21 @@ fn a_joint_edit_is_prepared_verified_published_and_undone() {
         None,
     );
     assert_eq!(asset.document().nodes().len(), nodes);
+    // Delete the weightless joint «Unused», then Undo.
+    let joints = |asset: &PreparedAsset| asset.document().rig().unwrap().skins[0].joints.len();
+    let before = joints(&asset);
+    run(
+        &mut asset,
+        EditKind::Animation(AnimationEdit::Joint, Some((0, 0.))),
+        Some(JointEdit::Delete { node: NodeId(2) }),
+    );
+    assert_eq!(joints(&asset), before - 1);
+    run(
+        &mut asset,
+        EditKind::Animation(AnimationEdit::Undo, Some((0, 0.))),
+        None,
+    );
+    assert_eq!(joints(&asset), before);
     // A joint edit without its edit data is refused as stale.
     assert!(
         prepare_edit_with_clip(

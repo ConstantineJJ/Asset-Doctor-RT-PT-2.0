@@ -277,3 +277,110 @@ fn renamed_and_added_joints_are_saved_read_back_and_undone() {
         .unwrap();
     assert!(!same.changes());
 }
+
+#[test]
+fn deleting_a_joint_moves_its_weights_up_saves_and_undoes() {
+    use ad_document::{ClipEdit, JointEdit, MeshId};
+    let cancel = Cancellation::default();
+    let mut doc = open(ANIMATED).unwrap();
+    let (root, tip, unused) = (NodeId(0), NodeId(1), NodeId(2));
+    let apply = |doc: &mut AssetDocument, plan: ad_document::PreparedRemoval| {
+        {
+            let candidate = plan.candidate(doc, &cancel).unwrap();
+            let view = doc.candidate_view(candidate, &cancel).unwrap();
+            verify_animation_export(
+                &view,
+                ExportLimits::default(),
+                ImportLimits::default(),
+                &cancel,
+            )
+            .unwrap();
+            view.snapshot(ImportLimits::default(), &cancel).unwrap();
+        }
+        doc.apply_triangle_removal(plan, ImportLimits::default(), &cancel)
+            .unwrap()
+    };
+    let delete = |doc: &AssetDocument, node| {
+        doc.prepare_joint_edit(doc.tag(), &JointEdit::Delete { node }, &cancel)
+    };
+    // Refused: Tip is all of clip «Linear»; Root is the skeleton root; a
+    // mesh node is not a joint.
+    let error = delete(&doc, tip).err().expect("clip would be empty");
+    assert!(error.message.contains("Linear"), "{}", error.message);
+    assert!(delete(&doc, root).is_err());
+    assert!(delete(&doc, NodeId(3)).is_err());
+    let before: Vec<Vec<ad_document::Influence>> = (0..doc.primitives().len())
+        .filter_map(|m| doc.rig().unwrap().primitive_influences(MeshId(m)))
+        .map(<[_]>::to_vec)
+        .collect();
+    let tip_weight: f32 = before
+        .iter()
+        .flatten()
+        .flat_map(|i| i.joints.iter().zip(i.weights))
+        .filter(|(j, _)| **j == 1)
+        .map(|(_, w)| w)
+        .sum();
+    assert!(tip_weight > 0., "the fixture weights Tip");
+    // Unused: no weights, no channels.
+    let plan = delete(&doc, unused).unwrap();
+    let removed_unused = apply(&mut doc, plan);
+    assert_eq!(doc.rig().unwrap().skins[0].joints, vec![root, tip]);
+    assert!(!doc.nodes()[root.0].children.contains(&unused));
+    // Tip, after its clip is gone: its weights go to Root (slot 0).
+    let linear = doc
+        .prepare_clip_edit(doc.tag(), &ClipEdit::Delete { clip: 0 }, &cancel)
+        .unwrap();
+    let removed_clip = apply(&mut doc, linear);
+    let plan = delete(&doc, tip).unwrap();
+    let removed_tip = apply(&mut doc, plan);
+    let rig = doc.rig().unwrap();
+    assert_eq!(rig.skins[0].joints, vec![root]);
+    assert_eq!(rig.skins[0].inverse_bind.len(), 1);
+    let after = rig.primitive_influences(MeshId(0)).unwrap();
+    for (old, new) in before[0].iter().zip(after) {
+        assert!(
+            new.joints
+                .iter()
+                .zip(new.weights)
+                .all(|(j, w)| w == 0. || *j == 0)
+        );
+        let (a, b): (f32, f32) = (old.weights.iter().sum(), new.weights.iter().sum());
+        assert!((a - b).abs() < 1e-6, "weight kept: {a} vs {b}");
+    }
+    assert!(
+        doc.animation_clips()
+            .iter()
+            .all(|clip| clip.tracks().iter().all(|t| t.node() != tip))
+    );
+    // Saved and opened again: the skin, weights and clips match.
+    let saved = crate::prepare_glb(
+        &doc,
+        doc.tag(),
+        ExportLimits::default(),
+        ImportLimits::default(),
+        &cancel,
+    )
+    .unwrap();
+    let back = open(saved.bytes()).unwrap();
+    assert_eq!(back.rig().unwrap().skins[0].joints, vec![root]);
+    assert!(back.nodes()[root.0].children.is_empty());
+    assert_eq!(back.animation_clips().len(), 1);
+    assert!(
+        back.rig()
+            .unwrap()
+            .matches(doc.rig().unwrap(), &cancel)
+            .unwrap()
+    );
+    // Undo all three: the file's skeleton, weights and clips again.
+    for applied in [removed_tip, removed_clip, removed_unused] {
+        let mut change = applied.change.unwrap();
+        doc.exchange_indices(doc.tag(), &mut change, ImportLimits::default(), &cancel)
+            .unwrap();
+    }
+    assert_eq!(doc.rig().unwrap().skins[0].joints, vec![root, tip, unused]);
+    assert_eq!(doc.animation_clips().len(), 2);
+    assert_eq!(
+        doc.rig().unwrap().primitive_influences(MeshId(0)).unwrap(),
+        before[0].as_slice()
+    );
+}

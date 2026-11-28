@@ -499,6 +499,9 @@ pub(super) fn joint_menu(
             ui.close();
         }
     });
+    if is_joint(document, node) && delete_button(ui, document, node, actions) {
+        ui.close();
+    }
     let clips = document.animation_clips();
     let Some(clip) = controls.clip.filter(|&clip| clip < clips.len()) else {
         ui.weak("Выберите клип внизу, чтобы ставить ключи.");
@@ -639,6 +642,53 @@ fn child_name(document: &AssetDocument, parent: NodeId) -> String {
     name
 }
 
+/// A joint of some skin in the current document (a deleted joint is not).
+fn is_joint(document: &AssetDocument, node: NodeId) -> bool {
+    document
+        .rig()
+        .is_some_and(|rig| rig.skins.iter().any(|skin| skin.joints.contains(&node)))
+}
+
+/// Nodes under `node` (not counting it).
+fn descendants(document: &AssetDocument, node: NodeId) -> usize {
+    let nodes = document.nodes();
+    let mut seen = vec![false; nodes.len()];
+    let mut pending = nodes[node.0].children.clone();
+    let mut count = 0;
+    while let Some(n) = pending.pop() {
+        if n.0 >= nodes.len() || std::mem::replace(&mut seen[n.0], true) {
+            continue;
+        }
+        count += 1;
+        pending.extend(nodes[n.0].children.iter().copied());
+    }
+    count
+}
+
+/// RIG-04: «Удалить сустав» (red: it removes); true when pressed.
+fn delete_button(
+    ui: &mut egui::Ui,
+    document: &AssetDocument,
+    node: NodeId,
+    actions: &mut Actions,
+) -> bool {
+    let below = descendants(document, node);
+    let label = if below == 0 {
+        "Удалить сустав".to_owned()
+    } else {
+        format!("Удалить сустав и {below} ниже")
+    };
+    let pressed = accent::scope(ui, Accent::Main, |ui| {
+        ui.button(label)
+            .on_hover_text("Сустав и всё под ним уходят из скелета; их веса переходят ближайшему суставу выше, их каналы — из клипов. Undo отменит.")
+            .clicked()
+    });
+    if pressed {
+        actions.joint_edit = Some(JointEdit::Delete { node });
+    }
+    pressed
+}
+
 fn rename_focus_id(document: &AssetDocument) -> egui::Id {
     egui::Id::new(("joint_rename_focus", document.id().0))
 }
@@ -659,7 +709,7 @@ fn joint_card(ui: &mut egui::Ui, document: &AssetDocument, actions: &mut Actions
     let selected = ui
         .ctx()
         .data(|d| d.get_temp::<NodeId>(joint_id(document.id().0)))
-        .filter(|n| n.0 < document.nodes().len());
+        .filter(|n| is_joint(document, *n));
     roomy(ui);
     accent::card(ui, Accent::Edit, "Сустав", |ui| {
         let Some(node) = selected else {
@@ -716,6 +766,9 @@ fn joint_card(ui: &mut egui::Ui, document: &AssetDocument, actions: &mut Actions
             });
             ui.end_row();
 
+            accent::field_label(ui, "Удалить");
+            delete_button(ui, document, node, actions);
+            ui.end_row();
             let can_add = default_child(document, node, ChildDirection::Bone, None).is_some();
             if !can_add {
                 ui.label("");

@@ -16,7 +16,7 @@ pub enum ClipEdit {
 }
 
 impl AssetDocument {
-    pub(super) fn copy_clip_list(&self, extra: usize) -> AssetResult<Vec<Arc<AnimationClip>>> {
+    pub(crate) fn copy_clip_list(&self, extra: usize) -> AssetResult<Vec<Arc<AnimationClip>>> {
         let mut clips = Vec::new();
         clips
             .try_reserve_exact(
@@ -164,7 +164,7 @@ fn clip_name(name: &str) -> AssetResult<&str> {
 }
 
 impl AnimationClip {
-    pub(super) fn with_tracks(
+    pub(crate) fn with_tracks(
         &self,
         tracks: Vec<Arc<Track>>,
         cancel: &Cancellation,
