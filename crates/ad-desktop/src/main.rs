@@ -15,6 +15,7 @@ mod accent;
 mod camera;
 mod diagnostic_ui;
 mod edits;
+mod gizmo_paint;
 mod helpers;
 mod history;
 mod imports;
@@ -2762,29 +2763,26 @@ impl App {
                 .model_preview
                 .get_or_insert_with(|| model_gizmo::Delta::new(model_gizmo::pivot(bounds)));
             let drag = [nx * width as f32, ny * height as f32];
-            let camera = &self.camera;
-            let px = |p: [f32; 3]| {
-                camera
-                    .project(p, width, height)
-                    .map(|[x, y]| [x * width as f32, y * height as f32])
-            };
             match handle {
-                model_gizmo::Handle::Rotate(axis) => {
-                    self.model_turning = Some(axis);
-                    let origin = delta
-                        .matrix()
-                        .transform_point3(glam::Vec3::from_array(delta.pivot));
-                    let origin = origin.to_array();
-                    let radius = model_gizmo::ring_radius(bounds) * delta.factor;
-                    let base = model_gizmo::knob_angle(axis, origin, camera.eye(width, height));
-                    let knob = model_gizmo::knob(axis, origin, radius, base, delta.turned);
-                    let tangent = model_gizmo::knob_tangent(axis, origin, knob);
-                    // Screen motion per radian, from a small step along the tangent.
-                    let step = 1e-3;
-                    let ahead = [0, 1, 2].map(|a| knob[a] + tangent[a] * step);
-                    if let (Some(a), Some(b)) = (px(knob), px(ahead)) {
-                        let tangent_px = [(b[0] - a[0]) / step, (b[1] - a[1]) / step];
-                        model_gizmo::drag_turn(delta, axis, drag, tangent_px);
+                // Knobs turn through `model_ring_drag` (by angle).
+                model_gizmo::Handle::Rotate(_) => {}
+                model_gizmo::Handle::Plane(plane) => {
+                    if let Some(g) =
+                        model_gizmo::screen(&self.camera, bounds, None, None, width, height)
+                    {
+                        let [u, v] = gizmo_paint::PLANES[plane.min(2)];
+                        let axis_px = |axis: usize| {
+                            g.ends[axis].map(|end| {
+                                [
+                                    (end[0] - g.pivot[0]) * width as f32,
+                                    (end[1] - g.pivot[1]) * height as f32,
+                                ]
+                            })
+                        };
+                        if let (Some(u_px), Some(v_px)) = (axis_px(u), axis_px(v)) {
+                            let len = model_gizmo::handle_length(bounds);
+                            model_gizmo::drag_plane(delta, plane, len, drag, u_px, v_px);
+                        }
                     }
                 }
                 model_gizmo::Handle::Axis(axis) => {
@@ -2803,8 +2801,8 @@ impl App {
                 model_gizmo::Handle::Scale => model_gizmo::drag_scale(delta, current, drag[1]),
             }
         }
-        // A ring grabbed anywhere: the pointer's angle around the centre.
-        if let Some((axis, [bx, by], [ax, ay])) = actions.model_ring_drag
+        // A ring or knob drag: the pointer's angle step around the centre.
+        if let Some((axis, step)) = actions.model_ring_drag
             && !self.model_pending
         {
             self.model_turning = Some(axis);
@@ -2814,23 +2812,13 @@ impl App {
             let origin = delta
                 .matrix()
                 .transform_point3(glam::Vec3::from_array(delta.pivot));
-            if let Some(c) = self.camera.project(origin.to_array(), width, height) {
-                let eye = glam::Vec3::from_array(self.camera.eye(width, height)) - origin;
-                let axis_vector = if axis == 0 {
-                    glam::Vec3::X
-                } else {
-                    glam::Vec3::Y
-                };
-                let (w, h) = (width as f32, height as f32);
-                model_gizmo::drag_ring(
-                    delta,
-                    axis,
-                    [bx * w, by * h],
-                    [ax * w, ay * h],
-                    [c[0] * w, c[1] * h],
-                    axis_vector.dot(eye.normalize_or_zero()),
-                );
-            }
+            let eye = glam::Vec3::from_array(self.camera.eye(width, height)) - origin;
+            let axis_vector = if axis == 0 {
+                glam::Vec3::X
+            } else {
+                glam::Vec3::Y
+            };
+            model_gizmo::drag_ring(delta, axis, step, axis_vector.dot(eye.normalize_or_zero()));
         }
         if actions.model_drag_end {
             self.model_turning = None;

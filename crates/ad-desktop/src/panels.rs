@@ -1512,18 +1512,27 @@ impl ViewerUi {
     }
 
     /// Light grey strip under the top bar (room for future tools) with the
-    /// black «Work-Tree» button that opens the left block.
-    pub(super) fn work_tree_strip(&mut self, context: &egui::Context, width: f32) {
+    /// black «Work-Tree» button that opens the left block. It is part of the
+    /// background, like the panels (owner 2026-11-28): drawn in the root
+    /// layer without taking room, so windows and menus always cover it; the
+    /// camera ignores the pointer over it (`camera_at`).
+    pub(super) fn work_tree_strip(&mut self, root: &mut egui::Ui, width: f32) {
         let strip = egui::Rect::from_min_size(
             egui::pos2(0., 48.),
             egui::vec2((width * 0.405).max(160.), STRIP_HEIGHT),
         );
-        egui::Area::new(egui::Id::new("work_tree_strip"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(strip.min)
-            .show(context, |ui| {
-                ui.painter().rect_filled(strip, 0., Color32::from_rgb(196, 198, 204));
-                ui.scope_builder(egui::UiBuilder::new().max_rect(strip.shrink2(egui::vec2(6., 2.))), |ui| {
+        self.strip_rect = strip;
+        root.painter()
+            .rect_filled(strip, 0., Color32::from_rgb(196, 198, 204));
+        let mut child = root.new_child(
+            egui::UiBuilder::new()
+                .id_salt("work_tree_strip")
+                .max_rect(strip.shrink2(egui::vec2(6., 2.))),
+        );
+        {
+            let ui = &mut child;
+            {
+                {
                     ui.horizontal_centered(|ui| {
                         let text = RichText::new("      Work-Tree").color(Color32::from_rgb(235, 235, 240)).size(13.);
                         let fill = if self.show_tree {
@@ -1550,8 +1559,9 @@ impl ViewerUi {
                             self.show_tree = !self.show_tree;
                         }
                     });
-                });
-            });
+                }
+            }
+        }
     }
 
     /// The left block (mirror of the right one): the scene tree with hide

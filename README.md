@@ -118,10 +118,14 @@ hotfixes.
   - Right click on a joint (tree or viewport), the timeline or the Rigging
     tab: select, key the current pose, delete a key, clip actions.
   - Joint gizmo (clip paused): rings turn the selected joint, arrows move
-    it, local or world axes; releasing writes a key at the current time.
+    it along an axis and plane squares along two, local or world axes;
+    releasing writes a key at the current time.
   - Saving writes the animation back and verifies it by reimporting.
-- **Model gizmo.** Arrows move the model, rings turn it, the centre square
-  scales it. Exact values are in «Модель».
+- **Model gizmo.** Arrows move the model, plane squares move it in two axes
+  (along the floor or a wall), rings turn it, the centre square scales it.
+  A ring turns by the pointer's angle around the centre, with the angle
+  shown: the farther the pointer, the finer the turn. Exact values are in
+  «Модель».
 - **Light and scene.**
   - Lamp: a point light with azimuth, height and distance handles, and
     shadows on the model and the floor.

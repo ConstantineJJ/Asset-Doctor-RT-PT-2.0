@@ -1,5 +1,6 @@
 //! P7 joint gizmo: rings turn the selected joint about X/Y/Z (local or world
-//! axes), arrows move it. The application builds the gizmo on screen from
+//! axes), arrows move it along one axis and plane squares along two
+//! (ADR-0063). The application builds the gizmo on screen from
 //! the joint's pose; the interface turns pointer drags into a new local
 //! rotation or translation, previewed while dragging and written as one key
 //! of the current clip on release.
@@ -24,6 +25,8 @@ pub struct JointGizmo {
     pub rings: [Vec<Option<[f32; 2]>>; 3],
     /// Arrow tips on screen.
     pub arrows: [Option<[f32; 2]>; 3],
+    /// Corners of the plane squares (`gizmo_paint::PLANES`) on screen.
+    pub planes: [[Option<[f32; 2]>; 4]; 3],
     /// Axis directions in world space (local or world mode).
     pub axes: [[f32; 3]; 3],
     /// Viewport movement per world unit along each axis (for arrows).
@@ -86,6 +89,14 @@ pub fn build(
             .collect()
     });
     let arrows = axes.map(|axis| project(centre + axis * radius * 1.35));
+    let reach = radius * 1.35;
+    let planes = crate::gizmo_paint::PLANES.map(|[u, v]| {
+        let (a, b) = (
+            crate::gizmo_paint::PLANE_FROM * reach,
+            crate::gizmo_paint::PLANE_TO * reach,
+        );
+        [(a, a), (b, a), (b, b), (a, b)].map(|(s, t)| project(centre + axes[u] * s + axes[v] * t))
+    });
     let per_unit = axes.map(|axis| {
         project(centre + axis).map_or([0.; 2], |p| [p[0] - center[0], p[1] - center[1]])
     });
@@ -104,6 +115,7 @@ pub fn build(
         center,
         rings,
         arrows,
+        planes,
         axes: axes.map(|a| a.to_array()),
         per_unit,
         away,
@@ -131,21 +143,20 @@ impl JointGizmo {
             .transform_vector3(Vec3::from_array(self.axes[axis]) * distance);
         (Vec3::from_array(self.translation) + delta).to_array()
     }
-    /// Signed screen turn (radians) of the pointer from `from` to `to`
-    /// around the centre (viewport coordinates, `aspect` = width / height),
-    /// as a turn about `axis`.
-    pub fn drag_angle(&self, axis: usize, from: [f32; 2], to: [f32; 2], aspect: f32) -> f32 {
-        let c = Vec2::from_array(self.center);
-        let scale = Vec2::new(aspect, 1.);
-        let a = (Vec2::from_array(from) - c) * scale;
-        let b = (Vec2::from_array(to) - c) * scale;
-        if a.length_squared() < 1e-12 || b.length_squared() < 1e-12 {
-            return 0.;
-        }
-        // Screen y points down: a clockwise turn on screen is a positive
-        // perp_dot here; turning about an axis that points away from the
-        // camera looks clockwise.
-        a.angle_to(b) * self.away[axis]
+    /// Local translation after moving `a` world units along the plane's
+    /// first axis and `b` along its second.
+    pub fn moved_in_plane(&self, plane: usize, a: f32, b: f32) -> [f32; 3] {
+        let [u, v] = crate::gizmo_paint::PLANES[plane.min(2)];
+        let world = Vec3::from_array(self.axes[u]) * a + Vec3::from_array(self.axes[v]) * b;
+        let delta = Mat4::from_cols_array_2d(&self.parent_inverse).transform_vector3(world);
+        (Vec3::from_array(self.translation) + delta).to_array()
+    }
+    /// World distances along the plane's two axes for a pointer move
+    /// `delta` (viewport); None when the plane is seen edge-on.
+    pub fn drag_plane(&self, plane: usize, delta: [f32; 2], aspect: f32) -> Option<(f32, f32)> {
+        let [u, v] = crate::gizmo_paint::PLANES[plane.min(2)];
+        let s = |p: [f32; 2]| [p[0] * aspect, p[1]];
+        crate::gizmo_paint::split(s(delta), s(self.per_unit[u]), s(self.per_unit[v]))
     }
     /// World distance along `axis` for a pointer move `delta` (viewport).
     pub fn drag_distance(&self, axis: usize, delta: [f32; 2], aspect: f32) -> f32 {
@@ -238,19 +249,24 @@ mod tests {
     #[test]
     fn screen_drags_become_angles_and_distances() {
         let g = gizmo(false, Mat4::IDENTITY, Mat4::IDENTITY);
-        // A quarter turn on screen around the centre (0.5, 0.5).
-        let quarter = g.drag_angle(2, [0.6, 0.5], [0.5, 0.6], 1.);
-        assert!(
-            (quarter.abs() - std::f32::consts::FRAC_PI_2).abs() < 1e-4,
-            "{quarter}"
-        );
-        // The camera looks down -Z, so +Z points at it: the sign flips
-        // against an axis pointing away.
+        // The camera looks down -Z, so +Z points at it: a screen turn about
+        // it has the opposite sign of one about an axis pointing away.
         assert_eq!(g.away[2], -1.);
         // Dragging 0.2 to the right along X is 2 world units here.
         let d = g.drag_distance(0, [0.2, 0.], 1.);
         assert!((d - 2.).abs() < 1e-4, "{d}");
         // Up on screen along Y (y down) is +Y.
         assert!(g.drag_distance(1, [0., -0.1], 1.) > 0.);
+        // The XY square: right and up move along +X and +Y at once.
+        let (a, b) = g.drag_plane(0, [0.2, -0.1], 1.).unwrap();
+        assert!((a - 2.).abs() < 1e-4 && (b - 1.).abs() < 1e-4, "{a} {b}");
+        let t = g.moved_in_plane(0, a, b);
+        assert!(
+            Vec3::from_array(t).abs_diff_eq(Vec3::new(2., 2., 0.), 1e-4),
+            "{t:?}"
+        );
+        // Seen along Z, the YZ and XZ squares are edge-on.
+        assert!(g.drag_plane(1, [0.1, 0.1], 1.).is_none());
+        assert!(g.planes[0].iter().all(|c| c.is_some()));
     }
 }

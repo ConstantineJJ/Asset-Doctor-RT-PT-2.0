@@ -138,9 +138,9 @@ pub struct Actions {
     /// ADR-0041 model gizmo: handle dragged by (dx, dy) in viewport units
     /// (0..1 of its width/height), released this frame, or reset requested.
     pub model_drag: Option<(crate::model_gizmo::Handle, [f32; 2])>,
-    /// A ring grabbed anywhere: axis and the pointer before and after
-    /// (viewport units).
-    pub model_ring_drag: Option<(usize, [f32; 2], [f32; 2])>,
+    /// A ring or knob drag (ADR-0063): axis and the pointer's screen angle
+    /// step around the gizmo centre (radians, y down).
+    pub model_ring_drag: Option<(usize, f32)>,
     pub model_drag_end: bool,
     pub model_reset: bool,
     /// ADR-0041 numeric fields: preview of the edited placement, and the
@@ -156,16 +156,22 @@ pub struct Actions {
 pub struct ModelGizmo {
     pub pivot: [f32; 2],
     pub ends: [Option<[f32; 2]>; 3],
+    /// Corners of the XY, YZ and XZ plane squares.
+    pub planes: [[Option<[f32; 2]>; 4]; 3],
     pub rings: [[Option<[f32; 2]>; crate::model_gizmo::RING_POINTS]; 2],
     pub knobs: [Option<[f32; 2]>; 2],
+    /// Radians turned by the ring being dragged (shown next to the pointer).
+    pub turned: Option<f32>,
 }
 impl Default for ModelGizmo {
     fn default() -> Self {
         Self {
             pivot: [0.; 2],
             ends: [None; 3],
+            planes: [[None; 4]; 3],
             rings: [[None; crate::model_gizmo::RING_POINTS]; 2],
             knobs: [None; 2],
+            turned: None,
         }
     }
 }
@@ -385,6 +391,14 @@ pub struct ViewerUi {
     /// Joint gizmo size, 0.5–2× of `joint_gizmo::RADIUS_PX`.
     pub joint_gizmo_size: f32,
     joint_drag: Option<(skeleton_ui::JointHandle, [f32; 2], [f32; 4])>,
+    /// ADR-0063: the ring turn in progress (model gizmo: axis and track;
+    /// joint gizmo: the track of the dragged ring).
+    model_turn: Option<(usize, crate::gizmo_paint::TurnTrack)>,
+    /// The plane or ring of the model gizmo being dragged.
+    model_free_drag: Option<crate::model_gizmo::Handle>,
+    /// The Work-Tree strip over the viewport's top-left (not camera input).
+    strip_rect: egui::Rect,
+    joint_turn: Option<crate::gizmo_paint::TurnTrack>,
     /// P7 skeleton overlay (bones and joints of the skins) and its switch.
     pub skeleton_on: bool,
     pub skeleton: Option<skeleton_ui::SkeletonOverlay>,
@@ -574,6 +588,10 @@ impl Default for ViewerUi {
             joint_local_axes: true,
             joint_gizmo_size: 1.,
             joint_drag: None,
+            model_turn: None,
+            model_free_drag: None,
+            strip_rect: egui::Rect::NOTHING,
+            joint_turn: None,
             marquee: None,
             pointer_on_gizmo: false,
             gizmo_dragging: false,
@@ -984,9 +1002,12 @@ impl ViewerUi {
             );
         }
     }
-    /// ADR-0041 model gizmo: X (red), Y (green), Z (blue) arrows from the
-    /// bottom centre move the model; the rings with their knobs turn it about
-    /// X and Y; the square at the centre scales it.
+    /// ADR-0041/0063 model gizmo: X (red), Y (green), Z (blue) arrows from
+    /// the bottom centre move the model, the plane squares move it in two
+    /// axes, the rings (or their knobs) turn it about X and Y by the
+    /// pointer's angle around the centre, the square at the centre scales
+    /// it. One handle is hot at a time: arrows, knobs and the centre first,
+    /// then a plane square under the pointer, then the nearest ring.
     fn model_gizmo_ui(
         &mut self,
         context: &egui::Context,
@@ -994,6 +1015,7 @@ impl ViewerUi {
         gizmo: ModelGizmo,
         actions: &mut Actions,
     ) {
+        use crate::gizmo_paint as gp;
         use crate::model_gizmo::Handle;
         let scene = self.scene;
         let at = |p: [f32; 2]| {
@@ -1004,7 +1026,18 @@ impl ViewerUi {
         };
         let pivot = at(gizmo.pivot);
         if !scene.shrink(10.).contains(pivot) {
+            self.model_turn = None;
+            self.model_free_drag = None;
             return;
+        }
+        // Released outside the window: the drag ends too.
+        if self.model_free_drag.is_some()
+            && context.pointer_hover_pos().is_none()
+            && !context.input(|i| i.pointer.primary_down())
+        {
+            actions.model_drag_end = true;
+            self.model_turn = None;
+            self.model_free_drag = None;
         }
         let colors = [
             Color32::from_rgb(232, 72, 72),
@@ -1012,78 +1045,24 @@ impl ViewerUi {
             Color32::from_rgb(80, 140, 240),
         ];
         let painter = root.painter().with_clip_rect(scene);
+        let pointer = context.pointer_hover_pos();
+        // Fixed handles: arrow heads, ring knobs and the centre square.
         let mut handles = Vec::new();
         for (axis, end) in gizmo.ends.iter().enumerate() {
             if let Some(end) = end.map(at) {
                 painter.line_segment([pivot, end], egui::Stroke::new(2.5, colors[axis]));
-                if scene.shrink(10.).contains(end) {
-                    handles.push((Handle::Axis(axis), end, colors[axis]));
+                let dir = (end - pivot).normalized();
+                let grab = if (end - pivot).length() < 6. {
+                    end
+                } else {
+                    end + dir * 7.
+                };
+                if scene.shrink(10.).contains(grab) {
+                    handles.push((Handle::Axis(axis), grab, colors[axis]));
                 }
             }
         }
-        // The rings can be grabbed anywhere: a small grab area follows the
-        // pointer while it is near a ring (or while that ring is dragged).
-        let pointer = context.pointer_hover_pos();
         for (slot, axis) in crate::model_gizmo::RING_AXES.into_iter().enumerate() {
-            let ring = &gizmo.rings[slot];
-            let grab_id = egui::Id::new(("model_ring_grab", axis));
-            let dragging = context.is_being_dragged(grab_id);
-            let near = pointer.is_some_and(|p| {
-                (0..ring.len()).any(|i| match (ring[i], ring[(i + 1) % ring.len()]) {
-                    (Some(a), Some(b)) => {
-                        egui::emath::Rect::from_two_pos(at(a), at(b))
-                            .expand(7.)
-                            .contains(p)
-                            && segment_distance(p, at(a), at(b)) < 7.
-                    }
-                    _ => false,
-                })
-            });
-            let hot = dragging || near;
-            self.pointer_on_gizmo |= hot;
-            let color = if hot {
-                colors[axis]
-            } else {
-                colors[axis].gamma_multiply(0.8)
-            };
-            for i in 0..ring.len() {
-                if let (Some(a), Some(b)) = (ring[i], ring[(i + 1) % ring.len()]) {
-                    painter.line_segment(
-                        [at(a), at(b)],
-                        egui::Stroke::new(if hot { 3. } else { 1.6 }, color),
-                    );
-                }
-            }
-            if let Some(p) = pointer.filter(|_| hot && scene.contains(pointer.unwrap_or_default()))
-            {
-                egui::Area::new(egui::Id::new(("model_ring_area", axis)))
-                    .order(egui::Order::Middle)
-                    .fixed_pos(p - egui::vec2(10., 10.))
-                    .show(context, |ui| {
-                        let rect = egui::Rect::from_center_size(p, egui::vec2(20., 20.));
-                        let response = ui.interact(rect, grab_id, egui::Sense::drag());
-                        if response.dragged_by(egui::PointerButton::Primary) {
-                            let d = response.drag_delta();
-                            if d != egui::Vec2::ZERO {
-                                let uv = |q: egui::Pos2| {
-                                    [
-                                        (q.x - scene.min.x) / scene.width(),
-                                        (q.y - scene.min.y) / scene.height(),
-                                    ]
-                                };
-                                actions.model_ring_drag = Some((axis, uv(p - d), uv(p)));
-                            }
-                        }
-                        if response.drag_stopped_by(egui::PointerButton::Primary) {
-                            actions.model_drag_end = true;
-                        }
-                        response.on_hover_text(if axis == 0 {
-                            "Тяните по красному кольцу — наклон вокруг X"
-                        } else {
-                            "Тяните по зелёному кольцу — поворот вокруг Y"
-                        });
-                    });
-            }
             if let Some(knob) = gizmo.knobs[slot].map(at)
                 && scene.shrink(10.).contains(knob)
             {
@@ -1091,10 +1070,141 @@ impl ViewerUi {
             }
         }
         handles.push((Handle::Scale, pivot, Color32::from_rgb(235, 235, 235)));
-        self.pointer_on_gizmo |=
+        let fixed_id = |h: Handle| egui::Id::new(("model_gizmo", format!("{h:?}")));
+        let free_id = |h: Handle| egui::Id::new(("model_free", format!("{h:?}")));
+        let free_handles = [
+            Handle::Plane(0),
+            Handle::Plane(1),
+            Handle::Plane(2),
+            Handle::Rotate(0),
+            Handle::Rotate(1),
+        ];
+        let fixed_busy = handles
+            .iter()
+            .any(|(h, _, _)| context.is_being_dragged(fixed_id(*h)));
+        let on_fixed =
             pointer.is_some_and(|p| handles.iter().any(|(_, at, _)| at.distance(p) < 13.));
+        let planes = gizmo.planes.map(|q| {
+            let [a, b, c, d] = q;
+            Some([at(a?), at(b?), at(c?), at(d?)])
+        });
+        let rings = gizmo.rings.map(|ring| ring.map(|p| p.map(at)));
+        let ring_distance = |slot: usize, p: egui::Pos2| {
+            let ring = &rings[slot];
+            (0..ring.len())
+                .filter_map(|i| match (ring[i], ring[(i + 1) % ring.len()]) {
+                    (Some(a), Some(b)) => Some(segment_distance(p, a, b)),
+                    _ => None,
+                })
+                .fold(f32::INFINITY, f32::min)
+        };
+        // The free handle that is hot: the dragged one, or the best under
+        // the pointer when no fixed handle is there.
+        // A drag keeps its handle until release, even when the pointer leaves
+        // the square or ring.
+        let hot_free = self
+            .model_free_drag
+            .or_else(|| {
+                free_handles
+                    .into_iter()
+                    .find(|h| context.is_being_dragged(free_id(*h)))
+            })
+            .or_else(|| {
+                let p = pointer.filter(|p| scene.contains(*p))?;
+                if fixed_busy || on_fixed {
+                    return None;
+                }
+                (0..3)
+                    .find(|&i| planes[i].is_some_and(|q| gp::in_quad(p, &q)))
+                    .map(Handle::Plane)
+                    .or_else(|| {
+                        crate::model_gizmo::RING_AXES
+                            .into_iter()
+                            .enumerate()
+                            .map(|(slot, axis)| {
+                                let points: Vec<_> =
+                                    rings[slot].iter().flatten().copied().collect();
+                                let d = ring_distance(slot, p);
+                                (axis, d, gp::ring_score(d, gp::openness(&points)))
+                            })
+                            .filter(|(_, d, _)| *d < 8.)
+                            .min_by(|a, b| a.2.total_cmp(&b.2))
+                            .map(|(axis, _, _)| Handle::Rotate(axis))
+                    })
+            });
+        for (i, quad) in planes.iter().enumerate() {
+            if let Some(quad) = quad {
+                let color = colors[gp::PLANE_NORMAL[i]];
+                gp::plane(&painter, quad, color, hot_free == Some(Handle::Plane(i)));
+            }
+        }
+        let turning = self.model_turn.map(|(axis, _)| axis);
+        for (slot, axis) in crate::model_gizmo::RING_AXES.into_iter().enumerate() {
+            let hot = hot_free == Some(Handle::Rotate(axis)) || turning == Some(axis);
+            let color = if hot {
+                colors[axis]
+            } else {
+                colors[axis].gamma_multiply(0.8)
+            };
+            let ring = &rings[slot];
+            for i in 0..ring.len() {
+                if let (Some(a), Some(b)) = (ring[i], ring[(i + 1) % ring.len()]) {
+                    painter
+                        .line_segment([a, b], egui::Stroke::new(if hot { 3. } else { 1.6 }, color));
+                }
+            }
+        }
+        self.pointer_on_gizmo |= hot_free.is_some() || on_fixed || fixed_busy;
+        // The free grab follows the pointer. One area for the whole gizmo,
+        // shown every frame: a new area is invisible in its first frame and
+        // would miss a quick press.
+        let grab = hot_free.zip(pointer);
+        egui::Area::new(egui::Id::new("model_free_grab"))
+            .order(egui::Order::Middle)
+            .fixed_pos(grab.map_or(pivot, |g| g.1) - egui::vec2(10., 10.))
+            .show(context, |ui| {
+                if let Some((handle, p)) = grab {
+                    let rect = egui::Rect::from_center_size(p, egui::vec2(20., 20.));
+                    let response = ui.interact(rect, free_id(handle), egui::Sense::drag());
+                    if response.drag_started_by(egui::PointerButton::Primary) {
+                        self.model_free_drag = Some(handle);
+                    }
+                    if response.dragged_by(egui::PointerButton::Primary) {
+                        self.model_free_drag = Some(handle);
+                        let d = response.drag_delta();
+                        match handle {
+                            Handle::Rotate(axis) => {
+                                let step = self.model_turn_step(axis, pivot, p, d);
+                                if step != 0. {
+                                    actions.model_ring_drag = Some((axis, step));
+                                }
+                            }
+                            _ if d != egui::Vec2::ZERO => {
+                                actions.model_drag =
+                                    Some((handle, [d.x / scene.width(), d.y / scene.height()]));
+                            }
+                            _ => {}
+                        }
+                    }
+                    if response.drag_stopped_by(egui::PointerButton::Primary)
+                        || (self.model_free_drag.is_some()
+                            && !ui.input(|i| i.pointer.primary_down()))
+                    {
+                        actions.model_drag_end = true;
+                        self.model_turn = None;
+                        self.model_free_drag = None;
+                    }
+                    response.on_hover_text(match handle {
+                        Handle::Plane(0) => "Тяните квадрат — сдвиг в плоскости XY (вровень со стеной, смотрящей вдоль Z). Отпускание — одна правка (Ctrl+Z отменит).",
+                        Handle::Plane(1) => "Тяните квадрат — сдвиг в плоскости YZ (вровень со стеной, смотрящей вдоль X). Отпускание — одна правка (Ctrl+Z отменит).",
+                        Handle::Plane(_) => "Тяните квадрат — сдвиг по полу (X и Z, высота не меняется). Отпускание — одна правка (Ctrl+Z отменит).",
+                        Handle::Rotate(0) => "Тяните по красному кольцу — наклон вокруг X. Чем дальше мышь от центра, тем точнее; угол виден у курсора.",
+                        _ => "Тяните по зелёному кольцу — поворот вокруг Y. Чем дальше мышь от центра, тем точнее; угол виден у курсора.",
+                    });
+                }
+            });
         for (handle, position, color) in handles {
-            let id = egui::Id::new(("model_gizmo", format!("{handle:?}")));
+            let id = fixed_id(handle);
             egui::Area::new(id)
                 .order(egui::Order::Middle)
                 .fixed_pos(position - egui::vec2(11., 11.))
@@ -1109,10 +1219,9 @@ impl ViewerUi {
                     let painter = ui.painter();
                     let dark = egui::Stroke::new(1.5, Color32::from_rgb(24, 26, 32));
                     match handle {
-                        Handle::Axis(_) => {
-                            let r = if hot { 8. } else { 6. };
-                            painter.circle_filled(rect.center(), r, color);
-                            painter.circle_stroke(rect.center(), r, dark);
+                        Handle::Axis(axis) => {
+                            let end = gizmo.ends[axis].map(at).unwrap_or(rect.center());
+                            gp::arrow_head(painter, pivot, end, if hot { 9. } else { 7. }, color);
                         }
                         Handle::Rotate(_) => {
                             let r = if hot { 8.5 } else { 7. };
@@ -1120,7 +1229,7 @@ impl ViewerUi {
                             painter.circle_stroke(rect.center(), r, egui::Stroke::new(2.5, color));
                             painter.circle_filled(rect.center(), 2.5, color);
                         }
-                        Handle::Scale => {
+                        Handle::Scale | Handle::Plane(_) => {
                             let half = if hot { 7. } else { 5.5 };
                             let square =
                                 egui::Rect::from_center_size(rect.center(), egui::vec2(half * 2., half * 2.));
@@ -1130,21 +1239,33 @@ impl ViewerUi {
                     }
                     if response.dragged_by(egui::PointerButton::Primary) {
                         let d = response.drag_delta();
-                        if d != egui::Vec2::ZERO {
-                            actions.model_drag =
-                                Some((handle, [d.x / scene.width(), d.y / scene.height()]));
+                        match handle {
+                            Handle::Rotate(axis) => {
+                                if let Some(p) = response.interact_pointer_pos() {
+                                    let step = self.model_turn_step(axis, pivot, p, d);
+                                    if step != 0. {
+                                        actions.model_ring_drag = Some((axis, step));
+                                    }
+                                }
+                            }
+                            _ if d != egui::Vec2::ZERO => {
+                                actions.model_drag =
+                                    Some((handle, [d.x / scene.width(), d.y / scene.height()]));
+                            }
+                            _ => {}
                         }
                     }
                     if response.drag_stopped_by(egui::PointerButton::Primary) {
                         actions.model_drag_end = true;
+                        self.model_turn = None;
                     }
                     let hint = match handle {
                         Handle::Axis(0) => "Тяните — сдвинуть модель по X. Отпускание — одна правка (Ctrl+Z отменит).",
                         Handle::Axis(1) => "Тяните — сдвинуть модель по Y. Отпускание — одна правка (Ctrl+Z отменит).",
                         Handle::Axis(_) => "Тяните — сдвинуть модель по Z. Отпускание — одна правка (Ctrl+Z отменит).",
-                        Handle::Rotate(0) => "Тяните вдоль красного кольца — наклонить модель вокруг горизонтальной оси X. Отпускание — одна правка (Ctrl+Z отменит).",
-                        Handle::Rotate(_) => "Тяните вдоль зелёного кольца — повернуть модель вокруг вертикальной оси Y. Отпускание — одна правка (Ctrl+Z отменит).",
-                        Handle::Scale => "Тяните вверх — крупнее, вниз — мельче (от нижней точки центра). ПКМ — меню.",
+                        Handle::Rotate(0) => "Тяните по кругу вокруг центра — наклонить модель вокруг оси X. Чем дальше мышь, тем точнее. Отпускание — одна правка (Ctrl+Z отменит).",
+                        Handle::Rotate(_) => "Тяните по кругу вокруг центра — повернуть модель вокруг оси Y. Чем дальше мышь, тем точнее. Отпускание — одна правка (Ctrl+Z отменит).",
+                        Handle::Scale | Handle::Plane(_) => "Тяните вверх — крупнее, вниз — мельче (от нижней точки центра). ПКМ — меню.",
                     };
                     let response = response.on_hover_text(hint);
                     if handle == Handle::Scale {
@@ -1166,6 +1287,33 @@ impl ViewerUi {
                         });
                     }
                 });
+        }
+        // The angle being turned, next to the pointer.
+        if let (Some((axis, track)), Some(p)) = (self.model_turn, pointer) {
+            let degrees = gizmo.turned.unwrap_or(0.).to_degrees();
+            gp::turn_indicator(&painter, pivot, p, &track, degrees, colors[axis]);
+        }
+    }
+    /// One pointer step of a ring or knob drag: the screen angle it turned
+    /// around `pivot` (0 inside the dead zone). Starts the turn track at the
+    /// pointer's previous position on the first step.
+    fn model_turn_step(
+        &mut self,
+        axis: usize,
+        pivot: egui::Pos2,
+        p: egui::Pos2,
+        d: egui::Vec2,
+    ) -> f32 {
+        if self.model_turn.is_none_or(|(a, _)| a != axis) {
+            self.model_turn = crate::gizmo_paint::TurnTrack::new(pivot, p - d).map(|t| (axis, t));
+        }
+        match self.model_turn.as_mut() {
+            Some((_, track)) => track.step(pivot, p),
+            None => {
+                // Grabbed inside the dead zone: start once the pointer leaves it.
+                self.model_turn = crate::gizmo_paint::TurnTrack::new(pivot, p).map(|t| (axis, t));
+                0.
+            }
         }
     }
     /// ADR-0040 lamp gizmo over the viewport: a sun icon on a line from the
@@ -1418,8 +1566,8 @@ impl ViewerUi {
     }
     pub fn camera_at(&self, x: f64, y: f64) -> bool {
         let scale = self.context.pixels_per_point() as f64;
-        self.scene
-            .contains(egui::pos2((x / scale) as f32, (y / scale) as f32))
+        let p = egui::pos2((x / scale) as f32, (y / scale) as f32);
+        self.scene.contains(p) && !self.strip_rect.contains(p)
     }
     pub fn help(&mut self) {
         self.help = true;
@@ -1592,6 +1740,9 @@ impl ViewerUi {
                 }
                 if asset.is_some() && !read_only && self.model_gizmo_on && let Some(gizmo)=self.model_gizmo {
                     self.model_gizmo_ui(&context,root,gizmo,&mut actions);
+                } else {
+                    self.model_turn=None;
+                    self.model_free_drag=None;
                 }
                 if asset.is_some() && self.lamp_icon && let Some(gizmo)=self.lamp_gizmo.clone() {
                     self.lamp_gizmo_ui(&context,root,gizmo,&mut actions);
@@ -1600,7 +1751,7 @@ impl ViewerUi {
                     self.lamp_hot=None;
                 }
                 self.pointer_on_gizmo |= self.lamp_hot.is_some();
-                self.work_tree_strip(&context,width);
+                self.work_tree_strip(root,width);
                 self.corner_overlay(&context,width,loading,&mut actions);
                 self.playback_bar(&context,asset,&mut actions);
                 if asset.is_none() {
@@ -2591,12 +2742,87 @@ FORMAT=32-bit_rle_rgbe
             egui::vec2(30., 0.),
             size,
         );
-        assert!(
-            actions
-                .iter()
-                .any(|a| matches!(a.model_drag, Some((Handle::Rotate(1), _))))
-        );
+        // A knob turns by the pointer's angle around the centre (ADR-0063).
+        let swept: f32 = actions
+            .iter()
+            .filter_map(|a| a.model_ring_drag)
+            .map(|(axis, step)| {
+                assert_eq!(axis, 1);
+                step
+            })
+            .sum();
+        assert!(swept.abs() > 0.05, "{swept}");
+        assert!(actions.iter().all(|a| a.model_drag.is_none()));
         assert!(actions.iter().any(|a| a.model_drag_end));
+        assert!(ui.model_turn.is_none(), "release ends the turn");
+    }
+    #[test]
+    fn a_plane_square_moves_in_two_axes_and_wins_over_a_ring_behind_it() {
+        use crate::model_gizmo::Handle;
+        let asset = fixture("Pbr_Factors.glb");
+        let mut ui = ViewerUi {
+            lamp_icon: false,
+            ..Default::default()
+        };
+        let mut gizmo = ModelGizmo {
+            pivot: [0.5, 0.6],
+            ends: [Some([0.65, 0.6]), Some([0.5, 0.4]), Some([0.42, 0.68])],
+            ..Default::default()
+        };
+        // The floor square (XZ) and a Y ring running through it.
+        gizmo.planes[2] = [
+            Some([0.52, 0.61]),
+            Some([0.56, 0.61]),
+            Some([0.55, 0.65]),
+            Some([0.51, 0.65]),
+        ];
+        for (i, p) in gizmo.rings[1].iter_mut().enumerate() {
+            let t = i as f32 / crate::model_gizmo::RING_POINTS as f32 * std::f32::consts::TAU;
+            *p = Some([0.535 + 0.05 * t.cos(), 0.63 + 0.02 * t.sin()]);
+        }
+        ui.model_gizmo = Some(gizmo);
+        let size = (1400., 1000.);
+        warm(&mut ui, Some(&asset), size);
+        let scene = ui.scene;
+        let at = egui::pos2(
+            scene.min.x + 0.535 * scene.width(),
+            scene.min.y + 0.63 * scene.height(),
+        );
+        let actions = drag(&mut ui, Some(&asset), at, egui::vec2(25., 10.), size);
+        let moved: Vec<_> = actions.iter().filter_map(|a| a.model_drag).collect();
+        assert!(!moved.is_empty());
+        assert!(
+            moved.iter().all(|(h, _)| *h == Handle::Plane(2)),
+            "{moved:?}"
+        );
+        assert!(actions.iter().all(|a| a.model_ring_drag.is_none()));
+        assert!(actions.iter().any(|a| a.model_drag_end));
+    }
+    #[test]
+    fn the_work_tree_strip_lies_under_windows_and_is_not_camera_input() {
+        let mut ui = ViewerUi::default();
+        let size = (1400., 900.);
+        warm(&mut ui, None, size);
+        let strip = ui.strip_rect;
+        assert!(strip.is_positive() && strip.top() >= 48.);
+        // The strip is part of the background layer.
+        let empty = egui::pos2(strip.right() - 8., strip.center().y);
+        let layer = ui.context.layer_id_at(empty);
+        assert!(
+            layer.is_none_or(|l| l.order == egui::Order::Background),
+            "{layer:?}"
+        );
+        assert!(!ui.camera_at(empty.x as f64, empty.y as f64));
+        // No area of its own any more: every window (Middle) and menu
+        // (Foreground) is drawn over it.
+        assert!(
+            ui.context
+                .memory(|m| m.area_rect(egui::Id::new("work_tree_strip")))
+                .is_none()
+        );
+        // Below the strip the viewport is the camera's again.
+        let below = egui::pos2(strip.right() - 8., strip.bottom() + 20.);
+        assert!(ui.camera_at(below.x as f64, below.y as f64));
     }
     fn preview_info() -> PreviewInfo {
         PreviewInfo {
