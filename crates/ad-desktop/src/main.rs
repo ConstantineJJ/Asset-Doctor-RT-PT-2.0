@@ -2610,6 +2610,24 @@ impl App {
         let translation = document
             .animation_value(clip, node, ad_document::TrackKind::Translation, time)
             .ok()?;
+        // RIG-02 twist: the bone runs to the first child with a pose (a skin
+        // joint first), else from the parent.
+        let position = |m: glam::Mat4| m.w_axis.truncate();
+        let skin_joint = |n: ad_document::NodeId| {
+            document
+                .rig()
+                .is_some_and(|rig| rig.skins.iter().any(|s| s.joints.contains(&n)))
+        };
+        let children = &document.nodes()[node.0].children;
+        let child = children
+            .iter()
+            .filter(|c| skin_joint(**c))
+            .chain(children.iter())
+            .find_map(|c| worlds.get(c.0).copied().flatten());
+        let bone = child
+            .map(|c| position(glam::Mat4::from_cols_array_2d(&c)) - position(world))
+            .or_else(|| Some(position(world) - position(parent)))
+            .filter(|b| b.length() > 1e-6);
         let camera = &self.camera;
         joint_gizmo::build(
             id,
@@ -2622,6 +2640,7 @@ impl App {
             [translation[0], translation[1], translation[2]],
             self.ui.joint_local_axes,
             joint_gizmo::RADIUS_PX * self.ui.joint_gizmo_size,
+            bone,
             glam::Vec3::from_array(camera.view_direction()),
             glam::Vec2::new(width.max(1) as f32, height.max(1) as f32),
             |p| camera.project(p.to_array(), width, height),

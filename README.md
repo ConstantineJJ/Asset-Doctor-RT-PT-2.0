@@ -99,6 +99,7 @@ hotfixes.
   - Joints: rename the selected joint; add a child joint (along the parent's
     bone or a local axis, chosen length, no weights); change a bone's length
     or a joint's rest position — the skeleton moves, the mesh stays (rebind);
+    its children follow or hold their place («Дочерние»);
     delete a joint with
     everything under it — its weights go to the nearest joint above, its
     channels leave the clips. Rigging card «Сустав» or the joint's
@@ -117,9 +118,10 @@ hotfixes.
     keys; create, copy, rename, delete and retime clips; all with Undo/Redo.
   - Right click on a joint (tree or viewport), the timeline or the Rigging
     tab: select, key the current pose, delete a key, clip actions.
-  - Joint gizmo (clip paused): rings turn the selected joint, arrows move
-    it along an axis and plane squares along two, local or world axes;
-    releasing writes a key at the current time.
+  - Joint gizmo (clip paused): rings turn the selected joint, the inner
+    yellow ring twists it about its own bone, arrows move it along an axis
+    and plane squares along two, local or world axes; releasing writes a
+    key at the current time.
   - Saving writes the animation back and verifies it by reimporting.
 - **Model gizmo.** Arrows move the model, plane squares move it in two axes
   (along the floor or a wall), rings turn it, the centre square scales it.

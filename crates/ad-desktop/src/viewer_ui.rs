@@ -3378,6 +3378,7 @@ FORMAT=32-bit_rle_rgbe
             [0., 0., 0.],
             false,
             crate::joint_gizmo::RADIUS_PX,
+            Some(glam::Vec3::Z),
             glam::Vec3::NEG_Z,
             glam::Vec2::new(scene.width(), scene.height()),
             to_uv,
@@ -3420,6 +3421,26 @@ FORMAT=32-bit_rle_rgbe
         assert_eq!(key.channel.kind, TrackKind::Rotation);
         let q = glam::Quat::from_array(key.channel.value);
         let (axis, angle) = q.to_axis_angle();
+        assert!(angle > 0.3 && axis.z.abs() > 0.99, "{axis} {angle}");
+        // RIG-02 twist: the inner yellow ring turns about the bone (+Z here,
+        // towards the camera), inside the Z ring and apart from it.
+        let (bone, twist, _) = gizmo.twist.clone().expect("a bone");
+        assert_eq!(bone, [0., 0., 1.]);
+        let from = at(twist[0].unwrap());
+        let to = at(twist[6].unwrap());
+        for _ in 0..2 {
+            let mut input = raw(size.0, size.1);
+            input.events = vec![egui::Event::PointerMoved(from)];
+            let (out, _, _) = ui.layout(input, Some(&asset), false);
+            out.drop_without_applying_deltas();
+        }
+        let steps = drag(&mut ui, Some(&asset), from, to - from, size);
+        let key = steps
+            .iter()
+            .find_map(|a| a.animation_key)
+            .expect("a twist key on release");
+        assert_eq!(key.channel.kind, TrackKind::Rotation);
+        let (axis, angle) = glam::Quat::from_array(key.channel.value).to_axis_angle();
         assert!(angle > 0.3 && axis.z.abs() > 0.99, "{axis} {angle}");
     }
     #[test]

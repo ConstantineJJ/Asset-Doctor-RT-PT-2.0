@@ -1,6 +1,6 @@
 //! P7 joint gizmo: rings turn the selected joint about X/Y/Z (local or world
 //! axes), arrows move it along one axis and plane squares along two
-//! (ADR-0063). The application builds the gizmo on screen from
+//! (ADR-0063). The inner yellow ring twists it about its own bone (RIG-02). The application builds the gizmo on screen from
 //! the joint's pose; the interface turns pointer drags into a new local
 //! rotation or translation, previewed while dragging and written as one key
 //! of the current clip on release.
@@ -12,6 +12,10 @@ pub const RING_POINTS: usize = 48;
 /// Default ring radius on screen, in viewport pixels (owner 2026-11-28:
 /// larger, for precise fitting; «Размер» scales it 0.5–2×).
 pub const RADIUS_PX: f32 = 110.;
+
+/// RIG-02 twist ring: bone direction (unit, world), its ring on screen and
+/// the turn sign (as `JointGizmo::away`).
+pub type Twist = ([f32; 3], Vec<Option<[f32; 2]>>, f32);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct JointGizmo {
@@ -29,6 +33,9 @@ pub struct JointGizmo {
     pub planes: [[Option<[f32; 2]>; 4]; 3],
     /// Axis directions in world space (local or world mode).
     pub axes: [[f32; 3]; 3],
+    /// RIG-02 twist: the bone direction (unit, world) with its inner ring on
+    /// screen and the same sign rule as `away`; None without a bone.
+    pub twist: Option<Twist>,
     /// Viewport movement per world unit along each axis (for arrows).
     pub per_unit: [[f32; 2]; 3],
     /// +1 when the axis points away from the camera (a counter-clockwise
@@ -57,6 +64,7 @@ pub fn build(
     translation: [f32; 3],
     local_axes: bool,
     radius_px: f32,
+    bone: Option<Vec3>,
     camera_forward: Vec3,
     viewport_px: Vec2,
     project: impl Fn(Vec3) -> Option<[f32; 2]>,
@@ -89,6 +97,24 @@ pub fn build(
             .collect()
     });
     let arrows = axes.map(|axis| project(centre + axis * radius * 1.35));
+    let ring = |axis: Vec3, r: f32| -> Vec<Option<[f32; 2]>> {
+        let u = axis.any_orthonormal_vector();
+        let v = axis.cross(u);
+        (0..RING_POINTS)
+            .map(|i| {
+                let t = i as f32 / RING_POINTS as f32 * std::f32::consts::TAU;
+                project(centre + (u * t.cos() + v * t.sin()) * r)
+            })
+            .collect()
+    };
+    let twist = bone.and_then(|b| b.try_normalize()).map(|axis| {
+        let away = if axis.dot(camera_forward) > 0. {
+            1.
+        } else {
+            -1.
+        };
+        (axis.to_array(), ring(axis, radius * 0.72), away)
+    });
     let reach = radius * 1.35;
     let planes = crate::gizmo_paint::PLANES.map(|[u, v]| {
         let (a, b) = (
@@ -117,6 +143,7 @@ pub fn build(
         arrows,
         planes,
         axes: axes.map(|a| a.to_array()),
+        twist,
         per_unit,
         away,
         parent_rotation: parent_rot.normalize().to_array(),
@@ -130,8 +157,13 @@ impl JointGizmo {
     /// Local rotation after turning the joint by `angle` radians about world
     /// axis `axis` (0..3): L' = P⁻¹ · R · P · L in rotations.
     pub fn turned(&self, axis: usize, angle: f32) -> [f32; 4] {
+        self.turned_about(Vec3::from_array(self.axes[axis]), angle)
+    }
+    /// Local rotation after turning the joint by `angle` radians about the
+    /// world direction `axis` (unit), e.g. its bone for a twist.
+    pub fn turned_about(&self, axis: Vec3, angle: f32) -> [f32; 4] {
         let parent = Quat::from_array(self.parent_rotation);
-        let turn = Quat::from_axis_angle(Vec3::from_array(self.axes[axis]), angle);
+        let turn = Quat::from_axis_angle(axis, angle);
         (parent.inverse() * turn * parent * Quat::from_array(self.rotation))
             .normalize()
             .to_array()
@@ -188,6 +220,7 @@ mod tests {
             [0., 1., 0.],
             local,
             RADIUS_PX,
+            Some(Vec3::Y),
             Vec3::NEG_Z,
             Vec2::new(1000., 1000.),
             project,
@@ -237,6 +270,13 @@ mod tests {
         let moved = parent * Mat4::from_translation(t);
         let delta = moved.w_axis.truncate() - world.w_axis.truncate();
         assert!(delta.abs_diff_eq(Vec3::new(1.5, 0., 0.), 1e-5), "{delta}");
+        // A twist turns about the bone: here the bone is world +Y.
+        let (axis, ring, _) = g.twist.clone().expect("a bone");
+        assert_eq!(axis, [0., 1., 0.]);
+        assert_eq!(ring.len(), RING_POINTS);
+        let twisted = Quat::from_array(g.turned_about(Vec3::from_array(axis), 0.4));
+        let expected = Quat::from_rotation_y(0.4) * parent_rotation;
+        assert!((parent_rotation * twisted).dot(expected).abs() > 0.99999);
         // Local axes follow the joint's own turn.
         let turned = gizmo(
             true,

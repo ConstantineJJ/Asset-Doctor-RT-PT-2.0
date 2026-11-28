@@ -858,6 +858,13 @@ struct JointDraft {
     /// in the parent's space.
     bone: f32,
     position: [f32; 3],
+    /// RIG-02: the children keep their place when this joint moves at rest.
+    hold: bool,
+}
+
+/// RIG-02: where the «Дочерние» choice is kept for this document.
+fn hold_id(document: &AssetDocument) -> egui::Id {
+    egui::Id::new(("joint_hold", document.id().0))
 }
 
 /// World length of the bone from the parent node to `node` at rest.
@@ -912,6 +919,10 @@ fn joint_card(ui: &mut egui::Ui, document: &AssetDocument, actions: &mut Actions
                 position: document
                     .rest_transform(node)
                     .map_or([0.; 3], |rest| rest.translation),
+                hold: ui
+                    .ctx()
+                    .data(|d| d.get_temp::<bool>(hold_id(document)))
+                    .unwrap_or(false),
             });
         form(egui::Id::new(("joint_form", document.id().0))).show(ui, |ui| {
             accent::field_label(ui, "Имя");
@@ -950,6 +961,21 @@ fn joint_card(ui: &mut egui::Ui, document: &AssetDocument, actions: &mut Actions
             if let Some(rest) = document.rest_transform(node)
                 && let Some(length) = bone_length(document, node)
             {
+                if !document.nodes()[node.0].children.is_empty() {
+                    accent::field_label(ui, "Дочерние");
+                    let group = ui
+                        .horizontal(|ui| {
+                            ui.selectable_value(&mut draft.hold, false, "Следуют");
+                            ui.selectable_value(&mut draft.hold, true, "Остаются на месте");
+                        })
+                        .response
+                        .on_hover_text("При смене длины кости или положения: дочерние суставы двигаются вместе с этим («Следуют») или остаются там, где были, и двигается только этот сустав («Остаются на месте»). Меш в позе покоя не двигается в обоих случаях.");
+                    if accent::wheel_steps(ui, &group) != 0 {
+                        draft.hold = !draft.hold;
+                    }
+                    ui.ctx().data_mut(|d| d.insert_temp(hold_id(document), draft.hold));
+                    ui.end_row();
+                }
                 accent::field_label(ui, "Длина кости");
                 ui.horizontal(|ui| {
                     accent::values(ui, |ui| {
@@ -974,6 +1000,7 @@ fn joint_card(ui: &mut egui::Ui, document: &AssetDocument, actions: &mut Actions
                         actions.joint_edit = Some(JointEdit::Rest {
                             node,
                             translation: rest.translation.map(|v| v * k),
+                            hold: draft.hold,
                         });
                     }
                 });
@@ -1000,6 +1027,7 @@ fn joint_card(ui: &mut egui::Ui, document: &AssetDocument, actions: &mut Actions
                         actions.joint_edit = Some(JointEdit::Rest {
                             node,
                             translation: draft.position,
+                            hold: draft.hold,
                         });
                     }
                 });
