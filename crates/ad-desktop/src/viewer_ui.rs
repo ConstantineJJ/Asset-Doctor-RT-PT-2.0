@@ -54,6 +54,7 @@ impl WindowMode {
 pub enum TopMenu {
     Settings,
     View,
+    Shading,
     Grid,
     Light,
     Lamp,
@@ -366,6 +367,10 @@ pub struct ViewerUi {
     pub bindings_changed: bool,
     pub show_controls: bool,
     pub wireframe: bool,
+    /// ADR-0067 surface shading (Smooth / Flat / Hybrid), and whether its
+    /// menu sits inside «Вид» (narrow windows).
+    pub surface: ad_render_vulkan::lighting::SurfaceShading,
+    shading_in_view: bool,
     pub wireframe_supported: bool,
     pub show_axes: bool,
     /// ADR-0044 lamp shadows on the model and the floor.
@@ -577,6 +582,8 @@ impl Default for ViewerUi {
             bindings_changed: false,
             show_controls: false,
             wireframe: false,
+            surface: Default::default(),
+            shading_in_view: false,
             wireframe_supported: true,
             show_axes: false,
             shadows: true,
@@ -2238,6 +2245,7 @@ mod tests {
             [
                 TopMenu::Settings,
                 TopMenu::View,
+                TopMenu::Shading,
                 TopMenu::Grid,
                 TopMenu::Light,
                 TopMenu::Lamp,
@@ -2500,6 +2508,38 @@ FORMAT=32-bit_rle_rgbe
             ui.undo_rect.bottom() <= rect.bottom() && ui.undo_rect.bottom() > rect.bottom() - 40.
         );
         assert!(ui.undo_rect.right() <= ui.redo_rect.left());
+    }
+    #[test]
+    fn shading_has_its_own_menu_on_wide_windows_and_sits_in_view_when_narrow() {
+        use ad_render_vulkan::lighting::SurfaceShading;
+        let mut wide = ViewerUi::default();
+        warm(&mut wide, None, (1900., 900.));
+        assert!(wide.menu_rects.iter().any(|(m, _)| *m == TopMenu::Shading));
+        wide.menu = Some(TopMenu::Shading);
+        // A new popup is measured invisibly in its first frame.
+        warm(&mut wide, None, (1900., 900.));
+        let (out, _, _) = wide.layout(raw(1900., 900.), None, false);
+        let text = format!("{:?}", out.shapes);
+        out.drop_without_applying_deltas();
+        assert!(text.contains("Flat") && text.contains("Hybrid") && text.contains("Каркас"));
+        assert!(text.contains("· W"), "the wireframe key is shown");
+        // Narrow: no separate button; «Вид» starts with the same choices.
+        let mut narrow = ViewerUi::default();
+        warm(&mut narrow, None, (1200., 760.));
+        assert!(
+            !narrow
+                .menu_rects
+                .iter()
+                .any(|(m, _)| *m == TopMenu::Shading)
+        );
+        narrow.menu = Some(TopMenu::View);
+        // A new popup is measured invisibly in its first frame.
+        warm(&mut narrow, None, (1200., 760.));
+        let (out, _, _) = narrow.layout(raw(1200., 760.), None, false);
+        let text = format!("{:?}", out.shapes);
+        out.drop_without_applying_deltas();
+        assert!(text.contains("Smooth") && text.contains("Flat"));
+        assert_eq!(narrow.surface, SurfaceShading::Smooth, "smooth by default");
     }
     #[test]
     fn open_button_emits_one_action_on_release() {

@@ -48,8 +48,13 @@ pub(crate) const OUTLINE_COLORS: [[u8; 3]; 18] = [
     [255, 255, 255], // white
 ];
 /// View menus of the top bar, left to right (ADR-0045 amendment).
-const VIEW_MENUS: [(TopMenu, &str, &str); 8] = [
+const VIEW_MENUS: [(TopMenu, &str, &str); 9] = [
     (TopMenu::View, "Вид", "Вид"),
+    (
+        TopMenu::Shading,
+        "Шейдинг: Smooth, Flat, Hybrid и каркас",
+        "Шейдинг",
+    ),
     (TopMenu::Grid, "Сетка и помощники", "Сетка"),
     (TopMenu::Light, "Освещение", "Освещение"),
     (TopMenu::Lamp, "Лампа", "Лампа"),
@@ -142,6 +147,9 @@ impl ViewerUi {
                             self.show_queue = true;
                         }
                         if width >= 560. {
+                            // ADR-0067: below 1600 points «Шейдинг» lives at
+                            // the top of «Вид» (no room for one more button).
+                            self.shading_in_view = width < 1600.;
                             self.view_menus(ui, width < 2100.);
                         }
                     });
@@ -166,6 +174,9 @@ impl ViewerUi {
         self.amoeba_switch(ui);
         self.lamp_switch(ui);
         for (menu, label, brief) in VIEW_MENUS.into_iter().rev() {
+            if menu == TopMenu::Shading && self.shading_in_view {
+                continue;
+            }
             if menu == TopMenu::Sky {
                 self.skybox_button(ui);
             }
@@ -379,6 +390,7 @@ impl ViewerUi {
                         match menu {
                             TopMenu::Settings => self.settings_menu(ui, actions),
                             TopMenu::View => self.view_menu(ui),
+                            TopMenu::Shading => self.shading_menu(ui),
                             TopMenu::Grid => self.grid_menu(ui),
                             TopMenu::Light => self.light_menu(ui),
                             TopMenu::Lamp => self.lamp_menu(ui, actions),
@@ -539,7 +551,44 @@ impl ViewerUi {
         }
     }
 
+    /// ADR-0067: how the surface is shaded, and the wireframe (W).
+    fn shading_menu(&mut self, ui: &mut egui::Ui) {
+        use ad_render_vulkan::lighting::SurfaceShading;
+        ui.strong("Шейдинг поверхности");
+        for (surface, hint) in [
+            (
+                SurfaceShading::Smooth,
+                "Нормали вершин из файла: плавные поверхности, жёсткие рёбра — там, где их задал автор.",
+            ),
+            (
+                SurfaceShading::Flat,
+                "Каждый треугольник освещён своей нормалью: видна топология и грани.",
+            ),
+            (
+                SurfaceShading::Hybrid,
+                "Гладко, где нормаль вершины близка к грани (до 25°), плоско на острых рёбрах (больше 45°).",
+            ),
+        ] {
+            ui.radio_value(&mut self.surface, surface, surface.label())
+                .on_hover_text(hint);
+        }
+        ui.weak("Только вид: файл не меняется.");
+        ui.separator();
+        let wire = self
+            .bindings
+            .describe(crate::input::Action::ToggleWireframe);
+        ui.checkbox(
+            &mut self.wireframe,
+            format!("Каркас (топологическая сетка) · {wire}"),
+        )
+        .on_hover_text("Рёбра треугольников поверх модели.");
+    }
+
     fn view_menu(&mut self, ui: &mut egui::Ui) {
+        if self.shading_in_view {
+            self.shading_menu(ui);
+            ui.separator();
+        }
         egui::ComboBox::from_id_salt("shading_mode")
             .selected_text(match self.lighting.mode {
                 ShadingMode::BaseColor => "Базовый вид",

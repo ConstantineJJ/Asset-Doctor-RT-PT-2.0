@@ -118,6 +118,8 @@ pub struct Renderer {
     channel: crate::lighting::Channel,
     wireframe: bool,
     wire_frames: u64,
+    /// ADR-0067 surface shading.
+    surface: crate::lighting::SurfaceShading,
     /// Frames that drew glTF BLEND geometry.
     blend_frames: u64,
     /// ADR-0040 owner panorama; replaced only after waiting for idle.
@@ -210,6 +212,7 @@ impl Renderer {
             channel: crate::lighting::Channel::Lit,
             wireframe: false,
             wire_frames: 0,
+            surface: crate::lighting::SurfaceShading::Smooth,
             blend_frames: 0,
             frames: 0,
             mesh_frames: 0,
@@ -430,6 +433,10 @@ impl Renderer {
     pub fn set_wireframe(&mut self, on: bool) {
         self.wireframe = on;
     }
+    /// ADR-0067: Smooth, Flat or Hybrid surface shading.
+    pub fn set_surface_shading(&mut self, surface: crate::lighting::SurfaceShading) {
+        self.surface = surface;
+    }
     pub fn wireframe_supported(&self) -> bool {
         self.gpu.wireframe
     }
@@ -613,7 +620,7 @@ impl Renderer {
                         self.lighting.key,
                         self.lighting.fill,
                         self.channel.index(),
-                        0.,
+                        self.surface.index(),
                     ],
                     sky_zenith: sky_light[0],
                     sky_horizon: sky_light[1],

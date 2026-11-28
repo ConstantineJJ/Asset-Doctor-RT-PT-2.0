@@ -5,6 +5,42 @@ pub enum ShadingMode {
     BaseColor,
     DirectPbr,
 }
+/// ADR-0067 surface shading (view only): which normal lights the surface.
+/// Smooth: the vertex normals; Flat: each triangle's own normal; Hybrid:
+/// smooth where the vertex normal stays within 25° of the face, flat past
+/// 45° (sharp edges), blended between.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SurfaceShading {
+    #[default]
+    Smooth,
+    Flat,
+    Hybrid,
+}
+impl SurfaceShading {
+    pub const ALL: [Self; 3] = [Self::Smooth, Self::Flat, Self::Hybrid];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Smooth => "Smooth · гладкий",
+            Self::Flat => "Flat · плоский",
+            Self::Hybrid => "Hybrid · гибридный",
+        }
+    }
+    /// Stored in the view settings.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Smooth => "smooth",
+            Self::Flat => "flat",
+            Self::Hybrid => "hybrid",
+        }
+    }
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|s| s.key() == key)
+    }
+    /// Index read by mesh.frag from the frame uniform.
+    pub(crate) fn index(self) -> f32 {
+        Self::ALL.iter().position(|s| *s == self).unwrap_or(0) as f32
+    }
+}
 /// ADR-0042 render channel: what the viewport shows instead of lit shading.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Channel {

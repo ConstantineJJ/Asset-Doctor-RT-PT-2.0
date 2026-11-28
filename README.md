@@ -137,7 +137,10 @@ hotfixes.
   - 20 procedural floors.
   - Render channels: normals, UV, base colour, metal, roughness, AO,
     emission.
-  - Wireframe, axes, bounding box and light presets.
+  - Wireframe (W), axes, bounding box and light presets.
+  - Surface shading «Шейдинг»: Smooth (vertex normals), Flat (each
+    triangle's own normal) or Hybrid (smooth on gentle surfaces, flat on
+    edges sharper than 45°); view only.
 - **SkyBox and image-based lighting.**
   - The SkyBox window previews every 2:1 PNG/JPEG or Radiance HDR panorama
     in a folder. By default this is `assets/360.HDR`, with five CC0

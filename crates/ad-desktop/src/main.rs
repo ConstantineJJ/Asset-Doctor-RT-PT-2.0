@@ -3237,6 +3237,7 @@ impl App {
         }
         renderer.set_channel(self.ui.channel);
         renderer.set_wireframe(self.ui.wireframe);
+        renderer.set_surface_shading(self.ui.surface);
         self.ui.wireframe_supported = renderer.wireframe_supported();
         renderer.set_textures_enabled(self.ui.textures);
         renderer.set_mr_maps_enabled(self.ui.mr_maps);

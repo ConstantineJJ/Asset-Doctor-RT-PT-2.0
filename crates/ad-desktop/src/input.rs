@@ -420,6 +420,8 @@ pub fn default_slots(action: Action) -> Slots {
         Action::FrameForward => [Some(Chord::plain(K::Period)), None],
         Action::ToggleFrameless => [Some(Chord::plain(K::F1)), None],
         Action::ToggleFloor => [Some(Chord::plain(K::KeyG)), None],
+        // Owner 2026-11-28: W shows and hides the wireframe.
+        Action::ToggleWireframe => [Some(Chord::plain(K::KeyW)), None],
         Action::Help => [Some(Chord::plain(K::KeyH)), None],
         Action::Cancel => [Some(Chord::plain(K::Escape)), None],
         // 2026-11-21: the left button selects and the right one opens the
@@ -552,7 +554,7 @@ impl Bindings {
                 json!(slots.iter().flatten().map(|c| c.name()).collect::<Vec<_>>()),
             );
         }
-        json!({"version": 3, "invert_zoom": self.invert_zoom, "actions": actions})
+        json!({"version": 4, "invert_zoom": self.invert_zoom, "actions": actions})
     }
     /// Reads a bindings file. Unknown actions and unreadable chords are
     /// skipped with a warning (that action keeps its defaults); a conflict
@@ -560,7 +562,7 @@ impl Bindings {
     pub fn from_json(value: &Value) -> (Self, Vec<String>) {
         let mut warnings = Vec::new();
         let version = value.get("version").and_then(Value::as_u64);
-        if !matches!(version, Some(1..=3)) {
+        if !matches!(version, Some(1..=4)) {
             return (
                 Self::default(),
                 vec!["неизвестная версия файла управления; взяты значения по умолчанию".into()],
@@ -614,6 +616,15 @@ impl Bindings {
                     result.migrated = true;
                     middle_moved = true;
                 }
+            }
+            // Version ≤ 3 → 4: an empty wireframe slot takes its new default
+            // W (an owner's own use of W elsewhere still wins).
+            if version.is_some_and(|v| v < 4)
+                && action == Action::ToggleWireframe
+                && chords.is_empty()
+            {
+                result.migrated = true;
+                continue;
             }
             if chords.iter().any(Option::is_none) || chords.len() > 2 {
                 warnings.push(format!(
@@ -883,6 +894,32 @@ mod tests {
         let (again, warnings) = Bindings::from_json(&b.to_json());
         assert!(warnings.is_empty() && !again.migrated);
         assert_eq!(again.slots(Action::Orbit), b.slots(Action::Orbit));
+    }
+    #[test]
+    fn w_toggles_the_wireframe_and_older_files_get_it_when_the_slot_is_empty() {
+        let w = Chord::plain(KeyCode::KeyW);
+        assert_eq!(
+            Bindings::default().command(w),
+            Some(Action::ToggleWireframe)
+        );
+        // A version 3 file saved every action, the wireframe without a key.
+        let mut v3 = Bindings::default().to_json();
+        v3["version"] = json!(3);
+        v3["actions"]["toggle_wireframe"] = json!([]);
+        let (b, warnings) = Bindings::from_json(&v3);
+        assert!(warnings.is_empty() && b.migrated, "{warnings:?}");
+        assert_eq!(b.command(w), Some(Action::ToggleWireframe));
+        // The owner's own W elsewhere wins over the new default.
+        v3["actions"]["toggle_floor"] = json!(["W"]);
+        let (b, _) = Bindings::from_json(&v3);
+        assert_eq!(b.command(w), Some(Action::ToggleFloor));
+        assert_eq!(b.slots(Action::ToggleWireframe), [None, None]);
+        // Version 4 keeps an empty slot empty.
+        let mut v4 = Bindings::default().to_json();
+        v4["actions"]["toggle_wireframe"] = json!([]);
+        let (b, _) = Bindings::from_json(&v4);
+        assert_eq!(b.slots(Action::ToggleWireframe), [None, None]);
+        assert!(!b.migrated);
     }
     #[test]
     fn version_two_files_give_the_middle_button_to_grab_and_z_to_the_skeleton() {
