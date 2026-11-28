@@ -100,7 +100,8 @@ impl AssetDocument {
                     cancel,
                 )?;
                 track.edited = true;
-                let mut clip = AnimationClip::build(name, vec![Arc::new(track)], true, cancel)?;
+                let mut clip =
+                    AnimationClip::build(name, vec![Arc::new(track)], Vec::new(), true, cancel)?;
                 clip.id = next_id()?;
                 clips.push(Arc::new(clip));
             }
@@ -145,7 +146,15 @@ impl AssetDocument {
                     let retimed = track.retimed(source.duration, *duration, forward, cancel)?;
                     tracks.push(Arc::new(retimed));
                 }
-                clips[*clip] = Arc::new(source.with_tracks(tracks, cancel)?);
+                let mut weights = Vec::new();
+                weights
+                    .try_reserve_exact(source.weights.len())
+                    .map_err(|_| budget())?;
+                for track in &source.weights {
+                    let retimed = track.retimed(source.duration, *duration, forward, cancel)?;
+                    weights.push(Arc::new(retimed));
+                }
+                clips[*clip] = Arc::new(source.with_parts(tracks, weights, cancel)?);
             }
         }
         self.animation_plan(expected, Some(clips), cancel)
@@ -169,7 +178,17 @@ impl AnimationClip {
         tracks: Vec<Arc<Track>>,
         cancel: &Cancellation,
     ) -> AssetResult<Self> {
-        let mut clip = Self::build(self.name.clone(), tracks, true, cancel)?;
+        self.with_parts(tracks, self.weights.clone(), cancel)
+    }
+
+    /// The clip with new TRS and morph weight channels (same identity).
+    pub(crate) fn with_parts(
+        &self,
+        tracks: Vec<Arc<Track>>,
+        weights: Vec<Arc<crate::WeightTrack>>,
+        cancel: &Cancellation,
+    ) -> AssetResult<Self> {
+        let mut clip = Self::build(self.name.clone(), tracks, weights, true, cancel)?;
         clip.id = self.id;
         clip.source_clip = self.source_clip;
         Ok(clip)

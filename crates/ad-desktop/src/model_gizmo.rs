@@ -1,6 +1,8 @@
-//! ADR-0041 model gizmo: axis arrows move the model, the centre square scales
-//! it uniformly and two rings turn it about the vertical (Y) and horizontal
-//! (X) axes, all about the bottom centre. While dragging, the change is only
+//! ADR-0041 model gizmo: axis arrows move the model, plane squares move it in
+//! two axes (along the floor, along a wall), the centre square scales it
+//! uniformly and three rings turn it about X, Y and Z, all about the bottom
+//! centre. A ring turns by the pointer's angle
+//! around the centre (ADR-0063). While dragging, the change is only
 //! a renderer preview; releasing prepares one placement edit (one Undo step).
 use crate::camera::Camera;
 use ad_document::{Bounds, Placement};
@@ -10,14 +12,16 @@ use glam::{Mat4, Quat, Vec3};
 const SCALE_PIXELS: f32 = 140.;
 /// Points of one rotation ring on screen.
 pub const RING_POINTS: usize = 48;
-/// The rings the gizmo offers: X (slot 0) and Y (slot 1).
-pub const RING_AXES: [usize; 2] = [0, 1];
+/// The rings the gizmo offers: X, Y and Z (owner 2026-11-28: all three).
+pub const RING_AXES: [usize; 3] = [0, 1, 2];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Handle {
     Axis(usize),
+    /// Move in two axes: 0 = XY, 1 = YZ, 2 = XZ (the floor).
+    Plane(usize),
     Scale,
-    /// Turn about world axis 0 (X) or 1 (Y).
+    /// Turn about world axis 0 (X), 1 (Y) or 2 (Z).
     Rotate(usize),
 }
 
@@ -164,35 +168,29 @@ pub fn ring_radius(bounds: Bounds) -> f32 {
 fn axis_vector(axis: usize) -> Vec3 {
     [Vec3::X, Vec3::Y, Vec3::Z][axis.min(2)]
 }
-/// Unit vector of a ring at parameter `angle`: the Y ring lies in the XZ
-/// plane, the X ring in the YZ plane.
+/// Unit vector of a ring at parameter `angle`: the X ring lies in the YZ
+/// plane, the Y ring in the XZ plane, the Z ring in the XY plane.
 fn ring_vector(axis: usize, angle: f32) -> Vec3 {
     let (s, c) = angle.sin_cos();
-    if axis == 0 {
-        Vec3::new(0., c, s)
-    } else {
-        Vec3::new(c, 0., s)
+    match axis {
+        0 => Vec3::new(0., c, s),
+        1 => Vec3::new(c, 0., s),
+        _ => Vec3::new(c, s, 0.),
     }
 }
 /// Ring parameter of the point nearest to the eye: where the knob starts.
 pub fn knob_angle(axis: usize, center: [f32; 3], eye: [f32; 3]) -> f32 {
     let d = Vec3::from_array(eye) - Vec3::from_array(center);
-    if axis == 0 {
-        d.z.atan2(d.y)
-    } else {
-        d.z.atan2(d.x)
+    match axis {
+        0 => d.z.atan2(d.y),
+        1 => d.z.atan2(d.x),
+        _ => d.y.atan2(d.x),
     }
 }
 /// World position of a ring knob after turning `turned` radians.
 pub fn knob(axis: usize, center: [f32; 3], radius: f32, base: f32, turned: f32) -> [f32; 3] {
     (Vec3::from_array(center)
         + Quat::from_axis_angle(axis_vector(axis), turned) * ring_vector(axis, base) * radius)
-        .to_array()
-}
-/// World motion of a knob per radian of positive turn.
-pub fn knob_tangent(axis: usize, center: [f32; 3], knob: [f32; 3]) -> [f32; 3] {
-    axis_vector(axis)
-        .cross(Vec3::from_array(knob) - Vec3::from_array(center))
         .to_array()
 }
 
@@ -206,6 +204,23 @@ pub fn drag_axis(delta: &mut Delta, axis: usize, len: f32, drag: [f32; 2], axis_
     let along = (drag[0] * axis_px[0] + drag[1] * axis_px[1]) / length2;
     delta.offset[axis] += along * len;
 }
+/// Moves in the plane of axes `[u, v]` so the square follows the pointer:
+/// `u_px` and `v_px` are the screen motions (pixels) for `len` along each.
+/// A plane seen edge-on does not move.
+pub fn drag_plane(
+    delta: &mut Delta,
+    plane: usize,
+    len: f32,
+    drag: [f32; 2],
+    u_px: [f32; 2],
+    v_px: [f32; 2],
+) {
+    let [u, v] = crate::gizmo_paint::PLANES[plane.min(2)];
+    if let Some((a, b)) = crate::gizmo_paint::split(drag, u_px, v_px) {
+        delta.offset[u] += a * len;
+        delta.offset[v] += b * len;
+    }
+}
 /// Drag up enlarges, down shrinks; the total scale stays inside the limits.
 pub fn drag_scale(delta: &mut Delta, current: Placement, drag_y: f32) {
     let factor = delta.factor * (-drag_y / SCALE_PIXELS * std::f32::consts::LN_2).exp();
@@ -214,43 +229,13 @@ pub fn drag_scale(delta: &mut Delta, current: Placement, drag_y: f32) {
         delta.factor = factor;
     }
 }
-/// Turns about `axis` so the knob follows the pointer along its ring:
-/// `tangent_px` is the knob's screen motion (pixels) per radian. An edge-on
-/// ring still turns, at most one radian per 40 pixels.
-pub fn drag_turn(delta: &mut Delta, axis: usize, drag: [f32; 2], tangent_px: [f32; 2]) {
-    let length2 = tangent_px[0] * tangent_px[0] + tangent_px[1] * tangent_px[1];
-    if length2 < 1e-6 {
+/// Turns about `axis` by `step`, the pointer's screen angle step around
+/// the ring centre (radians, y down, from `gizmo_paint::TurnTrack`) — the
+/// ring can be grabbed anywhere. `facing` is the dot product of the axis
+/// with the direction towards the eye.
+pub fn drag_ring(delta: &mut Delta, axis: usize, step: f32, facing: f32) {
+    if !step.is_finite() {
         return;
-    }
-    let length2 = length2.max(40. * 40.);
-    let step = ((drag[0] * tangent_px[0] + drag[1] * tangent_px[1]) / length2).clamp(-0.5, 0.5);
-    delta.turned += step;
-    delta.rotation = Quat::from_axis_angle(axis_vector(axis), delta.turned)
-        .normalize()
-        .to_array();
-}
-
-/// Turns about `axis` by the pointer's angle around the ring centre on
-/// screen (pixels, y down) — the ring can be grabbed anywhere. `facing` is
-/// the dot product of the axis with the direction towards the eye.
-pub fn drag_ring(
-    delta: &mut Delta,
-    axis: usize,
-    before: [f32; 2],
-    after: [f32; 2],
-    centre: [f32; 2],
-    facing: f32,
-) {
-    let angle = |p: [f32; 2]| (p[1] - centre[1]).atan2(p[0] - centre[0]);
-    let (a, b) = (angle(before), angle(after));
-    if !a.is_finite() || !b.is_finite() {
-        return;
-    }
-    let mut step = b - a;
-    if step > std::f32::consts::PI {
-        step -= std::f32::consts::TAU;
-    } else if step < -std::f32::consts::PI {
-        step += std::f32::consts::TAU;
     }
     // Clockwise on a y-down screen is a negative turn about an axis that
     // points at the eye.
@@ -286,9 +271,21 @@ pub fn screen(
         end[axis] += len;
         project(end)
     });
+    let planes = crate::gizmo_paint::PLANES.map(|[u, v]| {
+        let (a, b) = (
+            crate::gizmo_paint::PLANE_FROM * len,
+            crate::gizmo_paint::PLANE_TO * len,
+        );
+        [(a, a), (b, a), (b, b), (a, b)].map(|(s, t)| {
+            let mut p = origin;
+            p[u] += s;
+            p[v] += t;
+            project(p)
+        })
+    });
     let eye = camera.eye(width, height);
-    let mut rings = [[None; RING_POINTS]; 2];
-    let mut knobs = [None; 2];
+    let mut rings = [[None; RING_POINTS]; 3];
+    let mut knobs = [None; 3];
     for (slot, axis) in RING_AXES.into_iter().enumerate() {
         for (i, point) in rings[slot].iter_mut().enumerate() {
             let a = i as f32 / RING_POINTS as f32 * std::f32::consts::TAU;
@@ -306,8 +303,10 @@ pub fn screen(
     Some(crate::viewer_ui::ModelGizmo {
         pivot: project(origin)?,
         ends,
+        planes,
         rings,
         knobs,
+        turned: turning.map(|_| d.turned),
     })
 }
 
@@ -403,6 +402,24 @@ mod tests {
             drag_axis(&mut d, axis, len, [-axis_px[1], axis_px[0]], axis_px);
             assert!((d.offset[axis] - before - len).abs() < 1e-4);
         }
+        // A plane square moves in both of its axes with the pointer.
+        let (ex, ez) = (g.ends[0].unwrap(), g.ends[2].unwrap());
+        let px = |e: [f32; 2]| {
+            [
+                (e[0] - g.pivot[0]) * w as f32,
+                (e[1] - g.pivot[1]) * h as f32,
+            ]
+        };
+        let (ux, uz) = (px(ex), px(ez));
+        let mut p = Delta::new(pivot(cube()));
+        let drag = [ux[0] * 0.5 + uz[0] * 0.25, ux[1] * 0.5 + uz[1] * 0.25];
+        drag_plane(&mut p, 2, len, drag, ux, uz);
+        assert!((p.offset[0] - 0.5 * len).abs() < 1e-3, "{:?}", p.offset);
+        assert!((p.offset[2] - 0.25 * len).abs() < 1e-3, "{:?}", p.offset);
+        assert_eq!(p.offset[1], 0., "the floor square keeps the height");
+        for corner in &g.planes[2] {
+            assert!(corner.is_some());
+        }
         let mut s = Delta::new(pivot(cube()));
         drag_scale(&mut s, Placement::IDENTITY, -SCALE_PIXELS);
         assert!((s.factor - 2.).abs() < 1e-4, "{}", s.factor);
@@ -427,14 +444,8 @@ mod tests {
         let current = Placement::IDENTITY.then([0.; 3], 1.5, [0.5, 0., 0.]);
         for axis in RING_AXES {
             let mut d = Delta::new(pivot(cube()));
-            // Drag along the knob tangent: the turn has the drag's sign.
-            drag_turn(&mut d, axis, [60., 0.], [120., 0.]);
-            assert!((d.turned - 0.5).abs() < 1e-6, "{}", d.turned);
-            drag_turn(&mut d, axis, [0., 60.], [120., 0.]);
-            assert!(
-                (d.turned - 0.5).abs() < 1e-6,
-                "perpendicular drag does not turn"
-            );
+            d.turned = 0.5;
+            d.rotation = Quat::from_axis_angle(axis_vector(axis), 0.5).to_array();
             assert!(!d.is_noop());
             let placed = d.placement(current);
             assert!(placed.valid());
@@ -449,16 +460,9 @@ mod tests {
             let g = screen(&camera, cube(), Some(&d), Some(axis), w, h).unwrap();
             let slot = RING_AXES.iter().position(|a| *a == axis).unwrap();
             assert!(g.knobs[slot].is_some());
+            assert_eq!(g.turned, Some(0.5), "the angle shown while turning");
             assert!(g.rings[slot].iter().filter(|p| p.is_some()).count() > RING_POINTS / 2);
         }
-        // The knob moves along its tangent for a small positive turn.
-        let c = pivot(cube());
-        let r = ring_radius(cube());
-        let a = knob(1, c, r, 0.3, 0.);
-        let b = knob(1, c, r, 0.3, 0.01);
-        let t = Vec3::from_array(knob_tangent(1, c, a));
-        let moved = (Vec3::from_array(b) - Vec3::from_array(a)) / 0.01;
-        assert!((moved - t).length() < 1e-2 * r.max(1.), "{moved} vs {t}");
     }
     #[test]
     fn grabbing_a_ring_anywhere_turns_with_the_pointer_around_its_centre() {
@@ -480,22 +484,35 @@ mod tests {
         let facing = Vec3::Y.dot(eye.normalize());
         let from = knob(axis, base, radius, 0.4, 0.);
         let to = knob(axis, base, radius, 0.4, 0.2);
+        let pos = |p: [f32; 2]| egui::pos2(p[0], p[1]);
+        let centre = pos(c);
+        let mut track = crate::gizmo_paint::TurnTrack::new(centre, pos(px(from))).unwrap();
         let mut d = Delta::new(base);
-        drag_ring(&mut d, axis, px(from), px(to), c, facing);
+        let step = track.step(centre, pos(px(to)));
+        drag_ring(&mut d, axis, step, facing);
         assert!((d.turned - 0.2).abs() < 0.05, "{}", d.turned);
         // Back again: no turn left.
-        drag_ring(&mut d, axis, px(to), px(from), c, facing);
+        let step = track.step(centre, pos(px(from)));
+        drag_ring(&mut d, axis, step, facing);
         assert!(d.turned.abs() < 1e-4, "{}", d.turned);
+        // The Z ring (owner 2026-11-28) turns the same way along itself; seen
+        // at a slant, its screen angle is not the world angle (as for every
+        // ring grabbed anywhere), so only the direction and size are checked.
+        let z_from = knob(2, base, radius, 0.4, 0.);
+        let z_to = knob(2, base, radius, 0.4, 0.2);
+        let mut z_track = crate::gizmo_paint::TurnTrack::new(centre, pos(px(z_from))).unwrap();
+        let mut z = Delta::new(base);
+        let step = z_track.step(centre, pos(px(z_to)));
+        drag_ring(&mut z, 2, step, Vec3::Z.dot(eye.normalize()));
+        assert!((0.1..0.4).contains(&z.turned), "{}", z.turned);
+        let turned = Quat::from_array(z.rotation).to_axis_angle();
+        assert!(turned.0.z.abs() > 0.999, "about Z: {turned:?}");
         // The wrap at ±π does not jump.
+        let mut t =
+            crate::gizmo_paint::TurnTrack::new(centre, pos([c[0] - 100., c[1] + 1.])).unwrap();
         let mut e = Delta::new(base);
-        drag_ring(
-            &mut e,
-            axis,
-            [c[0] - 100., c[1] + 1.],
-            [c[0] - 100., c[1] - 1.],
-            c,
-            1.,
-        );
+        let step = t.step(centre, pos([c[0] - 100., c[1] - 1.]));
+        drag_ring(&mut e, axis, step, 1.);
         assert!(e.turned.abs() < 0.05, "{}", e.turned);
     }
     #[test]

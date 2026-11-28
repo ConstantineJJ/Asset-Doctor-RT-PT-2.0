@@ -1,0 +1,61 @@
+#version 450
+// ADR-0066 GPU skinning: one invocation per scene vertex. The matrices are
+// node worlds and skin palettes of one pose; the result goes straight into
+// the scene's position, normal and tangent vertex buffers. Same math as
+// ad_document::skin_reference.
+layout(local_size_x=64,local_size_y=1,local_size_z=1) in;
+struct SkinVertex { vec4 position; vec4 normal; vec4 tangent; uvec4 slots; vec4 weights; };
+layout(set=0,binding=0,std430) readonly buffer Source { SkinVertex source[]; } src;
+layout(set=0,binding=1,std430) readonly buffer Matrices { mat4 matrices[]; } pose;
+layout(set=0,binding=2,std430) buffer Positions { float positions[]; } out_p;
+layout(set=0,binding=3,std430) buffer Normals { float normals[]; } out_n;
+layout(set=0,binding=4,std430) buffer Tangents { vec4 tangents[]; } out_t;
+layout(push_constant) uniform Push { uint count; } pc;
+void main() {
+    uint i=gl_GlobalInvocationID.x;
+    if (i>=pc.count) {
+        return;
+    }
+    SkinVertex v=src.source[i];
+    mat4 m=mat4(0.0);
+    for (int k=0;k<4;k++) {
+        float w=v.weights[k];
+        if (w>0.0) {
+            m+=pose.matrices[v.slots[k]]*w;
+        }
+    }
+    vec4 p=m*vec4(v.position.xyz,1.0);
+    out_p.positions[i*3u]=p.x;
+    out_p.positions[i*3u+1u]=p.y;
+    out_p.positions[i*3u+2u]=p.z;
+    mat3 l=mat3(m[0].xyz,m[1].xyz,m[2].xyz);
+    float det=determinant(l);
+    vec3 n=vec3(0.0);
+    vec4 t=vec4(0.0);
+    if (det!=0.0 && abs(det)<3.0e38) {
+        if (v.normal.w>0.5) {
+            vec3 raw=transpose(inverse(l))*v.normal.xyz;
+            float len=length(raw);
+            if (len>0.0 && len<3.0e38) {
+                n=raw/len;
+            }
+        }
+        if (v.tangent.w!=0.0 && dot(n,n)>0.0) {
+            vec3 raw=l*v.tangent.xyz;
+            float len=length(raw);
+            vec3 dir=vec3(0.0);
+            if (len>0.0) {
+                dir=raw/len;
+            }
+            vec3 projected=dir-n*dot(n,dir);
+            float len2=dot(projected,projected);
+            if (len2>=1e-12) {
+                t=vec4(projected/sqrt(len2),v.tangent.w*sign(det));
+            }
+        }
+    }
+    out_n.normals[i*3u]=n.x;
+    out_n.normals[i*3u+1u]=n.y;
+    out_n.normals[i*3u+2u]=n.z;
+    out_t.tangents[i]=t;
+}

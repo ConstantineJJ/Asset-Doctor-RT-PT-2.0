@@ -3,11 +3,13 @@ mod color;
 mod indices;
 mod joint_edit;
 mod joint_fit;
+mod morph;
 mod node_edits;
 mod normals;
 mod placement;
 mod skin;
 mod skin_animation;
+mod skin_gpu;
 mod uv;
 mod vertices;
 mod view;
@@ -17,12 +19,14 @@ pub use indices::{
 };
 pub use joint_edit::JointEdit;
 pub use joint_fit::{FitConfidence, JointFit};
+pub use morph::{MorphPrimitive, MorphTarget, Morphs, WeightTrack};
 pub use node_edits::{NodeEdits, NodeOp};
 pub use placement::Placement;
 pub use skin::{Influence, Rig, RigInspection, Skin, SkinReport};
 pub use skin_animation::{
     AnimationClip, AnimationKey, ChannelValue, ClipEdit, Interpolation, Track, TrackKind, Transform,
 };
+pub use skin_gpu::{SkinLayout, SkinVertex, skin_reference};
 pub use view::{CandidateIndices, DocumentView, Primitives};
 #[cfg(test)]
 mod index_tests;
@@ -196,6 +200,8 @@ pub struct AssetDocument {
     rested: std::collections::BTreeSet<usize>,
     /// RIG-06: the skeleton and clips as the file had them.
     pristine: Option<Arc<joint_edit::Pristine>>,
+    /// ADR-0065 morph targets (view-only).
+    morphs: Option<Arc<morph::Morphs>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -428,6 +434,7 @@ impl AssetDocument {
             restructured: false,
             rested: std::collections::BTreeSet::new(),
             pristine: None,
+            morphs: None,
             vertex_maps,
             parts,
             texture_stats: textures.stats,
@@ -481,12 +488,15 @@ impl DocumentView<'_> {
         limits: ImportLimits,
         cancel: &Cancellation,
     ) -> AssetResult<GeometrySnapshot> {
-        self.snapshot_with_pose(None, limits, cancel)
+        self.snapshot_with_pose(None, None, limits, cancel)
     }
 
+    /// `locals`: posed node locals; `weights`: posed morph weights per node
+    /// (None: the node's or mesh's own).
     pub(crate) fn snapshot_with_pose(
         &self,
         locals: Option<&[Option<glam::Mat4>]>,
+        weights: Option<&[Option<Vec<f32>>]>,
         limits: ImportLimits,
         cancel: &Cancellation,
     ) -> AssetResult<GeometrySnapshot> {
@@ -674,6 +684,16 @@ impl DocumentView<'_> {
             } else {
                 None
             };
+            // ADR-0065: the node's morph weights, when the primitive has
+            // targets and any weight is not zero.
+            let morph = document.morphs().and_then(|morphs| {
+                let primitive = morphs.primitive(mesh_id)?;
+                let animated = weights
+                    .and_then(|w| w.get(node_id.0))
+                    .and_then(|w| w.as_deref());
+                let w = morph::weights_for(morphs, primitive, node_id, animated);
+                w.iter().any(|v| *v != 0.).then_some((primitive, w))
+            });
             let normal_matrix = normals::normal_matrix(world);
             let tangent_matrix = normals::tangent_matrix(world);
             let [
@@ -693,7 +713,13 @@ impl DocumentView<'_> {
                 }
                 let transform =
                     skinning.map_or(world, |(palette, weights)| weights[i].transform(palette));
-                let position = transform.transform_point3(Vec3::from_array(*point));
+                let (point, morphed_normal) = match morph {
+                    Some((primitive, w)) => {
+                        morph::blend(primitive, w, i, *point, mesh.normals.as_ref().map(|n| n[i]))
+                    }
+                    None => (*point, None),
+                };
+                let position = transform.transform_point3(Vec3::from_array(point));
                 if !position.is_finite() || position.abs().max_element() > 1.0e12 {
                     return Err(AssetError::new(
                         ErrorCode::InvalidGeometry,
@@ -707,7 +733,7 @@ impl DocumentView<'_> {
                     } else {
                         normal_matrix
                     };
-                    normals::transform_normal(matrix, values[i])
+                    normals::transform_normal(matrix, morphed_normal.unwrap_or(values[i]))
                 });
                 result.fallback_normal_vertices += usize::from(normal == [0.; 3]);
                 result.normals.push(normal);

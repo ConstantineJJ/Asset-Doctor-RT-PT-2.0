@@ -190,11 +190,25 @@ void main() {
     vec3 face=cross(px,py);
     vec3 n=face;
     n/=max(length(n),0.00000001);
+    // ADR-0067 surface shading: 0 smooth (vertex normals), 1 flat (the
+    // triangle's own normal), 2 hybrid (smooth within 25 degrees of the
+    // face, flat past 45, blended between). Without vertex normals: flat.
+    vec3 smooth_n=unit_or(world_normal,vec3(0.0));
+    bool has_smooth=dot(smooth_n,smooth_n)>0.5;
+    vec3 face_n=(has_smooth && dot(n,smooth_n)<0.0)?-n:n;
+    uint surface_mode=uint(frame.lighting.w+0.5);
+    vec3 shade_n=face_n;
+    if (has_smooth && surface_mode==0u) {
+        shade_n=smooth_n;
+    } else if (has_smooth && surface_mode==2u) {
+        float agree=smoothstep(0.7071,0.9063,dot(face_n,smooth_n));
+        shade_n=unit_or(mix(face_n,smooth_n,agree),face_n);
+    }
     // Normal offset towards the lamp side keeps lit faces out of their own shadow.
     vec3 to_lamp=lamp_direction(world_position);
     float toward=dot(n,to_lamp)>=0.0?1.0:-1.0;
     float lit=lit_fraction(world_position+n*toward*frame.shadow.w);
-    vec3 light=vec3(0.25)+0.75*abs(dot(n,to_lamp))*frame.light_color.rgb*lit*lamp_falloff(world_position);
+    vec3 light=vec3(0.25)+0.75*abs(dot(shade_n,to_lamp))*frame.light_color.rgb*lit*lamp_falloff(world_position);
     vec4 base=pc.base_color*tint;
     uint flags=uint(pc.view.x);
     if ((flags&2u)!=0u) {base*=texture(sampler2D(base_color_image,base_color_sampler),uv);}
@@ -207,7 +221,7 @@ void main() {
             mr*=texture(sampler2D(metallic_roughness_image,metallic_roughness_sampler),mr_uv).bg;
         }
         vec3 v=unit_or(frame.eye_exposure.xyz-world_position,vec3(0.0,0.0,1.0));
-        vec3 surface=unit_or(world_normal,vec3(0.0));
+        vec3 surface=(has_smooth || surface_mode==1u)?shade_n:vec3(0.0);
         if (dot(surface,surface)<0.5) {
             // No authored normal: use a view-facing geometric frame for this
             // two-sided preview rather than flipping its UV axes after mapping.

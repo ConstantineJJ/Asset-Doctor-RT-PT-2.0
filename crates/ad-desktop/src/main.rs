@@ -15,6 +15,7 @@ mod accent;
 mod camera;
 mod diagnostic_ui;
 mod edits;
+mod gizmo_paint;
 mod helpers;
 mod history;
 mod imports;
@@ -107,6 +108,8 @@ struct App {
     saw_resize: bool,
     saw_minimized: bool,
     saw_restore: bool,
+    /// ADR-0066: the smoke compared one GPU-skinned frame with the CPU.
+    gpu_skin_checked: bool,
     /// --smoke-cycles: extra minimize/restore rounds before closing, and the
     /// smoke time budget that grows with them.
     restore_cycles: u32,
@@ -2609,6 +2612,24 @@ impl App {
         let translation = document
             .animation_value(clip, node, ad_document::TrackKind::Translation, time)
             .ok()?;
+        // RIG-02 twist: the bone runs to the first child with a pose (a skin
+        // joint first), else from the parent.
+        let position = |m: glam::Mat4| m.w_axis.truncate();
+        let skin_joint = |n: ad_document::NodeId| {
+            document
+                .rig()
+                .is_some_and(|rig| rig.skins.iter().any(|s| s.joints.contains(&n)))
+        };
+        let children = &document.nodes()[node.0].children;
+        let child = children
+            .iter()
+            .filter(|c| skin_joint(**c))
+            .chain(children.iter())
+            .find_map(|c| worlds.get(c.0).copied().flatten());
+        let bone = child
+            .map(|c| position(glam::Mat4::from_cols_array_2d(&c)) - position(world))
+            .or_else(|| Some(position(world) - position(parent)))
+            .filter(|b| b.length() > 1e-6);
         let camera = &self.camera;
         joint_gizmo::build(
             id,
@@ -2621,6 +2642,7 @@ impl App {
             [translation[0], translation[1], translation[2]],
             self.ui.joint_local_axes,
             joint_gizmo::RADIUS_PX * self.ui.joint_gizmo_size,
+            bone,
             glam::Vec3::from_array(camera.view_direction()),
             glam::Vec2::new(width.max(1) as f32, height.max(1) as f32),
             |p| camera.project(p.to_array(), width, height),
@@ -2740,6 +2762,17 @@ impl App {
             self.ui.bindings.describe(input::Action::ToggleWireframe)
         );
     }
+    /// ADR-0066 smoke: the opened model autoplays a clip that the GPU can
+    /// skin (no morph targets), and its first GPU frame is not checked yet.
+    fn gpu_skin_expected(&self) -> bool {
+        !self.gpu_skin_checked
+            && self.ui.autoplay
+            && self.renderer.as_ref().is_some_and(Renderer::gpu_skinning)
+            && self.current.as_ref().is_some_and(|asset| {
+                let document = asset.document();
+                !document.animation_clips().is_empty() && document.morphs().is_none()
+            })
+    }
     /// ADR-0041: gizmo drags update the preview; release or reset requests
     /// one placement edit.
     fn model_gizmo_actions(&mut self, actions: &viewer_ui::Actions, width: u32, height: u32) {
@@ -2762,29 +2795,26 @@ impl App {
                 .model_preview
                 .get_or_insert_with(|| model_gizmo::Delta::new(model_gizmo::pivot(bounds)));
             let drag = [nx * width as f32, ny * height as f32];
-            let camera = &self.camera;
-            let px = |p: [f32; 3]| {
-                camera
-                    .project(p, width, height)
-                    .map(|[x, y]| [x * width as f32, y * height as f32])
-            };
             match handle {
-                model_gizmo::Handle::Rotate(axis) => {
-                    self.model_turning = Some(axis);
-                    let origin = delta
-                        .matrix()
-                        .transform_point3(glam::Vec3::from_array(delta.pivot));
-                    let origin = origin.to_array();
-                    let radius = model_gizmo::ring_radius(bounds) * delta.factor;
-                    let base = model_gizmo::knob_angle(axis, origin, camera.eye(width, height));
-                    let knob = model_gizmo::knob(axis, origin, radius, base, delta.turned);
-                    let tangent = model_gizmo::knob_tangent(axis, origin, knob);
-                    // Screen motion per radian, from a small step along the tangent.
-                    let step = 1e-3;
-                    let ahead = [0, 1, 2].map(|a| knob[a] + tangent[a] * step);
-                    if let (Some(a), Some(b)) = (px(knob), px(ahead)) {
-                        let tangent_px = [(b[0] - a[0]) / step, (b[1] - a[1]) / step];
-                        model_gizmo::drag_turn(delta, axis, drag, tangent_px);
+                // Knobs turn through `model_ring_drag` (by angle).
+                model_gizmo::Handle::Rotate(_) => {}
+                model_gizmo::Handle::Plane(plane) => {
+                    if let Some(g) =
+                        model_gizmo::screen(&self.camera, bounds, None, None, width, height)
+                    {
+                        let [u, v] = gizmo_paint::PLANES[plane.min(2)];
+                        let axis_px = |axis: usize| {
+                            g.ends[axis].map(|end| {
+                                [
+                                    (end[0] - g.pivot[0]) * width as f32,
+                                    (end[1] - g.pivot[1]) * height as f32,
+                                ]
+                            })
+                        };
+                        if let (Some(u_px), Some(v_px)) = (axis_px(u), axis_px(v)) {
+                            let len = model_gizmo::handle_length(bounds);
+                            model_gizmo::drag_plane(delta, plane, len, drag, u_px, v_px);
+                        }
                     }
                 }
                 model_gizmo::Handle::Axis(axis) => {
@@ -2803,8 +2833,8 @@ impl App {
                 model_gizmo::Handle::Scale => model_gizmo::drag_scale(delta, current, drag[1]),
             }
         }
-        // A ring grabbed anywhere: the pointer's angle around the centre.
-        if let Some((axis, [bx, by], [ax, ay])) = actions.model_ring_drag
+        // A ring or knob drag: the pointer's angle step around the centre.
+        if let Some((axis, step)) = actions.model_ring_drag
             && !self.model_pending
         {
             self.model_turning = Some(axis);
@@ -2814,23 +2844,9 @@ impl App {
             let origin = delta
                 .matrix()
                 .transform_point3(glam::Vec3::from_array(delta.pivot));
-            if let Some(c) = self.camera.project(origin.to_array(), width, height) {
-                let eye = glam::Vec3::from_array(self.camera.eye(width, height)) - origin;
-                let axis_vector = if axis == 0 {
-                    glam::Vec3::X
-                } else {
-                    glam::Vec3::Y
-                };
-                let (w, h) = (width as f32, height as f32);
-                model_gizmo::drag_ring(
-                    delta,
-                    axis,
-                    [bx * w, by * h],
-                    [ax * w, ay * h],
-                    [c[0] * w, c[1] * h],
-                    axis_vector.dot(eye.normalize_or_zero()),
-                );
-            }
+            let eye = glam::Vec3::from_array(self.camera.eye(width, height)) - origin;
+            let axis_vector = [glam::Vec3::X, glam::Vec3::Y, glam::Vec3::Z][axis.min(2)];
+            model_gizmo::drag_ring(delta, axis, step, axis_vector.dot(eye.normalize_or_zero()));
         }
         if actions.model_drag_end {
             self.model_turning = None;
@@ -3221,6 +3237,7 @@ impl App {
         }
         renderer.set_channel(self.ui.channel);
         renderer.set_wireframe(self.ui.wireframe);
+        renderer.set_surface_shading(self.ui.surface);
         self.ui.wireframe_supported = renderer.wireframe_supported();
         renderer.set_textures_enabled(self.ui.textures);
         renderer.set_mr_maps_enabled(self.ui.mr_maps);
@@ -3481,6 +3498,38 @@ impl App {
                 }
             }
         }
+        // ADR-0066 smoke: the first GPU-skinned frame is read back and must
+        // match the CPU pose of the same moment.
+        if (self.smoke.is_some() || self.smoke_import)
+            && !self.gpu_skin_checked
+            && let (Some(asset), Some(renderer)) = (&self.current, &mut self.renderer)
+            && renderer.skin_frames > 0
+            && !renderer.skin_pending()
+            && let Some((clip, time)) = self.playback.shown_on_gpu()
+        {
+            self.gpu_skin_checked = true;
+            let expected = asset.document().view().animated_snapshot(
+                clip,
+                time,
+                None,
+                ad_document::ImportLimits::default(),
+                &ad_document::Cancellation::default(),
+            )?;
+            let got = renderer.scene_positions()?;
+            let error = got
+                .iter()
+                .zip(&expected.positions)
+                .flat_map(|(a, b)| a.iter().zip(b).map(|(a, b)| (a - b).abs() / (1. + b.abs())))
+                .fold(0f32, f32::max);
+            let ok = got.len() == expected.positions.len() && error <= 1e-3;
+            eprintln!(
+                "gpu_skin_check vertices={} max_error={error:.2e} ok={ok}",
+                got.len()
+            );
+            if !ok {
+                return Err("GPU skinning differs from the CPU pose".into());
+            }
+        }
         if let Some(done) = self.fit_worker.poll() {
             match done.result {
                 Ok((document, revision, fits)) => {
@@ -3565,6 +3614,7 @@ impl App {
             self.start_import(path);
             return Ok(());
         }
+        let gpu_skin_wait = self.gpu_skin_expected();
         let Some(window) = self.window.as_ref() else {
             return Ok(());
         };
@@ -3603,7 +3653,9 @@ impl App {
                 // A skybox restored from the view settings loads in the
                 // background; the smoke waits for it.
                 || self.skybox_job.is_some()
-                || self.pending_skybox.is_some())
+                || self.pending_skybox.is_some()
+                // ADR-0066: a playing clip is checked once on the GPU.
+                || gpu_skin_wait)
         {
             if self.started.elapsed() > Duration::from_secs(20) {
                 return Err("Import smoke timed out".into());
@@ -4420,6 +4472,7 @@ fn run() -> GpuResult<()> {
         saw_resize: false,
         saw_minimized: false,
         saw_restore: false,
+        gpu_skin_checked: false,
         restore_cycles,
         smoke_budget: Duration::from_secs(20 + 2 * u64::from(restore_cycles)),
         minimized_frame_baseline: None,

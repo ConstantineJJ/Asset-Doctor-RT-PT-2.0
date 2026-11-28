@@ -99,6 +99,29 @@ impl Buffer {
     }
 }
 
+impl Buffer {
+    /// Copies the buffer's bytes out.
+    ///
+    /// # Safety
+    /// Caller must retire every GPU write to this coherent buffer first.
+    pub unsafe fn read(&self) -> GpuResult<Vec<u8>> {
+        let mut out = vec![0u8; self.size];
+        // SAFETY: HOST_VISIBLE|COHERENT allocation of `size` bytes; caller
+        // guarantees no device access while mapped.
+        unsafe {
+            let source = self.gpu.device.map_memory(
+                self.memory,
+                0,
+                self.size as u64,
+                vk::MemoryMapFlags::empty(),
+            )?;
+            std::ptr::copy_nonoverlapping(source.cast::<u8>(), out.as_mut_ptr(), self.size);
+            self.gpu.device.unmap_memory(self.memory);
+        }
+        Ok(out)
+    }
+}
+
 impl Drop for Buffer {
     fn drop(&mut self) {
         // SAFETY: Renderer retires submissions before releasing scene buffers;

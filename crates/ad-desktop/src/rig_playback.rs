@@ -1,5 +1,5 @@
 use ad_commands::Session;
-use ad_document::{AssetResult, ChannelValue, GeometrySnapshot, ImportLimits};
+use ad_document::{AssetResult, ChannelValue, GeometrySnapshot, ImportLimits, SkinLayout};
 use ad_render_vulkan::{context::GpuResult, renderer::Renderer};
 use std::{
     sync::Arc,
@@ -112,13 +112,35 @@ struct Sample {
 struct PoseRequest {
     session: Arc<Session>,
     sample: Sample,
+    /// ADR-0066: ask for matrices (GPU skinning) instead of a snapshot; the
+    /// layout when one is already on the GPU.
+    gpu: bool,
+    layout: Option<Arc<SkinLayout>>,
+}
+
+/// A computed pose: a full CPU snapshot, or the matrices for the GPU
+/// skinning pass (with the layout when it was built for this request).
+pub(crate) enum Pose {
+    Snapshot(Box<GeometrySnapshot>),
+    Matrices {
+        layout: Option<Arc<SkinLayout>>,
+        matrices: Vec<[[f32; 4]; 4]>,
+    },
 }
 
 pub(crate) struct Playback {
     pub controls: Controls,
-    worker: Worker<PoseRequest, GeometrySnapshot>,
-    pending: Option<Sample>,
+    worker: Worker<PoseRequest, Pose>,
+    pending: Option<(Sample, bool)>,
     shown: Option<Sample>,
+    /// ADR-0066: the shown pose was skinned on the GPU (no CPU snapshot of
+    /// it; one follows when playback stops).
+    shown_gpu: bool,
+    /// The GPU skinning layout of the current scene, and scenes (document,
+    /// revision) that cannot be skinned on the GPU.
+    layout: Option<Arc<SkinLayout>>,
+    gpu_off: Option<(u64, u64)>,
+    pub gpu_frames: u64,
     preview: Option<ChannelValue>,
     rest: Option<Arc<GeometrySnapshot>>,
     anchor: Option<(Instant, f32)>,
@@ -132,6 +154,10 @@ impl Playback {
             worker: Worker::new(prepare, "Cannot evaluate the animation pose"),
             pending: None,
             shown: None,
+            shown_gpu: false,
+            layout: None,
+            gpu_off: None,
+            gpu_frames: 0,
             preview: None,
             rest: None,
             anchor: None,
@@ -144,6 +170,8 @@ impl Playback {
         self.controls = Controls::default();
         self.pending = None;
         self.shown = None;
+        self.shown_gpu = false;
+        self.layout = None;
         self.preview = None;
         self.rest = None;
         self.anchor = None;
@@ -197,6 +225,9 @@ impl Playback {
     }
 
     pub fn edit_published(&mut self, frame: Option<AnimationFrame>) {
+        // A new scene revision: its GPU layout is built again on demand.
+        self.shown_gpu = false;
+        self.layout = None;
         self.shown = frame.as_ref().map(|frame| Sample {
             clip: frame.clip,
             time: frame.time,
@@ -219,7 +250,25 @@ impl Playback {
         self.anchor = None;
     }
 
+    /// The pose on screen was skinned on the GPU (ADR-0066).
+    pub fn shown_on_gpu(&self) -> Option<(usize, f32)> {
+        self.shown
+            .filter(|_| self.shown_gpu)
+            .map(|s| (s.clip, s.time))
+    }
+
     pub fn tick(&mut self, asset: &mut PreparedAsset, renderer: &mut Renderer) -> GpuResult<bool> {
+        let tag = {
+            let document = asset.document();
+            (document.id().0, document.revision())
+        };
+        if self
+            .layout
+            .as_ref()
+            .is_some_and(|l| (l.document_id.0, l.revision) != tag)
+        {
+            self.layout = None;
+        }
         let Some(clip) = self.controls.clip else {
             if self.shown.is_some()
                 && let Some(rest) = &self.rest
@@ -227,6 +276,7 @@ impl Playback {
                 renderer.set_scene_pose(rest)?;
                 asset.generation.snapshot = rest.clone();
                 self.shown = None;
+                self.shown_gpu = false;
                 self.rest = None;
                 return Ok(true);
             }
@@ -250,11 +300,35 @@ impl Playback {
 
         let mut published = false;
         if let Some(completion) = self.worker.poll()
-            && let Some(sample) = self.pending.take()
+            && let Some((sample, asked_gpu)) = self.pending.take()
         {
-            let pose = completion.result?;
-            renderer.set_scene_pose(&pose)?;
-            asset.generation.snapshot = Arc::new(pose);
+            match completion.result? {
+                Pose::Snapshot(pose) => {
+                    if asked_gpu {
+                        // This scene is not skinned on the GPU (morphs).
+                        self.gpu_off = Some(tag);
+                    }
+                    renderer.set_scene_pose(&pose)?;
+                    asset.generation.snapshot = Arc::new(*pose);
+                    self.shown_gpu = false;
+                }
+                Pose::Matrices { layout, matrices } => {
+                    if let Some(layout) = layout {
+                        match renderer.set_scene_skin(&layout) {
+                            Ok(()) => self.layout = Some(layout),
+                            Err(error) => {
+                                eprintln!("gpu_skinning_off reason={error}");
+                                self.gpu_off = Some(tag);
+                            }
+                        }
+                    }
+                    if self.layout.is_some() {
+                        renderer.set_skin_pose(asset.document().id(), tag.1, &matrices)?;
+                        self.shown_gpu = true;
+                        self.gpu_frames += 1;
+                    }
+                }
+            }
             self.shown = Some(sample);
             published = true;
         }
@@ -263,15 +337,24 @@ impl Playback {
             time: self.controls.time,
             preview: self.preview,
         };
-        if self.pending.is_none() && self.shown != Some(sample) && now >= self.next_frame {
+        // ADR-0066: while playing, the GPU skins; paused, scrubbing and key
+        // previews keep the exact CPU pose (picking uses it too).
+        let gpu = self.controls.playing
+            && self.preview.is_none()
+            && renderer.gpu_skinning()
+            && self.gpu_off != Some(tag);
+        let stale = self.shown != Some(sample) || (self.shown_gpu && !gpu);
+        if self.pending.is_none() && stale && now >= self.next_frame {
             if self.rest.is_none() {
                 self.rest = Some(asset.snapshot().clone());
             }
             self.worker.request(PoseRequest {
                 session: asset.session.clone(),
                 sample,
+                gpu,
+                layout: self.layout.clone(),
             });
-            self.pending = Some(sample);
+            self.pending = Some((sample, gpu));
             // At most one pose in flight; up to 60 per second.
             self.next_frame = now + Duration::from_millis(16);
         }
@@ -279,12 +362,37 @@ impl Playback {
     }
 }
 
-fn prepare(request: &Request<PoseRequest>) -> AssetResult<GeometrySnapshot> {
-    request.input.session.document().view().animated_snapshot(
-        request.input.sample.clip,
-        request.input.sample.time,
-        request.input.sample.preview,
+fn prepare(request: &Request<PoseRequest>) -> AssetResult<Pose> {
+    let input = &request.input;
+    let view = input.session.document().view();
+    let sample = input.sample;
+    if input.gpu {
+        let (layout, fresh) = match &input.layout {
+            Some(layout) => (Some(layout.clone()), false),
+            None => (
+                view.skin_layout(ImportLimits::default(), &request.cancel)?
+                    .map(Arc::new),
+                true,
+            ),
+        };
+        if let Some(layout) = layout {
+            let matrices = view.pose_matrices(
+                &layout,
+                Some((sample.clip, sample.time, sample.preview)),
+                &request.cancel,
+            )?;
+            return Ok(Pose::Matrices {
+                layout: fresh.then_some(layout),
+                matrices,
+            });
+        }
+    }
+    view.animated_snapshot(
+        sample.clip,
+        sample.time,
+        sample.preview,
         ImportLimits::default(),
         &request.cancel,
     )
+    .map(|pose| Pose::Snapshot(Box::new(pose)))
 }

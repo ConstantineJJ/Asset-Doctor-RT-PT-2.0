@@ -59,6 +59,7 @@ impl ViewerUi {
             "ao_maps": self.ao_maps,
             "emission": self.emission,
             "wireframe": self.wireframe,
+            "surface": self.surface.key(),
             "axes": self.show_axes,
             "bounds": self.show_bounds,
             "skeleton": self.skeleton_on,
@@ -179,6 +180,16 @@ impl ViewerUi {
         flag(value, "ao_maps", &mut self.ao_maps, &mut bad);
         flag(value, "emission", &mut self.emission, &mut bad);
         flag(value, "wireframe", &mut self.wireframe, &mut bad);
+        match value.get("surface") {
+            None => {}
+            Some(v) => match v
+                .as_str()
+                .and_then(ad_render_vulkan::lighting::SurfaceShading::from_key)
+            {
+                Some(surface) => self.surface = surface,
+                None => bad.push("surface".into()),
+            },
+        }
         flag(value, "axes", &mut self.show_axes, &mut bad);
         flag(value, "bounds", &mut self.show_bounds, &mut bad);
         flag(value, "skeleton", &mut self.skeleton_on, &mut bad);
@@ -393,6 +404,7 @@ mod tests {
         let mut ui = ViewerUi {
             textures: false,
             wireframe: true,
+            surface: ad_render_vulkan::lighting::SurfaceShading::Hybrid,
             show_axes: true,
             shadows: false,
             shadow_strength: 0.3,
@@ -468,6 +480,18 @@ mod tests {
             &mut warnings,
         );
         assert!(ui.wireframe && !ui.lighting.enabled);
+        // An unknown surface shading keeps the current one.
+        let mut surface = ViewerUi::default();
+        let mut surface_warnings = Vec::new();
+        surface.apply_view_settings(
+            &json!({"version": 1, "surface": "glossy"}),
+            &mut surface_warnings,
+        );
+        assert_eq!(surface.surface, Default::default());
+        assert!(
+            surface_warnings.iter().any(|w| w.contains("surface")),
+            "{surface_warnings:?}"
+        );
         assert_eq!(ui.floor, defaults.floor);
         assert_eq!(ui.shadow_strength, defaults.shadow_strength);
         assert_eq!(ui.lighting.direction, defaults.lighting.direction);

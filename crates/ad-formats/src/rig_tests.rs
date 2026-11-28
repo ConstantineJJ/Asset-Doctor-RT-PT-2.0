@@ -404,6 +404,7 @@ fn a_longer_bone_moves_the_joint_but_not_the_mesh() {
     let edit = JointEdit::Rest {
         node: tip,
         translation: longer,
+        hold: false,
     };
     let plan = doc.prepare_joint_edit(doc.tag(), &edit, &cancel).unwrap();
     {
@@ -466,6 +467,7 @@ fn a_longer_bone_moves_the_joint_but_not_the_mesh() {
     let same = JointEdit::Rest {
         node: tip,
         translation: base.translation,
+        hold: false,
     };
     assert!(
         !doc.prepare_joint_edit(doc.tag(), &same, &cancel)
@@ -476,10 +478,12 @@ fn a_longer_bone_moves_the_joint_but_not_the_mesh() {
         JointEdit::Rest {
             node: NodeId(3),
             translation: [0., 1., 0.],
+            hold: false,
         },
         JointEdit::Rest {
             node: tip,
             translation: [f32::NAN, 0., 0.],
+            hold: false,
         },
     ] {
         assert!(
@@ -539,6 +543,7 @@ fn resetting_the_rig_brings_back_the_files_skeleton_and_fits_the_clips() {
         JointEdit::Rest {
             node: tip,
             translation: longer,
+            hold: false,
         },
         JointEdit::Delete { node: unused },
     ] {
@@ -677,4 +682,166 @@ fn joints_fit_to_the_bend_ring_of_the_mesh() {
         targets: vec![(tip.node, tip.suggested), (tip.node, tip.suggested)],
     };
     assert!(doc.prepare_joint_edit(doc.tag(), &twice, &cancel).is_err());
+}
+
+#[test]
+fn a_joint_moves_alone_when_its_children_hold_their_place() {
+    use ad_document::JointEdit;
+    let cancel = Cancellation::default();
+    let mut doc = open(ANIMATED).unwrap();
+    let tip = NodeId(1);
+    apply_joint(
+        &mut doc,
+        JointEdit::Add {
+            parent: tip,
+            name: "Tip_end".into(),
+            translation: [0., 0.3, 0.],
+        },
+    );
+    let end = NodeId(doc.nodes().len() - 1);
+    let world_of = |doc: &AssetDocument, n: NodeId| {
+        let worlds = doc.view().node_worlds(None, &cancel).unwrap();
+        matrix(worlds[n.0].unwrap()).w_axis.truncate()
+    };
+    let mesh = |doc: &AssetDocument| {
+        doc.snapshot(ImportLimits::default(), &cancel)
+            .unwrap()
+            .positions
+    };
+    let (end_before, mesh_before) = (world_of(&doc, end), mesh(&doc));
+    let base = doc.rest_transform(tip).unwrap();
+    let longer = base.translation.map(|v| v * 1.5);
+    // Held: the tip moves, its child stays where it was, the mesh too.
+    let edit = JointEdit::Rest {
+        node: tip,
+        translation: longer,
+        hold: true,
+    };
+    let plan = doc.prepare_joint_edit(doc.tag(), &edit, &cancel).unwrap();
+    {
+        let candidate = plan.candidate(&doc, &cancel).unwrap();
+        let view = doc.candidate_view(candidate, &cancel).unwrap();
+        verify_animation_export(
+            &view,
+            ExportLimits::default(),
+            ImportLimits::default(),
+            &cancel,
+        )
+        .unwrap();
+    }
+    let applied = doc
+        .apply_triangle_removal(plan, ImportLimits::default(), &cancel)
+        .unwrap();
+    assert!(
+        world_of(&doc, end).abs_diff_eq(end_before, 1e-5),
+        "{} vs {end_before}",
+        world_of(&doc, end)
+    );
+    for (a, b) in mesh_before.iter().zip(&mesh(&doc)) {
+        assert!(glam::Vec3::from_array(*a).abs_diff_eq(glam::Vec3::from_array(*b), 1e-4));
+    }
+    // Saved and opened again: the held child is still in place.
+    let saved = crate::prepare_glb(
+        &doc,
+        doc.tag(),
+        ExportLimits::default(),
+        ImportLimits::default(),
+        &cancel,
+    )
+    .unwrap();
+    let back = open(saved.bytes()).unwrap();
+    assert!(world_of(&back, end).abs_diff_eq(end_before, 1e-5));
+    // Undo, then the same move with following children: the child moves
+    // with the tip.
+    let mut change = applied.change.unwrap();
+    doc.exchange_indices(doc.tag(), &mut change, ImportLimits::default(), &cancel)
+        .unwrap();
+    assert!(world_of(&doc, end).abs_diff_eq(end_before, 1e-5));
+    let tip_before = world_of(&doc, tip);
+    apply_joint(
+        &mut doc,
+        JointEdit::Rest {
+            node: tip,
+            translation: longer,
+            hold: false,
+        },
+    );
+    let shift = world_of(&doc, tip) - tip_before;
+    assert!(shift.length() > 1e-3);
+    assert!(
+        (world_of(&doc, end) - end_before).abs_diff_eq(shift, 1e-5),
+        "the child follows"
+    );
+}
+
+fn apply_joint(doc: &mut AssetDocument, edit: ad_document::JointEdit) {
+    let cancel = Cancellation::default();
+    let plan = doc.prepare_joint_edit(doc.tag(), &edit, &cancel).unwrap();
+    doc.apply_triangle_removal(plan, ImportLimits::default(), &cancel)
+        .unwrap();
+}
+
+#[test]
+fn the_gpu_skinning_layout_matches_the_cpu_pose() {
+    let cancel = Cancellation::default();
+    for source in [SKIN, ANIMATED] {
+        let doc = open(source).unwrap();
+        let view = doc.view();
+        let layout = view
+            .skin_layout(ImportLimits::default(), &cancel)
+            .unwrap()
+            .expect("a skinned or animated scene");
+        let rest = doc.snapshot(ImportLimits::default(), &cancel).unwrap();
+        assert_eq!(layout.vertices.len(), rest.positions.len());
+        let mut poses: Vec<Option<(usize, f32)>> = vec![None];
+        for (clip, active) in doc.animation_clips().iter().enumerate() {
+            for step in 0..=4 {
+                poses.push(Some((clip, active.duration * step as f32 / 4.)));
+            }
+        }
+        for pose in poses {
+            let expected = match pose {
+                Some((clip, time)) => view
+                    .animated_snapshot(clip, time, None, ImportLimits::default(), &cancel)
+                    .unwrap(),
+                None => doc.snapshot(ImportLimits::default(), &cancel).unwrap(),
+            };
+            let matrices = view
+                .pose_matrices(&layout, pose.map(|(c, t)| (c, t, None)), &cancel)
+                .unwrap();
+            assert_eq!(matrices.len(), layout.matrices);
+            for (i, vertex) in layout.vertices.iter().enumerate() {
+                let (p, n, t) = ad_document::skin_reference(vertex, &matrices);
+                let close = |a: &[f32], b: &[f32], eps: f32| {
+                    a.iter()
+                        .zip(b)
+                        .all(|(a, b)| (a - b).abs() <= eps * (1. + b.abs()))
+                };
+                assert!(
+                    close(&p, &expected.positions[i], 1e-5),
+                    "{pose:?} v{i} {p:?} {:?}",
+                    expected.positions[i]
+                );
+                assert!(
+                    close(&n, &expected.normals[i], 1e-4),
+                    "{pose:?} v{i} {n:?} {:?}",
+                    expected.normals[i]
+                );
+                assert!(
+                    close(&t, &expected.tangents[i], 1e-4),
+                    "{pose:?} v{i} {t:?} {:?}",
+                    expected.tangents[i]
+                );
+            }
+        }
+    }
+    // Morph targets keep the CPU pose.
+    let morph = open(include_bytes!("../../../tests/fixtures/Morph_Checker.glb")).unwrap();
+    assert!(
+        morph
+            .view()
+            .skin_layout(ImportLimits::default(), &cancel)
+            .unwrap()
+            .is_none()
+    );
 }

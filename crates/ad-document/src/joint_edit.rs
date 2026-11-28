@@ -43,7 +43,15 @@ pub enum JointEdit {
     /// parent's space; rotation and scale stay). Its own and its
     /// descendants' inverse binds are rebound, so the mesh stays in place
     /// at rest and only the skeleton moves.
-    Rest { node: NodeId, translation: [f32; 3] },
+    ///
+    /// RIG-02 child behaviour: with `hold`, the joint's direct children
+    /// keep their rest world positions (their translations take the
+    /// opposite move), so only this joint moves; otherwise they follow.
+    Rest {
+        node: NodeId,
+        translation: [f32; 3],
+        hold: bool,
+    },
     /// RIG-05: move joints to world positions at rest (fitting to the
     /// mesh), parents first, each with the rebind of `Rest`; one Undo step.
     Fit { targets: Vec<(NodeId, [f32; 3])> },
@@ -265,24 +273,28 @@ impl AssetDocument {
                         .ok_or_else(|| refused("Сустав без родителя не подгоняется"))?
                         .inverse()
                         .transform_point3(glam::Vec3::from_array(translation));
-                    if rest_joint(
+                    let changed = rest_joint(
                         &mut nodes,
                         &mut rig,
                         &mut bases,
                         &mut clips,
                         node,
                         local.to_array(),
+                        false,
                         cancel,
-                    )? {
-                        rested.insert(node.0);
-                        moved = true;
-                    }
+                    )?;
+                    moved |= !changed.is_empty();
+                    rested.extend(changed);
                 }
                 if !moved {
                     return self.skeleton_plan(expected, None);
                 }
             }
-            JointEdit::Rest { node, translation } => {
+            JointEdit::Rest {
+                node,
+                translation,
+                hold,
+            } => {
                 let changed = rest_joint(
                     &mut nodes,
                     &mut rig,
@@ -290,12 +302,13 @@ impl AssetDocument {
                     &mut clips,
                     *node,
                     *translation,
+                    *hold,
                     cancel,
                 )?;
-                if !changed {
+                if changed.is_empty() {
                     return self.skeleton_plan(expected, None);
                 }
-                rested.insert(node.0);
+                rested.extend(changed);
             }
         }
         self.skeleton_plan(
@@ -545,22 +558,31 @@ fn delete_joint(
     }
     for clip in clips.iter_mut() {
         cancel.check()?;
-        if !clip.tracks().iter().any(|t| gone[t.node().0]) {
+        let gone_at = |n: NodeId| gone.get(n.0).copied().unwrap_or(false);
+        if !clip.tracks().iter().any(|t| gone_at(t.node()))
+            && !clip.weights().iter().any(|t| gone_at(t.node()))
+        {
             continue;
         }
         let tracks: Vec<_> = clip
             .tracks()
             .iter()
-            .filter(|t| !gone[t.node().0])
+            .filter(|t| !gone_at(t.node()))
             .cloned()
             .collect();
-        if tracks.is_empty() {
+        let weights: Vec<_> = clip
+            .weights()
+            .iter()
+            .filter(|t| !gone_at(t.node()))
+            .cloned()
+            .collect();
+        if tracks.is_empty() && weights.is_empty() {
             return Err(refused(&format!(
                 "Клип «{}» анимирует только удаляемые суставы и остался бы пустым.",
                 clip.name
             )));
         }
-        *clip = Arc::new(clip.with_tracks(tracks, cancel)?);
+        *clip = Arc::new(clip.with_parts(tracks, weights, cancel)?);
     }
     Ok(())
 }
@@ -570,7 +592,10 @@ fn delete_joint(
 /// `inverse bind' = inverse(W') × W × inverse bind`, so `W' × bind'` — the
 /// skinning matrix at rest — stays the same and the mesh does not move.
 /// The node's animation base and the bases of its tracks get the new
-/// translation. Returns false when nothing changes.
+/// translation. With `hold`, each direct child takes the opposite move in
+/// its own translation, so its rest world (and everything under it) stays.
+/// Returns the nodes whose rest transform changed (empty: nothing to do).
+#[allow(clippy::too_many_arguments)]
 fn rest_joint(
     nodes: &mut [Node],
     rig: &mut RigInspection,
@@ -578,8 +603,9 @@ fn rest_joint(
     clips: &mut [Arc<AnimationClip>],
     node: NodeId,
     translation: [f32; 3],
+    hold: bool,
     cancel: &Cancellation,
-) -> AssetResult<bool> {
+) -> AssetResult<Vec<usize>> {
     use glam::{Mat4, Vec3};
     if node.0 >= nodes.len() || !rig.skins.iter().any(|skin| skin.joints.contains(&node)) {
         return Err(refused("Положение меняется только у сустава скина."));
@@ -596,7 +622,21 @@ fn rest_joint(
         ));
     }
     if base.translation == translation {
-        return Ok(false);
+        return Ok(Vec::new());
+    }
+    let children: Vec<usize> = if hold {
+        nodes[node.0].children.iter().map(|c| c.0).collect()
+    } else {
+        Vec::new()
+    };
+    let mut held = Vec::new();
+    for &child in &children {
+        let Some(child_base) = bases.get(child).copied().flatten() else {
+            return Err(refused(
+                "У дочернего узла матричная трансформация — удержать его на месте нельзя; снимите «Дочерние остаются».",
+            ));
+        };
+        held.push((child, child_base));
     }
     // Rest worlds of every node (authored locals, no placement: the binds
     // live in the same space).
@@ -633,9 +673,35 @@ fn rest_joint(
         subtree.extend(nodes[n].children.iter().map(|c| c.0));
     }
     let before: Vec<(usize, Mat4)> = subtree.iter().map(|&n| (n, world(nodes, n))).collect();
+    let old_local = Mat4::from_cols_array_2d(&nodes[node.0].local);
     base.translation = translation;
-    nodes[node.0].local = base.matrix().to_cols_array_2d();
+    let new_local = base.matrix();
+    nodes[node.0].local = new_local.to_cols_array_2d();
     bases[node.0] = Some(base);
+    let mut changed = vec![node.0];
+    // Held children: child' = inverse(J') × J × child, which only moves the
+    // translation (J keeps its rotation and scale).
+    let keep = new_local.inverse() * old_local;
+    for (child, mut child_base) in held {
+        let moved = keep.transform_point3(Vec3::from_array(child_base.translation));
+        if !moved.is_finite() {
+            return Err(refused(
+                "Удержание дочернего сустава дало неконечное положение",
+            ));
+        }
+        if moved.to_array() == child_base.translation {
+            continue;
+        }
+        child_base.translation = moved.to_array();
+        nodes[child].local = child_base.matrix().to_cols_array_2d();
+        bases[child] = Some(child_base);
+        for clip in clips.iter_mut() {
+            if clip.tracks().iter().any(|t| t.node().0 == child) {
+                *clip = Arc::new(clip.rebased(NodeId(child), child_base));
+            }
+        }
+        changed.push(child);
+    }
     for skin in &mut rig.skins {
         for (slot, joint) in skin.joints.iter().enumerate() {
             cancel.check()?;
@@ -655,7 +721,7 @@ fn rest_joint(
             *clip = Arc::new(clip.rebased(node, base));
         }
     }
-    Ok(true)
+    Ok(changed)
 }
 
 /// Fit targets parents first (by depth), so a joint's target is reached

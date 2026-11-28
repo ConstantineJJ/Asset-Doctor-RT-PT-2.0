@@ -5,7 +5,7 @@
 Native Windows application for diagnosing, repairing and preparing 3D assets,
 written from scratch in Rust with a Vulkan renderer. Engineering prototype.
 
-Current build: **AD RT-PT v2.12.1**. Versions are MAJOR.MINOR.PATCH by
+Current build: **AD RT-PT v2.14.0**. Versions are MAJOR.MINOR.PATCH by
 significance: major reworks, notable features or large sets of fixes, and
 hotfixes.
 
@@ -99,6 +99,7 @@ hotfixes.
   - Joints: rename the selected joint; add a child joint (along the parent's
     bone or a local axis, chosen length, no weights); change a bone's length
     or a joint's rest position — the skeleton moves, the mesh stays (rebind);
+    its children follow or hold their place («Дочерние»);
     delete a joint with
     everything under it — its weights go to the nearest joint above, its
     channels leave the clips. Rigging card «Сустав» or the joint's
@@ -117,18 +118,29 @@ hotfixes.
     keys; create, copy, rename, delete and retime clips; all with Undo/Redo.
   - Right click on a joint (tree or viewport), the timeline or the Rigging
     tab: select, key the current pose, delete a key, clip actions.
-  - Joint gizmo (clip paused): rings turn the selected joint, arrows move
-    it, local or world axes; releasing writes a key at the current time.
+  - Joint gizmo (clip paused): rings turn the selected joint, the inner
+    yellow ring twists it about its own bone, arrows move it along an axis
+    and plane squares along two, local or world axes; releasing writes a
+    key at the current time.
   - Saving writes the animation back and verifies it by reimporting.
-- **Model gizmo.** Arrows move the model, rings turn it, the centre square
-  scales it. Exact values are in «Модель».
+  - A playing clip is skinned on the GPU (a compute pass writes the posed
+    vertices); paused poses, scrubbing and key previews stay exact on the
+    CPU. Models with morph targets play on the CPU.
+- **Model gizmo.** Arrows move the model, plane squares move it in two axes
+  (along the floor or a wall), rings turn it, the centre square scales it.
+  A ring turns by the pointer's angle around the centre, with the angle
+  shown: the farther the pointer, the finer the turn. Exact values are in
+  «Модель».
 - **Light and scene.**
   - Lamp: a point light with azimuth, height and distance handles, and
     shadows on the model and the floor.
   - 20 procedural floors.
   - Render channels: normals, UV, base colour, metal, roughness, AO,
     emission.
-  - Wireframe, axes, bounding box and light presets.
+  - Wireframe (W), axes, bounding box and light presets.
+  - Surface shading «Шейдинг»: Smooth (vertex normals), Flat (each
+    triangle's own normal) or Hybrid (smooth on gentle surfaces, flat on
+    edges sharper than 45°); view only.
 - **SkyBox and image-based lighting.**
   - The SkyBox window previews every 2:1 PNG/JPEG or Radiance HDR panorama
     in a folder. By default this is `assets/360.HDR`, with five CC0
@@ -156,11 +168,12 @@ hotfixes.
 Transparent (alpha BLEND) materials are drawn blended, back to front. A
 required `KHR_lights_punctual` is left out (the program's lamp lights the
 scene), and common export slips (`texCoord: -1`, a texture without its UV set)
-open with a note instead of a refusal. Morph targets, compressed geometry and
-external resources are
-refused at import. Geometry and object edits are not yet available for skinned
-or animated models. GPU skinning, multi-model comparison, RT and PT are
-planned.
+open with a note instead of a refusal. Morph targets (blend shapes) open and
+play with the weights of the file and its clips; the Rigging tab lists them
+(«Морф-цели»), and saving keeps them as the file has them. Compressed geometry
+and external resources are refused at import. Geometry and object edits are
+not yet available for skinned, animated or morphing models. Multi-model
+comparison, RT and PT are planned.
 
 ## Build
 
