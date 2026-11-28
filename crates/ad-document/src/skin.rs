@@ -4,6 +4,7 @@ use super::{
 use glam::Mat4;
 use std::collections::HashSet;
 
+#[derive(Clone)]
 pub struct Skin {
     pub name: String,
     pub joints: Vec<NodeId>,
@@ -11,7 +12,7 @@ pub struct Skin {
     pub skeleton: Option<NodeId>,
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Influence {
     pub joints: [u16; 4],
     pub weights: [f32; 4],
@@ -23,19 +24,28 @@ pub struct Rig {
     pub influences: Vec<Option<Vec<Influence>>>,
 }
 
+#[derive(Clone)]
 pub struct SkinReport {
     pub unused_joints: Vec<usize>,
     pub normalized_vertices: usize,
 }
 
+#[derive(Clone)]
 pub struct RigInspection {
     pub skins: Vec<Skin>,
     pub reports: Vec<SkinReport>,
-    node_skins: Vec<Option<usize>>,
-    influences: Vec<Option<Vec<Influence>>>,
+    pub(crate) node_skins: Vec<Option<usize>>,
+    /// Vertex influences per primitive; skeleton edit states share the
+    /// primitives they do not change.
+    pub(crate) influences: Vec<Option<std::sync::Arc<[Influence]>>>,
+    /// RIG-04: primitives whose JOINTS_0/WEIGHTS_0 the export must write.
+    pub(crate) edited_influences: std::collections::BTreeSet<usize>,
 }
 
 impl RigInspection {
+    /// Same skins, bindings and influences. Joint slots must be equal;
+    /// weights may differ by 1e-6 (an export writes rewritten weights as
+    /// floats and the import normalises them again).
     pub fn matches(&self, other: &Self, cancel: &Cancellation) -> AssetResult<bool> {
         if self.skins.len() != other.skins.len()
             || self.node_skins != other.node_skins
@@ -53,14 +63,21 @@ impl RigInspection {
                 return Ok(false);
             }
         }
-        for (a, b) in self.influences.iter().zip(&other.influences) {
+        for (a, b) in self.influences.iter().zip(other.influences.iter()) {
             cancel.check()?;
             match (a, b) {
                 (None, None) => {}
                 (Some(a), Some(b)) if a.len() == b.len() => {
                     for (a, b) in a.chunks(4096).zip(b.chunks(4096)) {
                         cancel.check()?;
-                        if a != b {
+                        let same = a.iter().zip(b).all(|(a, b)| {
+                            a.joints == b.joints
+                                && a.weights
+                                    .iter()
+                                    .zip(&b.weights)
+                                    .all(|(x, y)| (x - y).abs() <= 1e-6)
+                        });
+                        if !same {
                             return Ok(false);
                         }
                     }
@@ -223,12 +240,25 @@ impl AssetDocument {
                 normalized_vertices,
             })
             .collect();
-        self.rig = Some(RigInspection {
+        let rig = RigInspection {
             skins: rig.skins,
             reports,
-            influences,
+            influences: influences
+                .into_iter()
+                .map(|weights| weights.map(std::sync::Arc::from))
+                .collect(),
+            edited_influences: std::collections::BTreeSet::new(),
             node_skins: rig.node_skins,
-        });
+        };
+        // RIG-06: the file's skeleton, for «reset the rig» (clips are
+        // attached before the rig; influences are shared, not copied).
+        self.pristine = Some(std::sync::Arc::new(crate::joint_edit::Pristine {
+            nodes: self.parts.nodes.clone(),
+            rig: rig.clone(),
+            bases: self.animation_bases.clone(),
+            clips: self.animation_clips.clone(),
+        }));
+        self.rig = Some(rig);
         Ok(self)
     }
 }
@@ -255,6 +285,15 @@ impl RigInspection {
                 Ok(matrix)
             })
             .collect()
+    }
+
+    /// Vertex influences of a primitive (normalised weights).
+    pub fn primitive_influences(&self, mesh: MeshId) -> Option<&[Influence]> {
+        self.influences.get(mesh.0)?.as_deref()
+    }
+    /// RIG-04: primitives whose JOINTS_0/WEIGHTS_0 changed since opening.
+    pub fn edited_influences(&self) -> &std::collections::BTreeSet<usize> {
+        &self.edited_influences
     }
 
     pub(crate) fn skin_at(&self, node: NodeId) -> Option<usize> {

@@ -40,6 +40,8 @@ pub enum EditKind {
 pub enum AnimationEdit {
     Key(ad_document::AnimationKey),
     Clip,
+    /// RIG-03: rename a node or add a joint (the edit travels beside).
+    Joint,
     Undo,
     Redo,
 }
@@ -199,7 +201,7 @@ pub fn prepare_edit(
     kind: EditKind,
     cancel: &Cancellation,
 ) -> AssetResult<EditOutcome> {
-    prepare_edit_with_clip(session, base, kind, None, cancel)
+    prepare_edit_with_clip(session, base, kind, None, None, cancel)
 }
 
 /// Read-only preparation. Never mutates the Session.
@@ -208,6 +210,7 @@ fn prepare_edit_with_clip(
     base: &DocumentStamp,
     kind: EditKind,
     clip_edit: Option<&ad_document::ClipEdit>,
+    joint_edit: Option<&ad_document::JointEdit>,
     cancel: &Cancellation,
 ) -> AssetResult<EditOutcome> {
     cancel.check()?;
@@ -309,6 +312,18 @@ fn prepare_edit_with_clip(
             preview = None;
             change = Change::Remove(plan);
         }
+        EditKind::Animation(AnimationEdit::Joint, _) => {
+            let plan =
+                session.prepare_joint_edit(base.tag(), joint_edit.ok_or_else(stale)?, cancel)?;
+            if !plan.changes() {
+                return Err(AssetError::new(
+                    ad_document::ErrorCode::Unsupported,
+                    "Скелет не изменился",
+                ));
+            }
+            preview = None;
+            change = Change::Remove(plan);
+        }
         EditKind::Undo | EditKind::Animation(AnimationEdit::Undo, _) => {
             preview = None;
             change = Change::Undo;
@@ -336,10 +351,13 @@ fn prepare_edit_with_clip(
             cancel,
         )?;
     }
-    if candidate.changes_animation()
+    if (candidate.changes_animation() || candidate.changes_skeleton())
         && matches!(
             kind,
-            EditKind::Animation(AnimationEdit::Key(_) | AnimationEdit::Clip, _)
+            EditKind::Animation(
+                AnimationEdit::Key(_) | AnimationEdit::Clip | AnimationEdit::Joint,
+                _
+            )
         )
     {
         ad_formats::verify_animation_export(
@@ -475,20 +493,22 @@ fn merge_regression(
 struct EditRequest {
     edit: EditInput,
     clip: Option<ad_document::ClipEdit>,
+    joint: Option<ad_document::JointEdit>,
 }
 
 pub struct Edits(Worker<EditRequest, EditOutcome>);
 impl Edits {
     #[cfg(test)]
     pub fn request(&mut self, edit: EditInput) -> u64 {
-        self.request_with_clip(edit, None)
+        self.request_with(edit, None, None)
     }
-    pub fn request_with_clip(
+    pub fn request_with(
         &mut self,
         edit: EditInput,
         clip: Option<ad_document::ClipEdit>,
+        joint: Option<ad_document::JointEdit>,
     ) -> u64 {
-        self.0.request(EditRequest { edit, clip })
+        self.0.request(EditRequest { edit, clip, joint })
     }
     pub fn cancel(&mut self) {
         self.0.cancel();
@@ -510,6 +530,7 @@ pub fn new_edits() -> Edits {
                 &input.base,
                 input.kind.clone(),
                 request.input.clip.as_ref(),
+                request.input.joint.as_ref(),
                 &request.cancel,
             )
         },

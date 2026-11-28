@@ -5,7 +5,7 @@
 Native Windows application for diagnosing, repairing and preparing 3D assets,
 written from scratch in Rust with a Vulkan renderer. Engineering prototype.
 
-Current build: **AD RT-PT v2.11.0**. Versions are MAJOR.MINOR.PATCH by
+Current build: **AD RT-PT v2.12.0**. Versions are MAJOR.MINOR.PATCH by
 significance: major reworks, notable features or large sets of fixes, and
 hotfixes.
 
@@ -96,6 +96,15 @@ hotfixes.
     one frame (1/30 s); speed 0.1–3× in steps of 0.1. The clip list has a
     search field. A model with clips starts its first clip when it opens
     («Настройки → Анимация»).
+  - Joints: rename the selected joint; add a child joint (along the parent's
+    bone or a local axis, chosen length, no weights); change a bone's length
+    or a joint's rest position — the skeleton moves, the mesh stays (rebind);
+    delete a joint with
+    everything under it — its weights go to the nearest joint above, its
+    channels leave the clips. Rigging card «Сустав» or the joint's
+    right-click menu; one Undo step each, saved and verified. «Сбросить риг
+    к файлу» brings the file's skeleton back in one step (clips keep their
+    keys).
   - Root motion: how far the skeleton's root (or the selected joint) moves
     during the clip — displacement, distance on the floor, path, speed,
     turn and height — with its path drawn in the viewport.

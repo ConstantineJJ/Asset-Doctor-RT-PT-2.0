@@ -627,12 +627,20 @@ impl App {
         Ok(())
     }
     fn request_edit(&mut self, kind: EditKind) -> bool {
-        self.request_edit_with_clip(kind, None)
+        self.request_edit_with(kind, None, None)
     }
     fn request_edit_with_clip(
         &mut self,
         kind: EditKind,
         clip: Option<ad_document::ClipEdit>,
+    ) -> bool {
+        self.request_edit_with(kind, clip, None)
+    }
+    fn request_edit_with(
+        &mut self,
+        kind: EditKind,
+        clip: Option<ad_document::ClipEdit>,
+        joint: Option<ad_document::JointEdit>,
     ) -> bool {
         let Some(asset) = self.current.as_ref() else {
             return false;
@@ -651,7 +659,7 @@ impl App {
             base: asset.generation.stamp.clone(),
             kind: kind.clone(),
         };
-        let ticket = self.edits.request_with_clip(input, clip);
+        let ticket = self.edits.request_with(input, clip, joint);
         self.editing = true;
         self.edit_started = Instant::now();
         self.edit_busy = match &kind {
@@ -669,6 +677,9 @@ impl App {
                 "Проверка ключа и экспорта GLB…"
             }
             EditKind::Animation(edits::AnimationEdit::Clip, _) => "Проверка клипа и экспорта GLB…",
+            EditKind::Animation(edits::AnimationEdit::Joint, _) => {
+                "Проверка скелета и экспорта GLB…"
+            }
             EditKind::Undo | EditKind::Animation(edits::AnimationEdit::Undo, _) => {
                 "Подготовка отмены правки…"
             }
@@ -824,6 +835,18 @@ impl App {
             Ok(tag) => {
                 if matches!(kind, EditKind::Animation(..)) {
                     self.playback.edit_published(animation_frame);
+                }
+                // RIG-03: names or nodes may have changed (also by Undo/Redo).
+                if matches!(
+                    kind,
+                    EditKind::Animation(
+                        edits::AnimationEdit::Joint
+                            | edits::AnimationEdit::Undo
+                            | edits::AnimationEdit::Redo,
+                        _
+                    )
+                ) {
+                    self.ui.tree.refresh(asset.document());
                 }
                 let report = asset.diagnostics().as_ref().ok();
                 let count =
@@ -3217,6 +3240,17 @@ impl App {
                 Some((key.clip, key.time)),
             ));
         }
+        if let Some(joint_edit) = actions.joint_edit.take() {
+            let controls = self.playback.controls;
+            self.request_edit_with(
+                EditKind::Animation(
+                    edits::AnimationEdit::Joint,
+                    controls.clip.map(|clip| (clip, controls.time)),
+                ),
+                None,
+                Some(joint_edit),
+            );
+        }
         if let Some(path) = actions.skybox_open.clone() {
             self.skybox_job = Some(skybox::spawn(path, self.skybox_width()));
             self.ui.set_status("Загрузка скайбокса...", false);
@@ -3929,6 +3963,7 @@ fn edit_name(kind: &EditKind) -> &'static str {
         EditKind::Animation(edits::AnimationEdit::Key(key), _) if key.remove => "delete_key",
         EditKind::Animation(edits::AnimationEdit::Key(_), _) => "set_key",
         EditKind::Animation(edits::AnimationEdit::Clip, _) => "edit_clip",
+        EditKind::Animation(edits::AnimationEdit::Joint, _) => "edit_joint",
         EditKind::Undo | EditKind::Animation(edits::AnimationEdit::Undo, _) => "undo",
         EditKind::Redo | EditKind::Animation(edits::AnimationEdit::Redo, _) => "redo",
     }

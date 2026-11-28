@@ -1,6 +1,7 @@
 //! Renderer-independent source-retaining data and revision-tagged snapshots.
 mod color;
 mod indices;
+mod joint_edit;
 mod node_edits;
 mod normals;
 mod placement;
@@ -13,6 +14,7 @@ pub use indices::{
     AppliedRemoval, DocumentStamp, DocumentTag, IndexExchange, PreparedRemoval, RemovalPreview,
     StagedExchange, StagedRemoval,
 };
+pub use joint_edit::JointEdit;
 pub use node_edits::{NodeEdits, NodeOp};
 pub use placement::Placement;
 pub use skin::{Influence, Rig, RigInspection, Skin, SkinReport};
@@ -149,6 +151,7 @@ pub struct MeshPrimitive {
     /// glTF alpha mode BLEND: drawn after opaque geometry, blended.
     pub blend: bool,
 }
+#[derive(Clone)]
 pub struct Node {
     pub name: String,
     pub local: [[f32; 4]; 4],
@@ -181,6 +184,16 @@ pub struct AssetDocument {
     animation_clips: Vec<Arc<AnimationClip>>,
     animation_bases: Vec<Option<Transform>>,
     source_clip_count: usize,
+    /// RIG-03: nodes in the file when it was opened; added joints follow.
+    source_node_count: usize,
+    /// RIG-03: nodes renamed since opening (the export writes their names).
+    renamed: std::collections::BTreeSet<usize>,
+    /// RIG-03/04: joints were added or deleted since opening.
+    restructured: bool,
+    /// RIG-03: nodes whose rest transform changed (written as TRS).
+    rested: std::collections::BTreeSet<usize>,
+    /// RIG-06: the skeleton and clips as the file had them.
+    pristine: Option<Arc<joint_edit::Pristine>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -408,6 +421,11 @@ impl AssetDocument {
             animation_clips: Vec::new(),
             animation_bases: Vec::new(),
             source_clip_count: 0,
+            source_node_count: parts.nodes.len(),
+            renamed: std::collections::BTreeSet::new(),
+            restructured: false,
+            rested: std::collections::BTreeSet::new(),
+            pristine: None,
             vertex_maps,
             parts,
             texture_stats: textures.stats,
@@ -470,13 +488,14 @@ impl DocumentView<'_> {
         limits: ImportLimits,
         cancel: &Cancellation,
     ) -> AssetResult<GeometrySnapshot> {
-        use glam::{Mat4, Vec3};
+        use glam::Vec3;
         let document = self.document();
         cancel.check()?;
-        let mut visited = vec![false; document.parts.nodes.len()];
+        let nodes = self.nodes();
+        let mut visited = vec![false; nodes.len()];
         let edits = self.node_edits();
-        let rig = document.rig();
-        let mut worlds = rig.map(|_| vec![None; document.nodes().len()]);
+        let rig = self.rig();
+        let mut worlds = rig.map(|_| vec![None; nodes.len()]);
         let mut palettes = rig.map_or_else(Vec::new, |rig| {
             (0..rig.skins.len()).map(|_| None).collect::<Vec<_>>()
         });
@@ -499,10 +518,10 @@ impl DocumentView<'_> {
                 ));
             }
             visited[id.0] = true;
-            let node = &document.parts.nodes[id.0];
+            let node = &nodes[id.0];
             let local = locals
                 .and_then(|locals| locals[id.0])
-                .unwrap_or_else(|| Mat4::from_cols_array_2d(&edits.local(document, id)));
+                .unwrap_or_else(|| self.local(id));
             let world = parent * local;
             if !world.is_finite() {
                 return Err(AssetError::new(

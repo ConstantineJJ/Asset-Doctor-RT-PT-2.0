@@ -3,7 +3,7 @@ use super::{
 };
 use ad_document::{
     AssetDocument, AssetError, AssetResult, Cancellation, DocumentView, ErrorCode, ImportLimits,
-    Interpolation, Track, TrackKind,
+    Influence, Interpolation, MeshId, Track, TrackKind,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -39,7 +39,7 @@ pub(super) fn verify(
     if source_bytes.len() > max {
         return Err(budget());
     }
-    let bytes = if view.animations_changed() {
+    let bytes = if view.animations_changed() || view.skeleton_changed() {
         encode(view, source_bytes, max, limits, import, cancel)?
     } else {
         source_bytes.clone()
@@ -59,13 +59,22 @@ pub(super) fn verify(
 enum TrackData<'a> {
     Times(&'a [f32]),
     Values(&'a [[f32; 4]], usize),
+    /// RIG-03: a skin's inverse bind matrices (column-major).
+    Matrices(&'a [[[f32; 4]; 4]]),
+    /// RIG-04: JOINTS_0 (unsigned short) and WEIGHTS_0 (float) of a primitive.
+    Joints(&'a [Influence]),
+    Weights(&'a [Influence]),
 }
 impl TrackData<'_> {
-    fn shape(&self) -> (usize, usize, &'static str) {
+    /// (count, components, accessor type, component type, bytes per component)
+    fn shape(&self) -> (usize, usize, &'static str, u32, usize) {
         match self {
-            Self::Times(times) => (times.len(), 1, "SCALAR"),
-            Self::Values(values, 4) => (values.len(), 4, "VEC4"),
-            Self::Values(values, _) => (values.len(), 3, "VEC3"),
+            Self::Times(times) => (times.len(), 1, "SCALAR", 5126, 4),
+            Self::Values(values, 4) => (values.len(), 4, "VEC4", 5126, 4),
+            Self::Values(values, _) => (values.len(), 3, "VEC3", 5126, 4),
+            Self::Matrices(matrices) => (matrices.len(), 16, "MAT4", 5126, 4),
+            Self::Joints(influences) => (influences.len(), 4, "VEC4", 5123, 2),
+            Self::Weights(influences) => (influences.len(), 4, "VEC4", 5126, 4),
         }
     }
 }
@@ -76,8 +85,8 @@ fn add_accessor<'a>(
     max: usize,
     data: TrackData<'a>,
 ) -> AssetResult<usize> {
-    let (count, width, kind) = data.shape();
-    let len = count.checked_mul(width * 4).ok_or_else(budget)?;
+    let (count, width, kind, component, bytes) = data.shape();
+    let len = count.checked_mul(width * bytes).ok_or_else(budget)?;
     let offset = *bin_len;
     *bin_len = offset
         .checked_add(len)
@@ -89,7 +98,7 @@ fn add_accessor<'a>(
     let accessors = array(meta, "accessors")?;
     let index = accessors.len();
     let mut accessor = json!({
-        "bufferView": view_index, "componentType": 5126, "type": kind, "count": count
+        "bufferView": view_index, "componentType": component, "type": kind, "count": count
     });
     if let TrackData::Times(times) = data {
         accessor["min"] = json!([times[0]]);
@@ -206,6 +215,9 @@ fn encode(
     if !animations.is_empty() {
         meta["animations"] = Value::Array(animations);
     }
+    if view.skeleton_changed() {
+        write_skeleton(view, &mut meta, &mut suffix, &mut bin_len, max, cancel)?;
+    }
     array(&mut meta, "buffers")?
         .first_mut()
         .ok_or_else(invalid)?["byteLength"] = json!(bin_len);
@@ -264,6 +276,30 @@ fn encode(
                     }
                 }
             }
+            TrackData::Matrices(matrices) => {
+                for chunk in matrices.chunks(1024) {
+                    cancel.check()?;
+                    for value in chunk.iter().flatten().flatten() {
+                        bytes.extend(value.to_le_bytes());
+                    }
+                }
+            }
+            TrackData::Joints(influences) => {
+                for chunk in influences.chunks(4096) {
+                    cancel.check()?;
+                    for joint in chunk.iter().flat_map(|i| i.joints) {
+                        bytes.extend(joint.to_le_bytes());
+                    }
+                }
+            }
+            TrackData::Weights(influences) => {
+                for chunk in influences.chunks(4096) {
+                    cancel.check()?;
+                    for weight in chunk.iter().flat_map(|i| i.weights) {
+                        bytes.extend(weight.to_le_bytes());
+                    }
+                }
+            }
         }
     }
     if bytes.len() != total {
@@ -272,13 +308,152 @@ fn encode(
     Ok(Arc::from(bytes))
 }
 
+/// RIG-03: renamed nodes get their names; added nodes (after the file's
+/// own) are appended with their translation, linked from their parents'
+/// children; a skin whose joint table grew gets its joints and a new
+/// inverse-bind accessor. Indices of the file's nodes never change.
+fn write_skeleton<'a>(
+    view: &DocumentView<'a>,
+    meta: &mut Value,
+    suffix: &mut Vec<TrackData<'a>>,
+    bin_len: &mut usize,
+    max: usize,
+    cancel: &Cancellation,
+) -> AssetResult<()> {
+    let source = view.document().source_node_count();
+    let nodes = view.nodes();
+    let list = array(meta, "nodes")?;
+    if list.len() != source || nodes.len() < source {
+        return Err(invalid());
+    }
+    for &index in view.renamed() {
+        cancel.check()?;
+        let node = list.get_mut(index).ok_or_else(invalid)?;
+        node["name"] = json!(nodes[index].name);
+    }
+    // RIG-03: a new rest transform is written as TRS.
+    for &index in view.rested() {
+        cancel.check()?;
+        if index >= source {
+            continue; // added joints are written below from their local
+        }
+        let rest = view
+            .rest_transform(ad_document::NodeId(index))
+            .ok_or_else(invalid)?;
+        let node = list
+            .get_mut(index)
+            .and_then(Value::as_object_mut)
+            .ok_or_else(invalid)?;
+        node.remove("matrix");
+        node.insert("translation".into(), json!(rest.translation));
+        node.insert("rotation".into(), json!(rest.rotation));
+        node.insert("scale".into(), json!(rest.scale));
+    }
+    list.try_reserve_exact(nodes.len() - source)
+        .map_err(|_| budget())?;
+    for node in &nodes[source..] {
+        cancel.check()?;
+        let m = node.local;
+        let translation_only =
+            (0..3).all(|c| (0..4).all(|r| m[c][r] == f32::from(u8::from(c == r)))) && m[3][3] == 1.;
+        if !translation_only || !node.meshes.is_empty() {
+            return Err(invalid());
+        }
+        let mut entry = json!({"name": node.name, "translation": [m[3][0], m[3][1], m[3][2]]});
+        if !node.children.is_empty() {
+            entry["children"] = json!(node.children.iter().map(|c| c.0).collect::<Vec<_>>());
+        }
+        list.push(entry);
+    }
+    // Children that differ from the file (an added joint, a deleted one).
+    for (index, node) in nodes[..source].iter().enumerate() {
+        cancel.check()?;
+        let children: Vec<u64> = node.children.iter().map(|c| c.0 as u64).collect();
+        let written: Vec<u64> = list[index]
+            .get("children")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_u64).collect())
+            .unwrap_or_default();
+        if children != written {
+            let entry = list[index].as_object_mut().ok_or_else(invalid)?;
+            if children.is_empty() {
+                entry.remove("children");
+            } else {
+                entry.insert("children".into(), json!(children));
+            }
+        }
+    }
+    let Some(rig) = view.rig() else {
+        return Ok(());
+    };
+    // RIG-04: rewritten vertex joints and weights. Primitive ordinals run
+    // over meshes, then their primitives, in file order.
+    if !rig.edited_influences().is_empty() {
+        let mut places = Vec::new();
+        for (mesh, entry) in meta
+            .get("meshes")
+            .and_then(Value::as_array)
+            .ok_or_else(invalid)?
+            .iter()
+            .enumerate()
+        {
+            let count = entry
+                .get("primitives")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+            places.extend((0..count).map(|primitive| (mesh, primitive)));
+        }
+        for &ordinal in rig.edited_influences() {
+            cancel.check()?;
+            let influences = rig
+                .primitive_influences(MeshId(ordinal))
+                .ok_or_else(invalid)?;
+            let (mesh, primitive) = *places.get(ordinal).ok_or_else(invalid)?;
+            let joints = add_accessor(meta, suffix, bin_len, max, TrackData::Joints(influences))?;
+            let weights = add_accessor(meta, suffix, bin_len, max, TrackData::Weights(influences))?;
+            let attributes = array(meta, "meshes")?[mesh]
+                .get_mut("primitives")
+                .and_then(|p| p.get_mut(primitive))
+                .and_then(|p| p.get_mut("attributes"))
+                .and_then(Value::as_object_mut)
+                .ok_or_else(invalid)?;
+            attributes.insert("JOINTS_0".into(), json!(joints));
+            attributes.insert("WEIGHTS_0".into(), json!(weights));
+        }
+    }
+    for (index, skin) in rig.skins.iter().enumerate() {
+        cancel.check()?;
+        let written = meta
+            .get("skins")
+            .and_then(|skins| skins.get(index))
+            .and_then(|skin| skin.get("joints"))
+            .and_then(Value::as_array)
+            .ok_or_else(invalid)?
+            .len();
+        if written == skin.joints.len() && view.rested().is_empty() {
+            continue;
+        }
+        let accessor = add_accessor(
+            meta,
+            suffix,
+            bin_len,
+            max,
+            TrackData::Matrices(&skin.inverse_bind),
+        )?;
+        let entry = &mut array(meta, "skins")?[index];
+        entry["joints"] = json!(skin.joints.iter().map(|j| j.0).collect::<Vec<_>>());
+        entry["inverseBindMatrices"] = json!(accessor);
+    }
+    Ok(())
+}
+
 pub(crate) fn compare(
     view: &DocumentView<'_>,
     loaded: &AssetDocument,
     cancel: &Cancellation,
 ) -> AssetResult<()> {
-    roundtrip::compare(view.document(), loaded, &[], cancel)?;
-    match (view.document().rig(), loaded.rig()) {
+    roundtrip::compare_with_nodes(view.document(), view.nodes(), loaded, &[], cancel)?;
+    match (view.rig(), loaded.rig()) {
         (None, None) => {}
         (Some(a), Some(b)) if a.matches(b, cancel)? => {}
         _ => return Err(roundtrip::mismatch()),

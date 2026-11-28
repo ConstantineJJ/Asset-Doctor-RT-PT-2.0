@@ -287,6 +287,19 @@ impl Session {
         }
         Ok(plan)
     }
+    /// RIG-03: rename a node or add a joint (one Undo step).
+    pub fn prepare_joint_edit(
+        &self,
+        expected: DocumentTag,
+        edit: &ad_document::JointEdit,
+        cancel: &Cancellation,
+    ) -> AssetResult<PreparedRemoval> {
+        let plan = self.document.prepare_joint_edit(expected, edit, cancel)?;
+        if plan.changes() {
+            self.admit(plan.retained_bytes())?;
+        }
+        Ok(plan)
+    }
     pub fn commit(
         &mut self,
         plan: PreparedRemoval,
