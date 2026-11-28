@@ -164,14 +164,45 @@ fn clip_combo(
                 |index| format!("{} · {}", index + 1, clips[index].name),
             ))
             .show_ui(ui, |ui| {
-                ui.selectable_value(&mut controls.clip, None, "Исходная поза");
-                for (index, clip) in clips.iter().enumerate() {
-                    ui.selectable_value(
-                        &mut controls.clip,
-                        Some(index),
-                        format!("{} · {}", index + 1, clip.name),
-                    );
+                // ANIM-02: find a clip by name (any part, any case).
+                let search_id = egui::Id::new("bar_clip_search");
+                let mut search = ui
+                    .ctx()
+                    .data(|d| d.get_temp::<String>(search_id))
+                    .unwrap_or_default();
+                if clips.len() > 5 {
+                    accent::values(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut search)
+                                .hint_text("Поиск клипа")
+                                .desired_width(f32::INFINITY),
+                        );
+                    });
                 }
+                let needle = search.trim().to_lowercase();
+                if needle.is_empty() {
+                    ui.selectable_value(&mut controls.clip, None, "Исходная поза");
+                }
+                let mut shown = 0;
+                egui::ScrollArea::vertical()
+                    .max_height(320.)
+                    .show(ui, |ui| {
+                        for (index, clip) in clips.iter().enumerate() {
+                            if !needle.is_empty() && !clip.name.to_lowercase().contains(&needle) {
+                                continue;
+                            }
+                            shown += 1;
+                            ui.selectable_value(
+                                &mut controls.clip,
+                                Some(index),
+                                format!("{} · {}", index + 1, clip.name),
+                            );
+                        }
+                    });
+                if shown == 0 {
+                    ui.weak("Ничего не найдено");
+                }
+                ui.ctx().data_mut(|d| d.insert_temp(search_id, search));
             })
             .response
             .on_hover_text("Клип анимации · колёсико — соседний");
@@ -612,6 +643,16 @@ fn timeline_menu(
         ui.weak("Выберите сустав, чтобы ставить ключи.");
     }
     ui.separator();
+    let duration = document.animation_clips()[clip].duration;
+    ui.horizontal(|ui| {
+        for (label, frames) in [("◀ Кадр · ,", -1.), ("Кадр ▶ · .", 1.)] {
+            if ui.button(label).clicked() {
+                controls.time =
+                    (((controls.time * 30.).round() + frames) / 30.).clamp(0., duration);
+                controls.playing = false;
+            }
+        }
+    });
     let previous = keys.partition_point(|&key| key < time).checked_sub(1);
     let next = keys.get(keys.partition_point(|&key| key <= time)).copied();
     ui.horizontal(|ui| {
@@ -632,7 +673,6 @@ fn timeline_menu(
             ui.close();
         }
     });
-    let duration = document.animation_clips()[clip].duration;
     ui.horizontal(|ui| {
         if ui.button("В начало").clicked() {
             controls.time = 0.;

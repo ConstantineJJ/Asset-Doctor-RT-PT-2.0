@@ -446,6 +446,13 @@ impl ViewerUi {
             .on_hover_text("Убирает рамку и верхнюю полосу с кнопками свернуть/развернуть/закрыть; F1 — вернуть.");
         self.ui_scale_controls(ui);
         ui.separator();
+        Self::heading(ui, "Анимация");
+        ui.checkbox(
+            &mut self.autoplay,
+            "Запускать первый клип при открытии модели",
+        )
+        .on_hover_text("Модель с анимацией сразу проигрывает свой первый клип; Пробел — пауза.");
+        ui.separator();
         Self::heading(ui, "Обновления");
         self.update_settings(ui, actions);
         ui.separator();
@@ -1005,6 +1012,7 @@ impl ViewerUi {
                             self.playback,
                             &mut self.joint_local_axes,
                             &mut self.skeleton_on,
+                            &mut self.root_path,
                             actions,
                         );
                     });

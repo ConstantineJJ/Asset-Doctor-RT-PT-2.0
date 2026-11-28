@@ -381,6 +381,13 @@ pub struct ViewerUi {
     /// P7 skeleton overlay (bones and joints of the skins) and its switch.
     pub skeleton_on: bool,
     pub skeleton: Option<skeleton_ui::SkeletonOverlay>,
+    /// ANIM-01: start the first clip when a model with clips opens.
+    pub autoplay: bool,
+    /// ANIM-05: root motion card state and its projected path (points,
+    /// the point at the current time).
+    pub root_path: crate::root_motion::PathState,
+    #[allow(clippy::type_complexity)]
+    pub root_path_uv: Option<(Vec<Option<[f32; 2]>>, Option<[f32; 2]>)>,
     /// Interface scale (egui zoom), 0.75–2; Ctrl + / Ctrl - change it too.
     pub ui_scale: f32,
     applied_scale: f32,
@@ -598,6 +605,12 @@ impl Default for ViewerUi {
             bar_rect: egui::Rect::NOTHING,
             ui_scale: 1.,
             applied_scale: 1.,
+            autoplay: true,
+            root_path: crate::root_motion::PathState {
+                show: true,
+                ..Default::default()
+            },
+            root_path_uv: None,
             corner_rect: egui::Rect::NOTHING,
             #[cfg(test)]
             redo_rect: egui::Rect::NOTHING,
@@ -1535,6 +1548,10 @@ impl ViewerUi {
                 if asset.is_some() && self.skeleton_on && let Some(overlay)=self.skeleton.take() {
                     self.skeleton_ui(&context,root,&overlay,asset.map(PreparedAsset::document),&mut actions);
                     self.skeleton=Some(overlay);
+                }
+                if asset.is_some() && let Some(path)=self.root_path_uv.take() {
+                    self.root_path_ui(root,&path);
+                    self.root_path_uv=Some(path);
                 }
                 if asset.is_some() && let Some(gizmo)=self.joint_gizmo.take() {
                     self.joint_gizmo_ui(&context,root,&gizmo,&mut actions);
@@ -2989,6 +3006,42 @@ FORMAT=32-bit_rle_rgbe
         out.drop_without_applying_deltas();
         assert!(text.contains("Ключ «"), "the menu offers a key");
         assert!(text.contains("В начало"));
+    }
+    #[test]
+    fn the_rigging_tab_measures_the_root_motion_of_the_clip() {
+        let mut ui = ViewerUi::default();
+        let asset = crate::imports::prepare(&crate::worker::Request {
+            ticket: 1,
+            input: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/Animation_Checker.glb"),
+            cancel: ad_document::Cancellation::default(),
+        })
+        .unwrap();
+        let document = asset.document();
+        ui.tab = Tab::Rigging;
+        ui.playback = crate::rig_playback::Controls {
+            clip: Some(0),
+            ..Default::default()
+        };
+        let (out, _, _) = ui.layout(raw(1600., 1000.), Some(&asset), false);
+        out.drop_without_applying_deltas();
+        let motion = ui.root_path.motion.clone().expect("measured");
+        let root = crate::root_motion::root_joint(document, 0).unwrap();
+        assert_eq!((motion.clip, motion.node), (0, root));
+        assert_eq!(document.nodes()[root.0].name, "Root");
+        assert_eq!(motion.times.len(), motion.points.len());
+        assert_eq!(
+            *motion.times.last().unwrap(),
+            document.animation_clips()[0].duration
+        );
+        let s = motion.summary;
+        assert!(s.length.is_finite() && s.length >= s.horizontal - 1e-5);
+        assert!(s.min_y <= s.max_y);
+        // Selected-joint mode without a selection measures nothing.
+        ui.root_path.selected_joint = true;
+        let (out, _, _) = ui.layout(raw(1600., 1000.), Some(&asset), false);
+        out.drop_without_applying_deltas();
+        assert!(ui.root_path.motion.is_none());
     }
     #[test]
     fn joint_gizmo_rings_and_arrows_preview_and_write_one_key() {

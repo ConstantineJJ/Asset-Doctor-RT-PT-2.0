@@ -98,6 +98,34 @@ fn animated_joint_worlds_follow_the_clip_and_compose_with_parents() {
 }
 
 #[test]
+fn a_node_path_matches_the_scene_worlds_at_every_sample() {
+    let doc = open(ANIMATED).unwrap();
+    let cancel = Cancellation::default();
+    let view = doc.view();
+    for (clip, active) in doc.animation_clips().iter().enumerate() {
+        for node in [NodeId(0), NodeId(1)] {
+            let path = view.node_path(node, clip, 9, &cancel).unwrap();
+            assert_eq!(path.len(), 9);
+            assert_eq!(path[0].0, 0.);
+            assert_eq!(path[8].0, active.duration);
+            for (time, world) in &path {
+                let all = view
+                    .node_worlds(Some((clip, *time, None)), &cancel)
+                    .unwrap();
+                assert!(
+                    matrix(*world).abs_diff_eq(matrix(all[node.0].unwrap()), 1e-5),
+                    "clip {clip} node {node:?} t={time}"
+                );
+            }
+        }
+    }
+    // At least two samples; unknown clip or node refused.
+    assert_eq!(view.node_path(NodeId(0), 0, 0, &cancel).unwrap().len(), 2);
+    assert!(view.node_path(NodeId(0), 99, 9, &cancel).is_err());
+    assert!(view.node_path(NodeId(999), 0, 9, &cancel).is_err());
+}
+
+#[test]
 fn a_channel_with_a_missing_sampler_is_refused() {
     let error = open(BAD_SAMPLER).err().expect("refused");
     assert!(error.message.contains("sampler"), "{}", error.message);
